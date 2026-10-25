@@ -63,6 +63,42 @@ def hosted_only():
     assert os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'No replay of this run'
 
 
+def runtime_context():
+    """Fixed read-only context; PATH lookups are prospective, not process-image proof."""
+    def displayed(value):
+        return None if value is None else {'value': value[:4096], 'characters': len(value),
+                                          'truncated': len(value) > 4096}
+
+    context = {'started_monotonic': time.monotonic(),
+               'child_env': {key: displayed(ENV.get(key)) for key in
+                             ('HOME', 'USER', 'LOGNAME', 'PATH', 'TMPDIR', 'DEVELOPER_DIR', 'LANG')},
+               'parent_presence_only': {key: key in os.environ for key in
+                                       ('SDKROOT', 'TOOLCHAINS', 'xcrun_log', 'xcrun_verbose',
+                                        'xcrun_nocache', 'XPC_SERVICE_NAME', 'XPC_FLAGS',
+                                        '__CF_USER_TEXT_ENCODING', 'DYLD_LIBRARY_PATH', 'DYLD_FRAMEWORK_PATH')},
+               'lookup_basis': 'child PATH; os.defpath only if PATH is absent', 'tools': {}}
+    path = ENV.get('PATH', os.defpath)
+    for tool in ('xcrun', 'xcodebuild'):
+        if len(path) > 8192 or len(path.split(os.pathsep)) > 64:
+            context['tools'][tool] = {'status': 'NOT_READ_PATH_LIMIT'}
+            continue
+        if any(not os.path.isabs(part) for part in path.split(os.pathsep)):
+            context['tools'][tool] = {'status': 'NOT_READ_RELATIVE_OR_EMPTY_PATH'}
+            continue
+        try:
+            found = shutil.which(tool, path=path)
+            context['tools'][tool] = {'status': 'FOUND' if found else 'NOT_FOUND',
+                                      'path': displayed(found),
+                                      'realpath': displayed(os.path.realpath(found)) if found else None}
+        except InterruptedError:
+            raise
+        except OSError as error:
+            context['tools'][tool] = {'status': 'UNKNOWN_LOOKUP_ERROR',
+                                      'error': type(error).__name__}
+    context['finished_monotonic'] = time.monotonic()
+    return context
+
+
 class Run:
     def __init__(self):
         self.start = time.monotonic()
@@ -83,21 +119,60 @@ class Run:
         save(OUT / 'metadata.json', self.meta)
 
     def command(self, args, name, limit=15, required=True):
+        command_args = list(map(str, args))
+        observe = command_args == ['xcrun', 'simctl', 'list', 'runtimes', '--json']
+        if observe and self.remaining() > 4:
+            self.meta['runtime_discovery_context'] = runtime_context()
+        # Context work consumes the existing phase budget; it never extends the allowance.
         allowance = min(limit, self.remaining() - 4)
         if allowance <= 0:
             raise TimeoutError('No phase budget before ' + name)
-        item = {'args': list(map(str, args)), 'started_at': now(), 'timeout_seconds': allowance}
+        item = {'args': command_args, 'started_at': now(), 'timeout_seconds': allowance}
+        if observe:
+            item['runtime_observation'] = {'prepared_monotonic': time.monotonic(),
+                                           'stdout_stderr': 'same regular file',
+                                           'cwd': str(ROOT), 'new_session': True}
         self.meta['commands'].append(item)
         self.persist()
         with (OUT / name).open('wb') as log:
-            proc = subprocess.Popen(item['args'], cwd=ROOT, env=ENV, stdout=log,
-                                    stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                if observe:
+                    item['runtime_observation']['spawn_started_monotonic'] = time.monotonic()
+                proc = subprocess.Popen(item['args'], cwd=ROOT, env=ENV, stdout=log,
+                                        stderr=subprocess.STDOUT, start_new_session=True)
+            except BaseException as error:
+                if observe:
+                    item['runtime_observation'].update(spawn_error=type(error).__name__,
+                        spawn_failed_monotonic=time.monotonic())
+                    item.update(command_error=repr(error), finished_at=now())
+                raise
             item['owned_process_group'] = proc.pid
             cleanup_required = item['args'][0] == 'xcodebuild'
             try:
+                if observe:
+                    item['runtime_observation']['spawn_returned_monotonic'] = time.monotonic()
                 self.persist()
-                proc.wait(timeout=allowance)
+                if observe:
+                    item['runtime_observation']['wait_started_monotonic'] = time.monotonic()
+                try:
+                    proc.wait(timeout=allowance)
+                except BaseException as error:
+                    if observe:
+                        item['runtime_observation']['wait_error'] = type(error).__name__
+                    raise
+                finally:
+                    # These observations stay inside the same cleanup protection as wait().
+                    if observe:
+                        item['runtime_observation']['wait_finished_monotonic'] = time.monotonic()
+                        try:
+                            item['runtime_observation']['output_bytes_at_wait_end'] = os.fstat(log.fileno()).st_size
+                        except InterruptedError:
+                            raise
+                        except OSError as error:
+                            item['runtime_observation']['output_size_error'] = type(error).__name__
             except BaseException as error:
+                if observe:
+                    item['runtime_observation']['wait_or_persist_error'] = type(error).__name__
                 item['interrupted'] = True
                 item['command_error'] = repr(error)
                 cleanup_required = True
@@ -129,6 +204,9 @@ def stop_group(proc, record=None):
     record['owned_group_absent'] = False
     start = time.monotonic()
     interrupted = None
+    observation = record.get('runtime_observation')
+    if observation is not None:
+        observation.update(stop_probe_count=0, stop_signals=[])
 
     def note(error):
         nonlocal interrupted
@@ -140,13 +218,24 @@ def stop_group(proc, record=None):
 
     def stopped():
         try:
+            if observation is not None:
+                observation['stop_probe_count'] += 1
+                observation['last_stop_probe'] = {}
             reaped = proc.poll() is not None
+            if observation is not None:
+                observation['last_stop_probe']['leader_reaped'] = reaped
             try:
                 os.killpg(proc.pid, 0)
+                if observation is not None:
+                    observation['last_stop_probe']['group'] = 'PRESENT'
             except ProcessLookupError:
+                if observation is not None:
+                    observation['last_stop_probe']['group'] = 'ABSENT'
                 record['owned_group_absent'] = reaped
                 return reaped
         except BaseException as error:
+            if observation is not None:
+                observation['last_stop_probe']['error'] = type(error).__name__
             note(error)
         return False
 
@@ -159,11 +248,20 @@ def stop_group(proc, record=None):
     for sig, offset in ((signal.SIGTERM, 2), (signal.SIGKILL, 3)):
         if time.monotonic() >= start + 3:
             break
+        event = None
         try:
+            if observation is not None:
+                event = {'signal': sig.name}
+                observation['stop_signals'].append(event)  # At most the existing TERM and KILL.
             os.killpg(proc.pid, sig)
+            if event is not None:
+                event['result'] = 'SENT'
         except ProcessLookupError:
-            pass
+            if event is not None:
+                event['result'] = 'ALREADY_ABSENT'
         except BaseException as error:
+            if event is not None:
+                event['result'] = type(error).__name__
             note(error)
         deadline = start + offset
         while True:

@@ -5,6 +5,7 @@ no Xcode, simulator, application, process group, or native test is executed.
 """
 from contextlib import ExitStack
 import importlib.util
+import inspect
 import json
 import os
 from pathlib import Path
@@ -54,7 +55,7 @@ class FakeProcess:
             self.fault_used = True
             fault = self.backend.fault
             if fault == 'timeout':
-                if self.step == 'test':
+                if self.step in ('test', 'runtimes'):
                     self.backend.fixture.clock.value += timeout
                 raise subprocess.TimeoutExpired(self.args, timeout)
             if fault == 'signal':
@@ -250,6 +251,9 @@ class Fixture:
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
         self.import_calls = list(self.backend.forbidden)
+        self.stack.enter_context(mock.patch.object(self.module, 'ENV',
+            {'PATH': '/synthetic/bin', 'HOME': str(self.root), 'LANG': 'en_US.UTF-8'}))
+        self.stack.enter_context(mock.patch.object(self.module.shutil, 'which', return_value=None))
         self.stack.enter_context(mock.patch.object(subprocess, 'Popen', self.backend.popen))
         self.stack.enter_context(mock.patch.object(os, 'killpg', self.backend.killpg))
         self.stack.enter_context(mock.patch.object(os, 'getpgid', self.backend.getpgid))
@@ -318,6 +322,191 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertTrue(meta['failures'])
         if text:
             self.assertIn(text, '\n'.join(meta['failures']))
+
+    def test_runtime_timeout_records_wait_stop_and_context_without_retry(self):
+        self.f.backend.fault_step, self.f.backend.fault = 'runtimes', 'timeout'
+        rc, meta = self.f.run()
+        self.assertEqual(rc, 1)
+        self.assert_failed(meta, 'TimeoutExpired')
+        processes = [p for p in self.f.backend.processes if p.step == 'runtimes']
+        self.assertEqual(len(processes), 1)
+        self.assertEqual(processes[0].wait_calls, [60])
+        command = next(c for c in meta['commands'] if c['args'][2:4] == ['list', 'runtimes'])
+        observation = command['runtime_observation']
+        self.assertTrue(command['owned_group_absent'])
+        self.assertEqual(observation['wait_or_persist_error'], 'TimeoutExpired')
+        self.assertEqual(observation['output_bytes_at_wait_end'], 0)
+        self.assertEqual(observation['stop_signals'], [{'signal': 'SIGTERM', 'result': 'SENT'}])
+        self.assertEqual(observation['stop_probe_count'], 2)
+        self.assertEqual(observation['last_stop_probe']['group'], 'ABSENT')
+        self.assertTrue(observation['last_stop_probe']['leader_reaped'])
+        self.assertEqual(meta['runtime_discovery_context']['child_env']['DEVELOPER_DIR'], None)
+        self.assertEqual(meta['runtime_discovery_context']['child_env']['PATH']['value'], '/synthetic/bin')
+        self.assertFalse(any(p.step in ('build', 'create', 'test') for p in self.f.backend.processes))
+        self.assertNotIn('owned_uuid', meta)
+
+    def test_runtime_output_stat_error_does_not_mask_timeout_or_skip_cleanup(self):
+        self.f.backend.fault_step, self.f.backend.fault = 'runtimes', 'timeout'
+        with mock.patch.object(self.f.module.os, 'fstat', side_effect=OSError('synthetic stat failure')):
+            rc, meta = self.f.run()
+        self.assertEqual(rc, 1)
+        self.assert_failed(meta, 'TimeoutExpired')
+        command = next(c for c in meta['commands'] if c['args'][2:4] == ['list', 'runtimes'])
+        self.assertTrue(command['owned_group_absent'])
+        self.assertEqual(command['runtime_observation']['output_size_error'], 'OSError')
+        self.assertNotIn('output_bytes_at_wait_end', command['runtime_observation'])
+
+    def test_runtime_spawn_failure_is_recorded_without_wait_or_owned_cleanup(self):
+        original = self.f.backend.popen
+        def spawn(args, **kwargs):
+            if args[2:4] == ['list', 'runtimes']:
+                raise FileNotFoundError('synthetic missing xcrun')
+            return original(args, **kwargs)
+        with mock.patch.object(self.f.module.subprocess, 'Popen', spawn):
+            rc, meta = self.f.run()
+        self.assertEqual(rc, 1)
+        self.assert_failed(meta, 'synthetic missing xcrun')
+        command = next(c for c in meta['commands'] if c['args'][2:4] == ['list', 'runtimes'])
+        self.assertEqual(command['runtime_observation']['spawn_error'], 'FileNotFoundError')
+        self.assertNotIn('owned_process_group', command)
+        self.assertNotIn('wait_started_monotonic', command['runtime_observation'])
+        self.assertFalse(any(p.step in ('runtimes', 'build', 'create') for p in self.f.backend.processes))
+
+    def test_runtime_context_preserves_empty_path_and_limits_display_without_secrets(self):
+        env = {'PATH': '', 'DEVELOPER_DIR': 'x' * 4100, 'LANG': 'C'}
+        with mock.patch.object(self.f.module, 'ENV', env), \
+             mock.patch.dict(os.environ, {'SDKROOT': 'private-value', 'TOKEN_SECRET': 'do-not-capture'}), \
+             mock.patch.object(self.f.module.shutil, 'which', return_value=None) as lookup:
+            context = self.f.module.runtime_context()
+        lookup.assert_not_called()
+        self.assertEqual(context['tools']['xcrun']['status'], 'NOT_READ_RELATIVE_OR_EMPTY_PATH')
+        self.assertEqual(context['child_env']['PATH']['value'], '')
+        self.assertTrue(context['child_env']['DEVELOPER_DIR']['truncated'])
+        self.assertEqual(len(context['child_env']['DEVELOPER_DIR']['value']), 4096)
+        self.assertTrue(context['parent_presence_only']['SDKROOT'])
+        self.assertNotIn('private-value', json.dumps(context))
+        self.assertNotIn('TOKEN_SECRET', json.dumps(context))
+        with mock.patch.object(self.f.module, 'ENV', {'PATH': 'x' * 8193}), \
+             mock.patch.object(self.f.module.shutil, 'which') as lookup:
+            context = self.f.module.runtime_context()
+        lookup.assert_not_called()
+        self.assertEqual(context['tools']['xcrun']['status'], 'NOT_READ_PATH_LIMIT')
+
+    def test_runtime_lookup_error_and_absent_path_do_not_replace_timeout(self):
+        self.f.backend.fault_step, self.f.backend.fault = 'runtimes', 'timeout'
+        with mock.patch.object(self.f.module, 'ENV', {'LANG': 'C'}), \
+             mock.patch.object(self.f.module.shutil, 'which', side_effect=OSError('synthetic lookup failure')) as lookup:
+            rc, meta = self.f.run()
+        self.assertEqual(rc, 1)
+        self.assert_failed(meta, 'TimeoutExpired')
+        self.assertNotIn('synthetic lookup failure', str(meta['failures']))
+        self.assertEqual(lookup.call_args_list, [mock.call('xcrun', path=os.defpath), mock.call('xcodebuild', path=os.defpath)])
+        self.assertIsNone(meta['runtime_discovery_context']['child_env']['PATH'])
+        self.assertEqual(meta['runtime_discovery_context']['tools']['xcrun']['status'], 'UNKNOWN_LOOKUP_ERROR')
+
+    def test_runtime_context_cost_reduces_allowance_and_can_deny_launch(self):
+        for elapsed, expected_wait in ((499.0, 57.0), (557.0, None)):
+            with self.subTest(elapsed=elapsed):
+                f = Fixture(self)
+                f.backend.fault_step, f.backend.fault = 'runtimes', 'timeout'
+                def context():
+                    f.clock.value = elapsed
+                    return {'synthetic_context': True}
+                with mock.patch.object(f.module, 'runtime_context', side_effect=context):
+                    rc, meta = f.run()
+                self.assertEqual(rc, 1)
+                runtimes = [p for p in f.backend.processes if p.step == 'runtimes']
+                self.assertEqual([p.wait_calls for p in runtimes], [] if expected_wait is None else [[expected_wait]])
+                self.assertFalse(any(p.step in ('build', 'create', 'test') for p in f.backend.processes))
+                self.assertEqual(meta['runtime_discovery_context'], {'synthetic_context': True})
+
+    def test_runtime_cleanup_failure_records_bounded_existing_probes(self):
+        self.f.backend.fault_step, self.f.backend.fault = 'runtimes', 'timeout'
+        original = self.f.backend.killpg
+        def signal_or_probe(pid, sig):
+            proc = next(p for p in self.f.backend.processes if p.pid == pid)
+            if proc.step == 'runtimes':
+                raise PermissionError('synthetic group access denied')
+            return original(pid, sig)
+        with mock.patch.object(self.f.module.os, 'killpg', signal_or_probe):
+            rc, meta = self.f.run()
+        self.assertEqual(rc, 1)
+        command = next(c for c in meta['commands'] if c['args'][2:4] == ['list', 'runtimes'])
+        observation = command['runtime_observation']
+        self.assertFalse(command['owned_group_absent'])
+        self.assertIn('TimeoutExpired', command['command_error'])
+        self.assertIn('cleanup', command['cleanup_error'])
+        self.assertEqual([s['signal'] for s in observation['stop_signals']], ['SIGTERM', 'SIGKILL'])
+        self.assertGreater(observation['stop_probe_count'], 2)
+        self.assertEqual(observation['last_stop_probe']['error'], 'PermissionError')
+        self.assertLess(len(json.dumps(observation)), 1500)
+        self.assertFalse(any(p.step in ('build', 'create', 'test') for p in self.f.backend.processes))
+
+    def test_runtime_diagnostic_clock_interruption_still_stops_owned_child(self):
+        for field, fault in (('spawn_returned_monotonic', None),
+                             ('wait_started_monotonic', None),
+                             ('wait_finished_monotonic', None),
+                             ('wait_finished_monotonic', 'timeout')):
+            with self.subTest(field=field, fault=fault):
+                f = Fixture(self)
+                f.backend.fault_step, f.backend.fault = 'runtimes', fault
+                injected = []
+                def clock():
+                    frame = inspect.currentframe().f_back
+                    line = inspect.getframeinfo(frame).code_context or []
+                    if not injected and field in ''.join(line):
+                        injected.append(field)
+                        raise InterruptedError('synthetic diagnostic cancellation')
+                    return f.clock.value
+                with mock.patch.object(f.module.time, 'monotonic', new=clock):
+                    rc, meta = f.run()
+                self.assertEqual(injected, [field])
+                self.assertEqual(rc, 1)
+                self.assert_failed(meta, 'synthetic diagnostic cancellation')
+                proc = next(p for p in f.backend.processes if p.step == 'runtimes')
+                command = next(c for c in meta['commands'] if c.get('owned_process_group') == proc.pid)
+                self.assertFalse(proc.group_present)
+                self.assertIsNotNone(proc.returncode)
+                self.assertTrue(command['owned_group_absent'])
+                if fault == 'timeout':
+                    self.assertEqual(command['runtime_observation']['wait_error'], 'TimeoutExpired')
+                self.assertFalse(any(p.step in ('build', 'create', 'test') for p in f.backend.processes))
+
+    def test_runtime_lookup_cancellation_fails_before_child_launch(self):
+        with mock.patch.object(self.f.module.shutil, 'which',
+                               side_effect=InterruptedError('synthetic lookup cancellation')):
+            rc, meta = self.f.run()
+        self.assertEqual(rc, 1)
+        self.assert_failed(meta, 'synthetic lookup cancellation')
+        self.assertFalse(any(p.step in ('runtimes', 'build', 'create', 'test') for p in self.f.backend.processes))
+
+    def test_runtime_stat_cancellation_fails_and_confirms_owned_cleanup(self):
+        for fault in (None, 'timeout'):
+            with self.subTest(fault=fault):
+                f = Fixture(self)
+                f.backend.fault_step, f.backend.fault = 'runtimes', fault
+                with mock.patch.object(f.module.os, 'fstat',
+                                       side_effect=InterruptedError('synthetic stat cancellation')):
+                    rc, meta = f.run()
+                self.assertEqual(rc, 1)
+                self.assert_failed(meta, 'synthetic stat cancellation')
+                proc = next(p for p in f.backend.processes if p.step == 'runtimes')
+                command = next(c for c in meta['commands'] if c.get('owned_process_group') == proc.pid)
+                self.assertFalse(proc.group_present)
+                self.assertTrue(command['owned_group_absent'])
+                if fault == 'timeout':
+                    self.assertEqual(command['runtime_observation']['wait_error'], 'TimeoutExpired')
+                self.assertFalse(any(p.step in ('build', 'create', 'test') for p in f.backend.processes))
+
+    def test_runtime_relative_or_empty_path_is_explicitly_not_resolved(self):
+        for path in ('bin:/usr/bin', '/usr/bin:', ':/usr/bin'):
+            with self.subTest(path=path), mock.patch.object(self.f.module, 'ENV', {'PATH': path}), \
+                 mock.patch.object(self.f.module.shutil, 'which') as lookup:
+                context = self.f.module.runtime_context()
+                lookup.assert_not_called()
+                self.assertEqual(context['child_env']['PATH']['value'], path)
+                self.assertTrue(all(t['status'] == 'NOT_READ_RELATIVE_OR_EMPTY_PATH'
+                                    for t in context['tools'].values()))
 
     def test_import_is_inert(self):
         self.assertEqual(self.f.import_calls, [])
