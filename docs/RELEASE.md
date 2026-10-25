@@ -2,6 +2,12 @@
 
 Current product version: 0.1.0 development prerelease. A simulator build is not an App Store release or an installable signed iPhone package.
 
+The [App Store materials](app-store/README.md) include English and Russian listing
+and in-app purchase drafts, field-length checks, screenshot provenance, and
+prerelease privacy/support pages. They describe the reviewed `e40d693` application
+source. Documentation or screenshot updates do not supersede that simulator
+package or establish payment, physical-device, or App Store acceptance.
+
 Payment acceptance remains blocked by two distinct findings in
 [StoreKit testing](STOREKIT-TESTING.md): fresh-simulator purchase routing and an
 observed early Pro unlock before Ask to Buy approval. The latter has no proven

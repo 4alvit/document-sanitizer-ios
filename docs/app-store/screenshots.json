@@ -1,0 +1,251 @@
+{
+  "schema_version": 1,
+  "status": "prepared_with_missing_ipad_assets",
+  "product": "RedactLeaf",
+  "application_source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+  "official_specification": {
+    "url": "https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications",
+    "checked_date": "2026-10-24",
+    "count_per_slot": "1 to 10",
+    "formats": [
+      "JPEG",
+      "JPG",
+      "PNG"
+    ],
+    "alpha_or_transparency_allowed": false,
+    "required_slots": {
+      "iphone": "Dynamic Island (medium display)",
+      "ipad": "13-inch display if iPad supported"
+    },
+    "accepted_portrait_dimensions": {
+      "iphone": [
+        [
+          1179,
+          2556
+        ],
+        [
+          1206,
+          2622
+        ]
+      ],
+      "ipad": [
+        [
+          2064,
+          2752
+        ],
+        [
+          2048,
+          2732
+        ]
+      ]
+    },
+    "landscape": "Reversed dimensions are accepted.",
+    "checked_timezone": "America/Los_Angeles"
+  },
+  "assets": [
+    {
+      "path": "docs/app-store/screenshots/en-US/iphone-dynamic-island-medium/01-welcome.png",
+      "sha256": "6f782a3ed09dcd9087a9575ccfdc6a07192518701f789a2d9f537c7398ac5afa",
+      "capture_id": "41F1EA19-1179-441B-8D23-B77C9068F651",
+      "title": "Welcome and workflow",
+      "source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "exact_packaged_release",
+        "matching_production_files": null
+      },
+      "build_configuration": "Release",
+      "device": "iPhone 17 Pro",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "en-US",
+      "app_language": "en",
+      "regional_locale": "en_US",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "dimensions": {
+        "width": 1206,
+        "height": 2622
+      },
+      "orientation": "portrait",
+      "text_size": "large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "The temporary-workspace footnote continues below the viewport.",
+      "source_archive_sha256": "2c51a4a3eba015ca46d58fd6ae16b9c3bd569cbfae310c84a7693efdebf8ec24",
+      "capture_timestamp": 1792896473.498
+    },
+    {
+      "path": "docs/app-store/screenshots/en-US/iphone-dynamic-island-medium/02-manual-mask.png",
+      "sha256": "bf2b162f711a8b475e4e826d56874cf78e050567859f0b7c24d07015f590fe87",
+      "capture_id": "11153479-85A7-42FC-928B-0066D568925F",
+      "title": "Mark a selected area",
+      "source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "exact_packaged_release",
+        "matching_production_files": null
+      },
+      "build_configuration": "Release",
+      "device": "iPhone 17 Pro",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "en-US",
+      "app_language": "en",
+      "regional_locale": "en_US",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "dimensions": {
+        "width": 1206,
+        "height": 2622
+      },
+      "orientation": "portrait",
+      "text_size": "large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "Shows a partial manual selection on a labelled synthetic sample, not a claim that all personal details were removed. The displayed USD total belongs to the synthetic receipt, not app pricing.",
+      "source_archive_sha256": "2c51a4a3eba015ca46d58fd6ae16b9c3bd569cbfae310c84a7693efdebf8ec24",
+      "capture_timestamp": 1792896483.13
+    },
+    {
+      "path": "docs/app-store/screenshots/en-US/iphone-dynamic-island-medium/03-review-export.png",
+      "sha256": "13ea1485e8915ed889b0d05ac99c68a9272cc8f9ae2201e851c812f281e5cdb1",
+      "capture_id": "4E3C7FFD-E0C4-4960-9EC0-899ADD105ABE",
+      "title": "Review and choose an export format",
+      "source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "exact_packaged_release",
+        "matching_production_files": null
+      },
+      "build_configuration": "Release",
+      "device": "iPhone 17 Pro",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "en-US",
+      "app_language": "en",
+      "regional_locale": "en_US",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "dimensions": {
+        "width": 1206,
+        "height": 2622
+      },
+      "orientation": "portrait",
+      "text_size": "large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "Review is scrolled to the checked state and export options; the upper portion of the raster preview is outside this frame.",
+      "source_archive_sha256": "2c51a4a3eba015ca46d58fd6ae16b9c3bd569cbfae310c84a7693efdebf8ec24",
+      "capture_timestamp": 1792896494.003
+    },
+    {
+      "path": "docs/app-store/screenshots/ru/iphone-dynamic-island-medium/01-accessible-manual-controls.png",
+      "sha256": "dbe658ea644fa9bda9d5cee42d0690b9041fa133cc2fc52234dc95347917440e",
+      "capture_id": "D1BAE0B9-37DB-4DF1-A0FF-5E2E39B7AED7",
+      "title": "Accessible manual area controls",
+      "source_commit": "df2e2ea176786554a0211498c98e6d69a7260adb",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "production_source_hash_equivalence",
+        "matching_production_files": 42,
+        "equivalent_commit": "e67a692a329f9b3598b40a96c39ed5e9d31511b5"
+      },
+      "build_configuration": "Debug",
+      "device": "iPhone 17 Pro",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "ru",
+      "app_language": "ru",
+      "regional_locale": "en_US",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "dimensions": {
+        "width": 1206,
+        "height": 2622
+      },
+      "orientation": "portrait",
+      "text_size": "accessibility-extra-extra-extra-large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "Real maximum-text-size accessibility capture. Only the upper controls are visible; this is a supplementary feature frame, not a normal-text-size overview.",
+      "capture_source_state": "uncommitted candidate based on source_commit; production files match the later equivalent_commit and current_application_commit",
+      "capture_timestamp": 1792606711.189
+    }
+  ],
+  "gaps": [
+    {
+      "slot": "iPad 13-inch",
+      "locales": [
+        "en-US",
+        "ru"
+      ],
+      "status": "missing_due_capture_runner_loader_failure",
+      "detail": "The capture tool failed before either capture case started. No current iPad assets are supplied."
+    },
+    {
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "locale": "ru",
+      "status": "normal_size_overview_missing",
+      "detail": "The available genuine frame demonstrates manual controls at maximum accessibility text size; it is a supplementary frame."
+    }
+  ],
+  "limits": [
+    "These are simulator captures of real app screens with synthetic content. They do not prove App Store approval or payment readiness.",
+    "No compositing, cropping, resizing, replacement text, invented price or alpha removal was applied."
+  ],
+  "coverage": [
+    {
+      "locale": "en-US",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "asset_count": 3,
+      "status": "prepared"
+    },
+    {
+      "locale": "ru",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "asset_count": 1,
+      "status": "prepared_supplementary_accessibility_frame_only"
+    },
+    {
+      "locale": "en-US",
+      "slot": "iPad 13-inch",
+      "asset_count": 0,
+      "status": "missing_due_capture_runner_loader_failure"
+    },
+    {
+      "locale": "ru",
+      "slot": "iPad 13-inch",
+      "asset_count": 0,
+      "status": "missing_due_capture_runner_loader_failure"
+    }
+  ]
+}

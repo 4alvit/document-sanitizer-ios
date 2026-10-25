@@ -81,3 +81,7 @@ Inputs are limited to 50 MiB each; the Share Extension also limits a batch to 50
 Exports receive neutral filenames. Fresh images can contain generated color-space and dimension tags; no source EXIF/GPS/author/comments are copied. Clearing the app cannot erase copies already sent to other applications, backups made by those applications, or the user's original files. No secure flash-erasure claim is made.
 
 See [monetization and entitlement behavior](docs/MONETIZATION.md), [privacy](docs/PRIVACY.md), [threat model](docs/THREAT-MODEL.md), [release checklist](docs/RELEASE.md), [backlog](docs/BACKLOG.md), and [contribution guide](CONTRIBUTING.md). MIT licensed.
+
+English and Russian [App Store draft materials](docs/app-store/README.md) and the
+[support guide](docs/SUPPORT.md) are available for review. They do not announce
+an App Store launch or a live Pro offer.
