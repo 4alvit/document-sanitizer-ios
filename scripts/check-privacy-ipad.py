@@ -130,7 +130,7 @@ def version(text):
 
 
 def select_device(run):
-    runtimes = json.loads(run.output(['xcrun', 'simctl', 'list', 'runtimes', '--json'], 'runtimes.json'))['runtimes']
+    runtimes = json.loads(run.output(['xcrun', 'simctl', 'list', 'runtimes', '--json'], 'runtimes.json', 60))['runtimes']
     types = json.loads(run.output(['xcrun', 'simctl', 'list', 'devicetypes', '--json'], 'device-types.json'))['devicetypes']
     sdk = run.meta['simulator_sdk_version']
     matches = [r for r in runtimes if r.get('isAvailable') and '.iOS-' in r['identifier']
