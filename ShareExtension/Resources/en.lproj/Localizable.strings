@@ -1,0 +1,17 @@
+// User-facing text. Keep placeholders and technical identifiers unchanged.
+"An attachment could not be read." = "An attachment could not be read.";
+"Cancel" = "Cancel";
+"Choose a smaller batch, up to 50 MB total." = "Choose a smaller batch, up to 50 MB total.";
+"Choose between 1 and 20 PDF or image files." = "Choose between 1 and 20 PDF or image files.";
+"Close" = "Close";
+"Copying files locally…" = "Copying files locally…";
+"Done" = "Done";
+"Each attachment must be a regular file no larger than 50 MB." = "Each attachment must be a regular file no larger than 50 MB.";
+"Files are queued. Open RedactLeaf and import a queued batch to review and hide details. Queuing alone does not remove private information." = "Files are queued. Open RedactLeaf and import a queued batch to review and hide details. Queuing alone does not remove private information.";
+"Files could not be copied. Check available storage or import them from Files inside RedactLeaf." = "Files could not be copied. Check available storage or import them from Files inside RedactLeaf.";
+"Queue PDF and image copies for RedactLeaf, then open the app to choose what to hide. Originals stay unchanged. Copies older than 24 hours are removed when the main app next checks the queue." = "Queue PDF and image copies for RedactLeaf, then open the app to choose what to hide. Originals stay unchanged. Copies older than 24 hours are removed when the main app next checks the queue.";
+"Save to RedactLeaf" = "Save to RedactLeaf";
+"Send to RedactLeaf" = "Send to RedactLeaf";
+"The import queue is full. Open RedactLeaf to import or clear earlier files." = "The import queue is full. Open RedactLeaf to import or clear earlier files.";
+"The shared container is unavailable. Open RedactLeaf and import using Files instead." = "The shared container is unavailable. Open RedactLeaf and import using Files instead.";
+"Unsupported attachments were skipped." = "Unsupported attachments were skipped.";

@@ -1,0 +1,7 @@
+"Greeting" = "Здравствуйте";
+"File %@" = "Файл %@";
+"%@ then %@" = "%2$@, затем %1$@";
+"count.files.one" = "%@ файл";
+"count.files.few" = "%@ файла";
+"count.files.many" = "%@ файлов";
+"count.files.other" = "%@ файла";

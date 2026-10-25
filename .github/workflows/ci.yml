@@ -1,0 +1,43 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: macOS core, independent export corpus, iOS build
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install build and independent verification tools
+        run: |
+          brew install xcodegen poppler
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r requirements-qa.txt
+      - name: Verify
+        run: |
+          export PATH="$PWD/.venv/bin:$PATH"
+          bash scripts/check.sh
+      - name: Run hosted application tests (native StoreKit excluded)
+        run: >-
+          bash scripts/check-ios-tests.sh
+          -only-testing:CleanSendTests
+          -skip-testing:CleanSendTests/ProStoreTests
+      - name: Save verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verification-evidence
+          path: |
+            .qa/corpus/report.json
+            .qa/verifier-probe.json
+            .qa/hosted-tests-*.xcresult
+          include-hidden-files: true
+          if-no-files-found: ignore
+

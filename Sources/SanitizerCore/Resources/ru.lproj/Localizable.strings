@@ -1,0 +1,12 @@
+// User-facing text. Keep placeholders and technical identifiers unchanged.
+"A package can contain at most 30 pages." = "Пакет может содержать не более 30 страниц.";
+"A page could not be rendered. No export was completed." = "Не удалось отрисовать страницу. Экспорт не выполнен.";
+"A page has invalid dimensions and could not be safely imported." = "Размеры страницы некорректны. Безопасно импортировать её не удалось.";
+"A redaction has invalid coordinates. Draw it again before exporting." = "Координаты области скрытия некорректны. Нарисуйте её заново перед экспортом.";
+"Import at least one page before exporting." = "Импортируйте хотя бы одну страницу перед экспортом.";
+"The export could not be saved. Check available space and try again." = "Не удалось сохранить экспорт. Проверьте свободное место и попробуйте снова.";
+"The selected file could not be read. Try a local copy." = "Не удалось прочитать выбранный файл. Попробуйте локальную копию.";
+"This file exceeds the 50 MiB import limit." = "Размер этого файла превышает лимит импорта 50 МиБ.";
+"This file is not a supported image or PDF." = "Этот файл не является поддерживаемым изображением или PDF.";
+"This package is too large to process safely. Import fewer pages." = "Этот пакет слишком велик для безопасной обработки. Импортируйте меньше страниц.";
+"Unlock this PDF before importing it." = "Разблокируйте этот PDF перед импортом.";

@@ -1,0 +1,12 @@
+// User-facing text. Keep placeholders and technical identifiers unchanged.
+"A package can contain at most 30 pages." = "A package can contain at most 30 pages.";
+"A page could not be rendered. No export was completed." = "A page could not be rendered. No export was completed.";
+"A page has invalid dimensions and could not be safely imported." = "A page has invalid dimensions and could not be safely imported.";
+"A redaction has invalid coordinates. Draw it again before exporting." = "A redaction has invalid coordinates. Draw it again before exporting.";
+"Import at least one page before exporting." = "Import at least one page before exporting.";
+"The export could not be saved. Check available space and try again." = "The export could not be saved. Check available space and try again.";
+"The selected file could not be read. Try a local copy." = "The selected file could not be read. Try a local copy.";
+"This file exceeds the 50 MiB import limit." = "This file exceeds the 50 MiB import limit.";
+"This file is not a supported image or PDF." = "This file is not a supported image or PDF.";
+"This package is too large to process safely. Import fewer pages." = "This package is too large to process safely. Import fewer pages.";
+"Unlock this PDF before importing it." = "Unlock this PDF before importing it.";
