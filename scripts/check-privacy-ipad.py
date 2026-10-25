@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One hosted-only Russian iPad AX5 case, with owned-device cleanup and evidence.
+"""One hosted-only Russian iPad AX5 SDK/runtime baseline, with cleanup and evidence.
 
 This creates a new Debug simulator AUT. It does not use a local frozen binary,
 change product behavior, select native StoreKit tests, or retry a failed run.
@@ -26,7 +26,8 @@ TARGET = 'CleanSendUITests'
 CASE = 'PrivacySupportUITests/testRussianOfflineInformationAtSystemAX5OnLandscapeIPad'
 AX5 = 'accessibility-extra-extra-extra-large'
 TOTAL = 780
-WORK_END = 660
+WORK_END = 560
+RECOVERY_END, SHUTDOWN_END, DELETE_END, CLEANUP_END = 582, 619, 638, 660
 ENV = {k: os.environ[k] for k in ('HOME', 'USER', 'LOGNAME', 'PATH', 'TMPDIR', 'DEVELOPER_DIR') if k in os.environ}
 ENV['LANG'] = 'en_US.UTF-8'
 
@@ -67,6 +68,9 @@ class Run:
         self.end = WORK_END
         self.meta = {'started_at': now(), 'total_seconds': TOTAL, 'commands': [],
                      'native_storekit_tests': 0, 'retry': False, 'result': 'running',
+                     'phase_deadlines_seconds': {'work': WORK_END, 'recovery': RECOVERY_END,
+                         'shutdown': SHUTDOWN_END, 'delete': DELETE_END, 'absence': CLEANUP_END,
+                         'evidence': TOTAL - 8},
                      'binary_kind': 'new hosted Debug simulator build, not local frozen AUT or Release ZIP'}
 
     def remaining(self):
@@ -121,22 +125,32 @@ def stop_group(proc):
 
 def version(text):
     parts = [int(p) for p in text.split('.')]
+    assert 1 <= len(parts) <= 3, 'Unsupported version format'
     return tuple((parts + [0, 0, 0])[:3])
 
 
 def select_device(run):
     runtimes = json.loads(run.output(['xcrun', 'simctl', 'list', 'runtimes', '--json'], 'runtimes.json'))['runtimes']
     types = json.loads(run.output(['xcrun', 'simctl', 'list', 'devicetypes', '--json'], 'device-types.json'))['devicetypes']
-    for runtime in sorted(runtimes, key=lambda x: version(x['version']), reverse=True):
-        if not runtime.get('isAvailable') or '.iOS-' not in runtime['identifier']:
-            continue
-        for device in sorted(types, key=lambda x: version(x['minRuntimeVersionString']), reverse=True):
-            if (device.get('productFamily') == 'iPad' and '13-inch' in device['name']
-                    and version(device['minRuntimeVersionString']) <= version(runtime['version'])
-                    <= version(device['maxRuntimeVersionString'])):
-                run.meta.update(runtime=runtime, device_type=device)
-                return runtime['identifier'], device['identifier']
-    raise RuntimeError('No installed compatible 13-inch iPad runtime; no substitute or download')
+    sdk = run.meta['simulator_sdk_version']
+    matches = [r for r in runtimes if r.get('isAvailable') and '.iOS-' in r['identifier']
+               and version(r['version']) == version(sdk)]
+    if len(matches) != 1:
+        raise RuntimeError('Exactly one installed iOS runtime matching SDK ' + sdk + ' is required; no fallback or download')
+    runtime = matches[0]
+    assert os.uname().machine in runtime['supportedArchitectures']
+    supported = {d['identifier'] for d in runtime['supportedDeviceTypes']}
+    for device in sorted(types, key=lambda x: (x['name'].startswith('iPad Pro '),
+                         version(x['minRuntimeVersionString']), '(16GB)' in x['name'],
+                         x['identifier']), reverse=True):
+        if (device.get('productFamily') == 'iPad' and '13-inch' in device['name']
+                and device['identifier'] in supported
+                and version(device['minRuntimeVersionString']) <= version(runtime['version'])
+                <= version(device['maxRuntimeVersionString'])):
+            run.meta.update(runtime=runtime, device_type=device,
+                            runtime_selection='exact simulator SDK version; installed compatible 13-inch iPad')
+            return runtime['identifier'], device['identifier']
+    raise RuntimeError('No compatible 13-inch iPad for SDK-matched runtime; no substitute or download')
 
 
 def provenance(run):
@@ -155,6 +169,7 @@ def provenance(run):
             'sdk': run.output(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], 'sdk-version.txt'),
             'macos': run.output(['sw_vers'], 'macos.txt')}
     save(OUT / 'source-provenance.json', info)
+    run.meta['simulator_sdk_version'] = info['sdk']
     return sources
 
 
@@ -197,6 +212,9 @@ def prepare_config(run):
     app, runner = Path(target['UITargetAppPath']), Path(target['TestHostPath'])
     assert app.is_dir() and runner.is_dir() and Path(target['TestBundlePath']).is_dir()
     assert app.is_relative_to(products) and runner.is_relative_to(products)
+    built_sdk = plistlib.loads((app / 'Info.plist').read_bytes())['DTSDKName']
+    assert built_sdk == 'iphonesimulator' + run.meta['simulator_sdk_version'], 'Built AUT SDK must match selected runtime'
+    run.meta['built_AUT_sdk'] = built_sdk
     assert target['TestingEnvironmentVariables'] == original['TestingEnvironmentVariables']
     assert any((Path(p) / 'XCTest.framework/XCTest').is_file()
                for p in target['TestingEnvironmentVariables']['DYLD_FRAMEWORK_PATH'].split(':'))
@@ -294,8 +312,9 @@ def worker():
     except BaseException as error:
         failed.append(repr(error))
     finally:
-        # Reserve time first for owned-device cleanup, then evidence and final hashes.
-        run.end = 710
+        # Separate deadlines preserve deletion/absence time after one 30s shutdown.
+        # Cleanup ends by 660s, leaving 112s for evidence (75s commands plus I/O).
+        run.end = RECOVERY_END
         uid = run.meta.get('owned_uuid')
         if not uid and run.meta.get('owned_device_name'):
             try:
@@ -308,12 +327,14 @@ def worker():
                 failed.append('Device recovery: ' + repr(error))
         if uid:
             cleanup = {}
-            for action in ('shutdown', 'delete'):
+            for action, limit, deadline in (('shutdown', 30, SHUTDOWN_END), ('delete', 12, DELETE_END)):
+                run.end = deadline
                 try:
-                    cleanup[action] = run.command(['xcrun', 'simctl', action, uid], 'cleanup-' + action + '.log', 12, required=False)
+                    cleanup[action] = run.command(['xcrun', 'simctl', action, uid], 'cleanup-' + action + '.log', limit, required=False)
                 except BaseException as error:
                     cleanup[action] = repr(error)
             run.meta['cleanup'] = cleanup
+            run.end = CLEANUP_END
             try:
                 devices = json.loads(run.output(['xcrun', 'simctl', 'list', 'devices', '--json'], 'devices-after.json'))['devices']
                 run.meta['device_removed'] = not any(d['udid'] == uid for group in devices.values() for d in group)
