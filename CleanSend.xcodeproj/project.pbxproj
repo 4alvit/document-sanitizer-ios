@@ -107,7 +107,6 @@
 		27FE19B64EB832D2F30835D1 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		3A83C8FBE7F507FD6F3ECC8A /* ru */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ru; path = ru.lproj/Localizable.strings; sourceTree = "<group>"; };
 		3B36AE0C07A8606F16D14900 /* PrivacyShield.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacyShield.swift; sourceTree = "<group>"; };
-		3B529DEC7E3E348C21371A33 /* document-sanitizer-fixes */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "document-sanitizer-fixes"; path = .; sourceTree = SOURCE_ROOT; };
 		418262874569F91F611FAB2C /* CleanSendApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanSendApp.swift; sourceTree = "<group>"; };
 		43E17E73DC14D2861FA9DF14 /* SharedInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedInbox.swift; sourceTree = "<group>"; };
 		46F93A909050493535E1E9BE /* FilesImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesImportTests.swift; sourceTree = "<group>"; };
@@ -122,6 +121,7 @@
 		64D5F89F2B8996D59CF22650 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		68A8F3135D2EED158C4B68B1 /* ReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewView.swift; sourceTree = "<group>"; };
 		6F44AB22F0AD11E6DDCB5344 /* PresetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresetViews.swift; sourceTree = "<group>"; };
+		751663D72C494E80D67B6CB6 /* document-sanitizer-publication */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "document-sanitizer-publication"; path = .; sourceTree = SOURCE_ROOT; };
 		776EBAE08F336534413A7A09 /* ProStoreControlledTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProStoreControlledTests.swift; sourceTree = "<group>"; };
 		7AB732591BCD188AB4F6355B /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		7EAED97F1D72EEA242515418 /* CleanSendUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanSendUITests.swift; sourceTree = "<group>"; };
@@ -248,7 +248,7 @@
 		DE7069969BEC3904BBE53A56 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				3B529DEC7E3E348C21371A33 /* document-sanitizer-fixes */,
+				751663D72C494E80D67B6CB6 /* document-sanitizer-publication */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -776,6 +776,8 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_COVERAGE_MAPPING = NO;
+				CLANG_COVERAGE_MAPPING_LINKER_ARGS = NO;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
 				CLANG_CXX_LIBRARY = "libc++";
 				CLANG_ENABLE_MODULES = YES;
@@ -803,9 +805,11 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				COPY_PHASE_STRIP = NO;
+				COPY_PHASE_STRIP = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEPLOYMENT_POSTPROCESSING = YES;
+				ENABLE_CODE_COVERAGE = NO;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -823,6 +827,7 @@
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				STRIP_INSTALLED_PRODUCT = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;

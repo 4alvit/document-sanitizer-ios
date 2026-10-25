@@ -10,7 +10,9 @@ pending purchase without a previous refund, and again after a refund.
 Controlled application tests, export validation
 and interface tests do not satisfy the full payment acceptance gate.
 
-After committing the tested sources, run `python3 scripts/package-prerelease.py`.
+After regenerating the project with `xcodegen generate` and committing the tested
+sources, run `python3 scripts/package-prerelease.py`. The packager builds the
+committed project so a different checkout directory cannot change its inputs.
 It builds two separate Release simulator variants: code signing disabled and
 locally ad-hoc signed. A minimal linker-generated ad-hoc signature may still
 exist in the code-signing-disabled variant. The signed variant includes simulator App Group entitlements and can
@@ -22,6 +24,21 @@ source, checks ZIP integrity, and records the commit, Xcode version, signatures,
 simulator entitlements and SHA-256 checksums in `.qa/releases/`. A separate
 `payload-sha256.json` records every app payload file for exact-install checks.
 It does not run the separate test gates or publish anything.
+
+Release builds disable coverage instrumentation, including local Swift package
+dependencies, and use Xcode's normal postprocessing and symbol stripping. Debug
+test settings are unchanged. Before accepting either app bundle or ZIP, the
+packager scans the main executable and Share Extension for local developer paths,
+LLVM coverage/profile data and embedded debug metadata. Missing or malformed
+inputs fail this gate. `release-binary-scan.json` records the results alongside
+the package checksums; CI repeats this gate for both Release variants.
+
+To check an existing preview independently, run
+`python3 scripts/verify_release_package.py PATH_TO_APP_OR_ZIP --json REPORT.json`.
+The older `e67a692` simulator previews contain build paths and coverage data and
+must not be distributed; preserve them only as regression evidence. A newer
+source commit alone does not certify a rebuilt archive: both binary scans and
+the separately recorded exact-package smoke must pass.
 
 ## Engineering gates
 

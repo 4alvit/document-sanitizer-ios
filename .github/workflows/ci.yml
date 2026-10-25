@@ -20,6 +20,8 @@ jobs:
           brew install xcodegen poppler
           python3 -m venv .venv
           .venv/bin/python -m pip install -r requirements-qa.txt
+      - name: Verify Release packages
+        run: python3 scripts/package-prerelease.py
       - name: Verify
         run: |
           export PATH="$PWD/.venv/bin:$PATH"
@@ -38,6 +40,7 @@ jobs:
             .qa/corpus/report.json
             .qa/verifier-probe.json
             .qa/hosted-tests-*.xcresult
+            .qa/release-scan-*.json
           include-hidden-files: true
           if-no-files-found: ignore
 

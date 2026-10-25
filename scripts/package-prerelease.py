@@ -12,6 +12,8 @@ import subprocess
 import tempfile
 import zipfile
 
+from verify_release_package import scan_package
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -36,8 +38,20 @@ def build_simulator(derived, *, signed):
     command('xcodebuild', '-project', 'CleanSend.xcodeproj', '-scheme', 'CleanSend',
             '-configuration', 'Release', '-sdk', 'iphonesimulator',
             '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', derived,
+            'ENABLE_CODE_COVERAGE=NO', 'CLANG_COVERAGE_MAPPING=NO',
+            'CLANG_COVERAGE_MAPPING_LINKER_ARGS=NO',
             *signing, 'build')
     return derived / 'Build/Products/Release-iphonesimulator/CleanSend.app'
+
+
+def inspect_release_metadata(path, stage):
+    report = scan_package(path)
+    evidence = ROOT / '.qa' / f'release-scan-{stage}.json'
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text(json.dumps(report, indent=2) + '\n')
+    if not report['ok']:
+        raise SystemExit('Release package metadata check failed:\n' + json.dumps(report, indent=2))
+    return report
 
 
 def inspect_identity(app, version):
@@ -126,15 +140,17 @@ def main():
     args = parser.parse_args()
     require_clean()
     revision = command('git', 'rev-parse', 'HEAD', capture=True).strip()
-    command('xcodegen', 'generate')
-    require_revision(revision)
+    # Build the committed project. Regeneration is an authoring step and can
+    # change a local package's navigator name with the checkout directory.
     app = build_simulator(ROOT / '.qa/release-build', signed=False)
     require_revision(revision)
     info = inspect_identity(app, args.version)
+    metadata_scans = {'unsigned_app': inspect_release_metadata(app, 'unsigned-app')}
     signed_app = build_simulator(ROOT / '.qa/release-adhoc-build', signed=True)
     require_revision(revision)
     signed_info = inspect_identity(signed_app, args.version)
     assert signed_info == info
+    metadata_scans['adhoc_app'] = inspect_release_metadata(signed_app, 'adhoc-app')
     signatures = {
         'app': inspect_signature(signed_app, ROOT / 'App/CleanSend.entitlements'),
         'extension': inspect_signature(signed_app / 'PlugIns/CleanSendShare.appex', ROOT / 'ShareExtension/CleanSendShare.entitlements'),
@@ -148,6 +164,8 @@ def main():
     command('git', 'archive', '--format=zip', '--prefix=RedactLeaf-source/', '-o', source, revision)
     command('ditto', '-c', '-k', '--keepParent', app, binary)
     command('ditto', '-c', '-k', '--keepParent', signed_app, signed_binary)
+    metadata_scans['unsigned_zip'] = inspect_release_metadata(binary, 'unsigned-zip')
+    metadata_scans['adhoc_zip'] = inspect_release_metadata(signed_binary, 'adhoc-zip')
     for path in [source, binary, signed_binary]:
         with zipfile.ZipFile(path) as archive:
             assert archive.testzip() is None
@@ -182,6 +200,8 @@ def main():
     payload_manifest = destination / 'payload-sha256.json'
     payload_manifest.write_text(json.dumps({binary.name: payload_hashes(app),
                                           signed_binary.name: payload_hashes(signed_app)}, indent=2) + '\n')
+    scan_manifest = destination / 'release-binary-scan.json'
+    scan_manifest.write_text(json.dumps(metadata_scans, indent=2) + '\n')
     readme = destination / 'PREVIEW-README.txt'
     readme.write_text(
         f'RedactLeaf {version} development preview\n'
@@ -215,7 +235,7 @@ def main():
     )
     (destination / 'SHA256SUMS').write_text(''.join(
         f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n'
-        for p in [source, binary, signed_binary, manifest, payload_manifest, readme]))
+        for p in [source, binary, signed_binary, manifest, payload_manifest, scan_manifest, readme]))
     require_revision(revision)
     print(json.dumps({'status': 'packaged', 'directory': str(destination), **metadata}, indent=2))
 
