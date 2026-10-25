@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          fetch-depth: 2
+          fetch-depth: 3
       - name: Verify unchanged application and record environment
         run: |
           mkdir -p .qa/native-storekit
@@ -39,7 +39,7 @@ jobs:
 
           output = Path('.qa/native-storekit')
           command = ['bash', 'scripts/check-ios-tests.sh',
-                     '-only-testing:CleanSendTests/ProStoreTests', '-test-iterations', '1',
+                     '-only-testing:CleanSendTests/ProStoreTests',
                      '-testLanguage', 'en', '-testRegion', 'US']
           process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      text=True, bufsize=1, start_new_session=True)
