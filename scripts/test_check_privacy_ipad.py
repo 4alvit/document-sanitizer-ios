@@ -64,6 +64,11 @@ class FakeProcess:
                     self.backend.complete(self)
                 self.returncode, self.group_present = 7, False
                 return self.returncode
+        if self.step == 'set_ax5':
+            duration = self.backend.set_ax5_seconds
+            self.backend.fixture.clock.value += min(duration, timeout)
+            if duration > timeout:
+                raise subprocess.TimeoutExpired(self.args, timeout)
         self.backend.complete(self)
         self.returncode = 0
         self.group_present = self.step == 'test' and self.backend.test_group_permission_error
@@ -81,6 +86,8 @@ class FakeBackend:
         self.handlers = {}
         self.fault_step = self.fault = None
         self.readback_elapsed = 345.0
+        self.bootstatus_elapsed = 0.0
+        self.set_ax5_seconds = 0.0
         self.bad_ax5 = False
         self.omit_result = False
         self.summary = {'passedTests': 1, 'failedTests': 0, 'skippedTests': 0, 'totalTestCount': 1}
@@ -191,6 +198,8 @@ class FakeBackend:
         elif step == 'create':
             self.created, self.device_name = True, a[3]
             output = UID
+        elif step == 'bootstatus':
+            f.clock.value = self.bootstatus_elapsed
         elif step == 'readback':
             f.clock.value = self.readback_elapsed
             output = 'large' if self.bad_ax5 else f.module.AX5
@@ -345,6 +354,52 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assert_failed(meta, 'No full runtime/cleanup budget')
         self.assertEqual(self.f.test_processes(), [])
+        self.f.assert_cleanup(meta)
+
+    def test_exact_ax5_admission_allows_full_commands_and_test(self):
+        self.f.backend.bootstatus_elapsed = 292.0  # 268s remain in WORK_END.
+        self.f.backend.set_ax5_seconds = 30.0
+        self.f.backend.readback_elapsed = 337.0  # Setter30 + readback15.
+        rc, meta = self.f.run()
+        self.assertEqual(rc, 0)
+        commands = [p for p in self.f.backend.processes if p.step in ('set_ax5', 'readback', 'test')]
+        self.assertEqual([p.step for p in commands], ['set_ax5', 'readback', 'test'])
+        self.assertEqual([p.wait_calls for p in commands], [[30], [15], [210]])
+        self.assertEqual(meta['actual_system_content_size'], self.f.module.AX5)
+        self.f.assert_cleanup(meta)
+
+    def test_less_than_ax5_admission_denies_both_commands_and_test(self):
+        self.f.backend.bootstatus_elapsed = 292.001
+        rc, meta = self.f.run()
+        self.assertEqual(rc, 1)
+        self.assert_failed(meta, 'No full AX5 setup and runtime/cleanup budget')
+        self.assertFalse(any(p.step in ('set_ax5', 'readback', 'test') for p in self.f.backend.processes))
+        self.f.assert_cleanup(meta)
+
+    def test_ax5_setter_over_30_seconds_stops_without_readback_or_retry(self):
+        self.f.backend.set_ax5_seconds = 30.001
+        rc, meta = self.f.run()
+        self.assertEqual(rc, 1)
+        self.assert_failed(meta, 'TimeoutExpired')
+        setters = [p for p in self.f.backend.processes if p.step == 'set_ax5']
+        self.assertEqual(len(setters), 1)
+        self.assertEqual(setters[0].wait_calls, [30])
+        self.assertFalse(any(p.step in ('readback', 'test') for p in self.f.backend.processes))
+        record = next(c for c in meta['commands'] if c.get('owned_process_group') == setters[0].pid)
+        self.assertTrue(record['interrupted'])
+        self.assertTrue(record['owned_group_absent'])
+        self.f.assert_cleanup(meta)
+
+    def test_ax5_readback_timeout_does_not_start_test_or_retry(self):
+        self.f.backend.fault_step, self.f.backend.fault = 'readback', 'timeout'
+        rc, meta = self.f.run()
+        self.assertEqual(rc, 1)
+        self.assert_failed(meta, 'TimeoutExpired')
+        readbacks = [p for p in self.f.backend.processes if p.step == 'readback']
+        self.assertEqual(len(readbacks), 1)
+        self.assertEqual(readbacks[0].wait_calls, [15])
+        self.assertEqual(self.f.test_processes(), [])
+        self.assertNotIn('actual_system_content_size', meta)
         self.f.assert_cleanup(meta)
 
     def test_wrong_system_ax5_denies_test_and_cleans(self):

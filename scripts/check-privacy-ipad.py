@@ -25,6 +25,7 @@ DD = ROOT / '.qa/privacy-ipad-build'
 TARGET = 'CleanSendUITests'
 CASE = 'PrivacySupportUITests/testRussianOfflineInformationAtSystemAX5OnLandscapeIPad'
 AX5 = 'accessibility-extra-extra-extra-large'
+AX5_SET_LIMIT, AX5_READ_LIMIT = 30, 15
 TOTAL = 780
 WORK_END = 560
 RECOVERY_END, SHUTDOWN_END, DELETE_END, CLEANUP_END = 582, 619, 638, 660
@@ -355,8 +356,12 @@ def worker():
         run.persist()
         run.command(['xcrun', 'simctl', 'boot', uid], 'boot.log', 20)
         run.command(['xcrun', 'simctl', 'bootstatus', uid, '-b'], 'bootstatus.log', 90)
-        run.command(['xcrun', 'simctl', 'ui', uid, 'content_size', AX5], 'set-ax5.log')
-        readback = run.output(['xcrun', 'simctl', 'ui', uid, 'content_size'], 'ax5-readback.txt')
+        # Admit both AX5 commands, their existing 4s reserves and the full test budget.
+        # This is admission headroom; the post-readback check still rejects late work.
+        assert run.remaining() >= AX5_SET_LIMIT + AX5_READ_LIMIT + 2 * 4 + 215, \
+            'No full AX5 setup and runtime/cleanup budget left'
+        run.command(['xcrun', 'simctl', 'ui', uid, 'content_size', AX5], 'set-ax5.log', AX5_SET_LIMIT)
+        readback = run.output(['xcrun', 'simctl', 'ui', uid, 'content_size'], 'ax5-readback.txt', AX5_READ_LIMIT)
         assert readback == AX5
         run.meta['actual_system_content_size'] = readback
         run.persist()
