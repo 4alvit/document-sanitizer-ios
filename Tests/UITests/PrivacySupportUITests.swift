@@ -42,7 +42,7 @@ final class PrivacySupportUITests: XCTestCase {
         let app = launch(language: "ru")
         defer { app.terminate() }
         waitUntil("The application must be in landscape") { app.frame.width > app.frame.height }
-        openFromWorkspace(in: app, language: "ru")
+        guard openFromWorkspace(in: app, language: "ru") else { return }
         _ = readEverySectionAndFooter(in: app, language: "ru")
         dismissInformation(in: app)
         XCTAssertTrue(app.buttons["sample-button"].exists)
@@ -56,7 +56,7 @@ final class PrivacySupportUITests: XCTestCase {
         let app = launch(language: language)
         defer { app.terminate() }
         // The free entry point must work before there is a document or a Pro sheet.
-        openFromWorkspace(in: app, language: language)
+        guard openFromWorkspace(in: app, language: language) else { return }
         let firstRead = readEverySectionAndFooter(in: app, language: language)
         dismissInformation(in: app)
         XCTAssertTrue(app.buttons["sample-button"].exists)
@@ -75,7 +75,7 @@ final class PrivacySupportUITests: XCTestCase {
         let documentName = app.staticTexts[language == "ru" ? "Пример квитанции" : "Synthetic receipt"]
         XCTAssertTrue(documentName.exists)
 
-        openFromWorkspace(in: app, language: language)
+        guard openFromWorkspace(in: app, language: language) else { return }
         verifySameOpeningParagraph(in: app, expected: firstRead[paragraphIDs[0]])
         dismissInformation(in: app)
         XCTAssertEqual(status.label, expectedStatus)
@@ -119,8 +119,9 @@ final class PrivacySupportUITests: XCTestCase {
     }
 
     @MainActor
-    private func openFromWorkspace(in app: XCUIApplication, language: String) {
-        app.buttons["workspace-actions"].tap()
+    private func openFromWorkspace(in app: XCUIApplication, language: String) -> Bool {
+        guard let actions = readyWorkspaceActions(in: app) else { return false }
+        actions.tap()
         let entry = app.buttons["privacy-support-menu"].firstMatch
         XCTAssertTrue(entry.waitForExistence(timeout: 5))
         XCTAssertEqual(entry.label, language == "ru" ? "Конфиденциальность и поддержка" : "Privacy and support")
@@ -128,6 +129,79 @@ final class PrivacySupportUITests: XCTestCase {
         XCTAssertTrue(entry.isHittable)
         entry.tap()
         waitForInformation(in: app, language: language)
+        return true
+    }
+
+    @MainActor
+    private func readyWorkspaceActions(in app: XCUIApplication) -> XCUIElement? {
+        let matches = app.buttons.matching(identifier: "workspace-actions")
+        let actions = app.buttons["workspace-actions"]
+        var previous = CGRect.null
+        var previousAppFrame = CGRect.null
+        var stableSince = ProcessInfo.processInfo.systemUptime
+
+        func isActionable() -> Bool {
+            guard matches.count == 1, app.state == .runningForeground,
+                  actions.exists, actions.isEnabled, actions.isHittable else { return false }
+            return !actions.frame.isEmpty && app.frame.contains(actions.frame)
+        }
+
+        captureWorkspaceActions(in: app, stage: "before-wait")
+        // Use the existing stable-frame wait pattern without changing reading-position waits.
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard isActionable() else {
+                previous = .null
+                previousAppFrame = .null
+                stableSince = ProcessInfo.processInfo.systemUptime
+                return false
+            }
+            let frame = actions.frame
+            let appFrame = app.frame
+            if frame != previous || appFrame != previousAppFrame {
+                previous = frame
+                previousAppFrame = appFrame
+                stableSince = ProcessInfo.processInfo.systemUptime
+                return false
+            }
+            return ProcessInfo.processInfo.systemUptime - stableSince >= 0.5
+        }, object: nil)
+        let result = XCTWaiter.wait(for: [ready], timeout: 6)
+        let waitState = "waiterResult=\(result.rawValue) secondsSinceReset=\(ProcessInfo.processInfo.systemUptime - stableSince) "
+            + "lastEligibleFrame=\(previous) lastEligibleAppFrame=\(previousAppFrame)"
+        captureWorkspaceActions(in: app, stage: result == .completed ? "ready-before-tap" : "not-ready", detail: waitState)
+        guard result == .completed else {
+            XCTFail("Workspace actions did not become uniquely enabled, hittable and stable within the readiness wait.")
+            return nil
+        }
+        // Capturing evidence can change timing; reject stale readiness rather than retrying.
+        guard isActionable(), actions.frame == previous, app.frame == previousAppFrame else {
+            captureWorkspaceActions(in: app, stage: "changed-after-capture")
+            XCTFail("Workspace actions readiness changed while capturing pre-tap evidence.")
+            return nil
+        }
+        return actions
+    }
+
+    @MainActor
+    private func captureWorkspaceActions(in app: XCUIApplication, stage: String, detail: String = "") {
+        let matches = app.buttons.matching(identifier: "workspace-actions")
+        let count = matches.count
+        var state = "stage=\(stage) uptime=\(ProcessInfo.processInfo.systemUptime)\n"
+        state += "appState=\(app.state.rawValue) appFrame=\(app.frame) matchingButtons=\(count)\n"
+        state += detail + "\n"
+        if count == 1 {
+            let actions = app.buttons["workspace-actions"]
+            let exists = actions.exists
+            state += "exists=\(exists) "
+            if exists {
+                state += "enabled=\(actions.isEnabled) hittable=\(actions.isHittable) "
+                state += "frame=\(actions.frame) label=\(actions.label)\n"
+            }
+        }
+        let name = "privacy-workspace-actions-" + stage
+        let attachment = XCTAttachment(string: state)
+        attachment.name = name + "-state"; attachment.lifetime = .keepAlways; add(attachment)
+        capture(app, name: name)
     }
 
     @MainActor
