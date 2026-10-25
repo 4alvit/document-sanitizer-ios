@@ -249,3 +249,34 @@
 "count.suggestedLines.one" = "%@ suggested line";
 "count.suggestedLines.other" = "%@ suggested lines";
 "Hidden area" = "Hidden area";
+
+/* Offline privacy and public support. */
+"privacy.overview.title" = "Reading this page";
+"privacy.overview.offline" = "This information is included in RedactLeaf. You can read it without a connection or a purchase. External pages open only when you choose a link.";
+"privacy.overview.processing" = "RedactLeaf processes selected PDFs and images on your device, including text recognition with Apple Vision. It has no document server, advertising, analytics service, required app account or app-provided cloud sync.";
+"privacy.files.title" = "Workspace and temporary files";
+"privacy.files.workspace" = "Original files stay unchanged. Working pages, edits and recognition results stay in memory. Clear workspace removes the pages and edits; the search field can retain your query until you clear it or restart the app. Restarting starts a new workspace; returning from the background does not.";
+"privacy.files.temporary" = "RedactLeaf makes local import and export copies. It attempts to remove import copies when import finishes or is cancelled, and temporary exports after the share sheet finishes or closes. The app also attempts to remove leftover workspace files when a new workspace starts after a restart. An unfinished operation or file-system error can delay cleanup.";
+"privacy.queue.title" = "Shared-file queue";
+"privacy.queue.copies" = "Sending files to RedactLeaf from another app stores local copies in the Share Extension queue. They can still contain original private content and filenames: adding a file to the queue does not hide anything. The queue uses iOS file protection and is excluded from backups.";
+"privacy.queue.deletion" = "The app attempts to delete a batch after successful import or when you choose Discard or Clear all queued files. Failed or cancelled imports retain the batch. Copies older than 24 hours are eligible for cleanup when the main app next checks the queue; an active import is retained until its worker finishes. There is no guaranteed background deletion at 24 hours. Clearing the workspace does not clear this queue.";
+"privacy.presets.title" = "Saved areas";
+"privacy.presets.storage" = "Presets persist on this device across app restarts. They store an identifier, the name you enter and relative rectangle positions, without document images, recognized text, source filenames or file URLs. Their protected local library is excluded from backups and does not sync. These storage measures do not promise forensic erasure.";
+"privacy.presets.deletion" = "Use generic preset names without private details. Delete individual presets or choose Delete all presets in Saved areas. Clearing the workspace does not delete presets. Deleting a preset does not remove areas already applied to a page.";
+"privacy.presets.placement" = "A preset applies to the selected page. It does not recognize documents or align fields automatically. A different layout, rotation or aspect ratio can change placement; preview it and check every page before export.";
+"privacy.sharing.title" = "Review and sharing";
+"privacy.sharing.review" = "Text recognition suggests whole lines to hide. It can miss text, handwriting, faces, signatures and other private details. Confirm suggestions or add areas manually, then inspect every page in the final preview.";
+"privacy.sharing.output" = "Exports are new image-only copies with neutral filenames. Visible page and annotation appearances become pixels. Source hidden text, interactive objects, attachments and metadata are not copied, but new files contain technical format information. Selectable text and accessibility structure are lost; resolution may decrease. Private details left visible remain in the export.";
+"privacy.sharing.recipients" = "You choose the destination in the system share sheet. Receiving apps, storage services and recipients control their copies; RedactLeaf cannot recall or delete them. A provider selected in Files may use its own cloud service and require a connection.";
+"privacy.apple.title" = "Apple purchase services";
+"privacy.apple.services" = "Pro purchases and restoring access use Apple StoreKit and the App Store and may require a connection. RedactLeaf reads product and transaction information to determine Pro access, but does not receive your payment-card details or send transaction records to a developer server. Restoring purchases restores access, not documents or presets.";
+"privacy.support.title" = "Public support";
+"privacy.support.public" = "The project uses the public GitHub issue tracker under 4alvit (public developer profile: alvit). Issues can be read without signing in; posting requires a GitHub account. Your username, issue text and attachments are public. GitHub hosts this correspondence.";
+"privacy.support.safe" = "Use public issues only for non-sensitive questions. Do not upload personal documents, receipts, payment or Apple Account details, passwords, tokens or full device logs. Describe the problem without attachments or create a synthetic example. Check screenshots for filenames and notifications before posting.";
+"privacy.support.help" = "For troubleshooting, include the app version, iOS version, device model, app language and steps using synthetic data. The developer has no server copy of your documents to retrieve or delete. Clearing local app data does not delete public issues or copies held by other services.";
+"privacy.online.title" = "Online resources";
+"privacy.online.preview" = "The linked versioned documents describe this development preview. Reading the information above needs no connection; opening these links uses an external service.";
+"privacy.online.policy" = "Privacy policy — preview";
+"privacy.online.guide" = "Support guide — preview";
+"privacy.online.issues" = "Open public GitHub issues";
+"privacy.online.hint" = "Opens an external page when activated. Requires a connection.";

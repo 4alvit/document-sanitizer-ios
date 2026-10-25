@@ -44,6 +44,9 @@ def check():
         if scope == 'App':
             # Raw source keys intentionally remain stable for accessibility IDs.
             references.update(['Left', 'Top', 'Width', 'Height'])
+            # The offline information screen iterates this bundled key catalog.
+            privacy = (root / 'PrivacySupportContent.swift').read_text()
+            references.update(re.findall(r'"(privacy\.[a-z.]+)"', privacy))
             source = (root / 'ContentView.swift').read_text()
             for m in re.finditer(r'feature\("[123]", ("(?:\\.|[^"\\])*"), ("(?:\\.|[^"\\])*")\)', source):
                 references.update(map(json.loads, m.groups()))

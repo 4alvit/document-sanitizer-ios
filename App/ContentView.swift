@@ -32,6 +32,7 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showingPro = true } label: { Label(store.isPro ? L10n.text("Pro") : L10n.text("Unlock Pro"), systemImage: "sparkles") }
+                        .accessibilityIdentifier("open-pro")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -39,6 +40,7 @@ struct ContentView: View {
                         Button(L10n.text("Saved areas"), systemImage: "square.stack") { showingPresets = true }.accessibilityIdentifier("saved-areas-menu")
                         Button(L10n.text("Clear workspace"), systemImage: "trash", role: .destructive) { showingClear = true }.accessibilityIdentifier("clear-workspace-menu")
                         Button(L10n.text("Privacy and support"), systemImage: "info.circle") { showingInformation = true }
+                            .accessibilityIdentifier("privacy-support-menu")
                     } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel(L10n.text("Workspace actions")).accessibilityIdentifier("workspace-actions")
                     .disabled(workspace.isBusy)
                 }

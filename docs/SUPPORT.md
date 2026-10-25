@@ -6,6 +6,8 @@
 
 Updated 24 October 2026. These instructions describe the prerelease at [source revision e40d693](https://github.com/4alvit/document-sanitizer-ios/tree/e40d6933bff2100c028259aa54be3ea8f3a6a66a). App Store purchase availability is not established by this page.
 
+The current development source also includes **Privacy and support** in workspace actions and on the Pro screen. The same English/Russian information screen explains local storage, deletion, sharing, Apple services and public support without requiring a purchase or connection. Online resources are optional, open only when selected, and are labeled as preview documents. This source change is not included in the older packaged e40d693 preview.
+
 ### Contact
 
 Use the [RedactLeaf GitHub issue tracker](https://github.com/4alvit/document-sanitizer-ios/issues) for non-sensitive bug reports, questions and feature requests. It is readable without signing in. A GitHub account and sign-in are required to submit an issue.
@@ -43,6 +45,8 @@ Apple provides [help with restoring in-app purchases](https://support.apple.com/
 ## Русский
 
 Обновлено 24 октября 2026 года. Инструкции описывают предварительную версию по [исходному коду e40d693](https://github.com/4alvit/document-sanitizer-ios/tree/e40d6933bff2100c028259aa54be3ea8f3a6a66a). Эта страница не подтверждает доступность покупок приложения в App Store.
+
+В текущем исходном коде также есть раздел **«Конфиденциальность и поддержка»** в меню рабочей области и на экране Pro. Один и тот же экран на русском и английском объясняет локальное хранение, удаление, отправку файлов, сервисы Apple и публичную поддержку без покупки или подключения к сети. Внешние страницы открываются только по выбранной ссылке и обозначены как документы предварительной версии. Это изменение исходного кода не входит в ранее подготовленную сборку e40d693.
 
 ### Связь с поддержкой
 

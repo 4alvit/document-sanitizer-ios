@@ -3,6 +3,7 @@ import SwiftUI
 struct ProView: View {
     @EnvironmentObject private var store: ProStore
     @Environment(\.dismiss) private var dismiss
+    @State private var showingInformation = false
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -35,12 +36,16 @@ struct ProView: View {
                     if let message = store.message { Text(message).font(.callout).accessibilityLabel(message) }
                     Text(L10n.text("Purchases are handled by Apple. RedactLeaf receives entitlement information, never your payment details."))
                         .font(.footnote).foregroundStyle(.secondary)
-                    Link(L10n.text("Privacy policy"), destination: URL(string: "https://github.com/4alvit/document-sanitizer-ios/blob/main/docs/PRIVACY.md")!)
-                    Link(L10n.text("Support"), destination: URL(string: "https://github.com/4alvit/document-sanitizer-ios/issues")!)
+                    Button { showingInformation = true } label: {
+                        Text(L10n.text("Privacy and support"))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }.accessibilityIdentifier("pro-privacy-support")
                 }.padding(24)
-            }.navigationTitle(L10n.text("RedactLeaf Pro")).navigationBarTitleDisplayMode(.inline)
+            }.accessibilityIdentifier("pro-scroll")
+                .navigationTitle(L10n.text("RedactLeaf Pro")).navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button(L10n.text("Done")) { dismiss() } } }
         }
+        .sheet(isPresented: $showingInformation) { InformationView().modifier(UITestContentSize()) }
     }
 }
 
@@ -49,28 +54,40 @@ struct InformationView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section(L10n.text("Your files")) {
-                    Text(L10n.text("RedactLeaf processes imported documents locally. It has no document server, analytics service, mandatory account or cloud sync."))
-                    Text(L10n.text("Original files stay unchanged. Imported working pages live in memory. Restarting the app clears the workspace. Temporary export files are removed after sharing or when the app next starts."))
-                    Text(L10n.format("Share Sheet copies are stored in a protected local queue excluded from backups. Each batch is removed after successful import or when you discard it. Copies older than %@ hours are removed when the main app next checks the queue.", L10n.number(24)))
+                ForEach(PrivacySupportContent.sections) { section in
+                    Section {
+                        ForEach(Array(section.paragraphKeys.enumerated()), id: \.offset) { paragraph in
+                            Text(L10n.text(paragraph.element))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("privacy-text-\(section.id)-\(paragraph.offset)")
+                        }
+                    } header: {
+                        Text(L10n.text(section.titleKey)).accessibilityAddTraits(.isHeader)
+                    }
                 }
-                Section(L10n.text("Check before sharing")) {
-                    Text(L10n.text("Text recognition only suggests areas to hide. It can miss text, handwriting, faces, signatures and other private content. Add manual areas and check every page in the final preview."))
-                    Text(L10n.text("Export creates image-only copies. Visible page and annotation appearances are flattened into pixels. Original interactive objects, hidden text layers, attachments and source metadata are not copied. Selectable text and accessibility structure are lost; image resolution may be reduced."))
-                    Text(L10n.text("Export files use neutral filenames without the source filename. Check every page before sharing."))
+                Section(L10n.text("privacy.online.title")) {
+                    Text(L10n.text("privacy.online.preview"))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("privacy-preview-notice")
+                    externalLink("privacy.online.policy", to: PrivacySupportContent.privacyPolicyURL, id: "privacy-policy-link")
+                    externalLink("privacy.online.guide", to: PrivacySupportContent.supportGuideURL, id: "support-guide-link")
+                    externalLink("privacy.online.issues", to: PrivacySupportContent.issuesURL, id: "public-issues-link")
                 }
-                Section(L10n.text("Saved areas")) {
-                    Text(L10n.text("Area presets keep the name you enter and relative rectangle positions on this device across app restarts. Their protected local library is excluded from backups. Presets contain no document images, thumbnails, recognized text or source filenames."))
-                    Text(L10n.text("Choose a generic preset name without private document details. Delete individual presets or reset the library in Saved areas. Clearing the temporary workspace does not delete presets; deleting a preset does not remove areas already applied to a page."))
-                    Text(L10n.text("Presets apply to the selected page only. A different layout, rotation or aspect ratio can place areas over different content. Preview the placement and check every page in the final preview; presets do not recognize documents or align fields automatically."))
+            }.accessibilityIdentifier("privacy-support-list")
+                .navigationTitle(L10n.text("Privacy and support")).navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(L10n.text("Done")) { dismiss() }.accessibilityIdentifier("close-privacy-support")
+                    }
                 }
-                Section(L10n.text("More information")) {
-                    Link(L10n.text("Privacy policy"), destination: URL(string: "https://github.com/4alvit/document-sanitizer-ios/blob/main/docs/PRIVACY.md")!)
-                    Link(L10n.text("Support and issue tracker"), destination: URL(string: "https://github.com/4alvit/document-sanitizer-ios/issues")!)
-                    Text(L10n.text("Do not attach private documents to public support issues. Use a synthetic example.")).font(.footnote).foregroundStyle(.secondary)
-                }
-            }.navigationTitle(L10n.text("Privacy and support")).navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button(L10n.text("Done")) { dismiss() } } }
         }
+    }
+
+    private func externalLink(_ key: String, to destination: URL, id: String) -> some View {
+        Link(destination: destination) {
+            Text(L10n.text(key)).fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityIdentifier(id)
+        .accessibilityHint(L10n.text("privacy.online.hint"))
     }
 }

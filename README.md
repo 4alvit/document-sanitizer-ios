@@ -12,6 +12,7 @@ An original, local iPhone and iPad utility for making document copies with detai
 - Imports through Files or a Share Extension. Each queued batch can be imported or discarded independently. Queued copies are excluded from backups and expired copies are removed when the main app next checks the queue after 24 hours.
 - Supports a complete free workflow for up to three pages. A single non-consumable Pro purchase permits larger workspaces, up to 30 pages subject to the pixel budget, and creation of reusable mask presets. Existing content remains exportable if Pro becomes unavailable.
 - Saves named mask geometry locally, separately from temporary documents. Preview a saved preset on a selected page before applying it, then check every page in the final review. Using and deleting existing presets remains available after Pro is revoked. See [presets](docs/PRESETS.md).
+- Includes English and Russian privacy/support information in the app. Open **Privacy and support** from workspace actions or Pro, without a purchase or connection. External preview documents and the clearly public issue tracker open only when selected.
 
 Image-only copies lose selectable text, links, interactive forms and accessibility structure. The source appearance of a signature is only an image in the export, not a valid digital signature. Resolution can decrease. Check all pages: OCR can miss private details, and the app does not certify that a document contains no personal information.
 
