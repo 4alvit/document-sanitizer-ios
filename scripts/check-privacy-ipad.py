@@ -19,8 +19,6 @@ import time
 import uuid
 import zipfile
 
-from privacy_capture import Capture
-
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / '.qa/privacy-ipad'
 DD = ROOT / '.qa/privacy-ipad-build'
@@ -67,14 +65,15 @@ def hosted_only():
 class Run:
     def __init__(self):
         self.start = time.monotonic()
-        self.capture = None
         self.end = WORK_END
         self.meta = {'started_at': now(), 'total_seconds': TOTAL, 'commands': [],
                      'native_storekit_tests': 0, 'retry': False, 'result': 'running',
                      'phase_deadlines_seconds': {'work': WORK_END, 'recovery': RECOVERY_END,
                          'shutdown': SHUTDOWN_END, 'delete': DELETE_END, 'absence': CLEANUP_END,
                          'evidence': TOTAL - 8},
-                     'binary_kind': 'new hosted Debug simulator build, not local frozen AUT or Release ZIP'}
+                     'binary_kind': 'new hosted Debug simulator build, not local frozen AUT or Release ZIP',
+                     'launch_capture': {'enabled': False, 'coverage': 'NOT_COLLECTED',
+                         'reason': 'Primary UI acceptance uses test.log and the original result.xcresult, including any Staging files; no log streams are started.'}}
 
     def remaining(self):
         return self.end - (time.monotonic() - self.start)
@@ -93,19 +92,27 @@ class Run:
             proc = subprocess.Popen(item['args'], cwd=ROOT, env=ENV, stdout=log,
                                     stderr=subprocess.STDOUT, start_new_session=True)
             item['owned_process_group'] = proc.pid
-            self.persist()
+            cleanup_required = item['args'][0] == 'xcodebuild'
             try:
-                if self.capture is not None and name == 'test.log':
-                    self.capture.wait_for_test(proc, allowance)
-                else:
-                    proc.wait(timeout=allowance)
-            except BaseException:
+                self.persist()
+                proc.wait(timeout=allowance)
+            except BaseException as error:
                 item['interrupted'] = True
-                stop_group(proc)
+                item['command_error'] = repr(error)
+                cleanup_required = True
                 raise
             finally:
-                item.update(returncode=proc.returncode, finished_at=now())
-                self.persist()
+                try:
+                    if cleanup_required:
+                        item['owned_group_absent'] = False
+                        try:
+                            stop_group(proc, item)
+                        except BaseException as error:
+                            item['cleanup_error'] = repr(error)
+                            raise
+                finally:
+                    item.update(returncode=proc.returncode, finished_at=now())
+                    self.persist()
         if required and proc.returncode:
             raise RuntimeError(name + ' exited ' + str(proc.returncode))
         return proc.returncode
@@ -115,18 +122,60 @@ class Run:
         return (OUT / name).read_text().strip()
 
 
-def stop_group(proc):
-    for sig, wait in ((signal.SIGTERM, 2), (signal.SIGKILL, 1)):
+def stop_group(proc, record=None):
+    """Require both leader reap and owned-group absence within the 3s reserve."""
+    record = record if record is not None else {}
+    record['owned_group_absent'] = False
+    start = time.monotonic()
+    interrupted = None
+
+    def note(error):
+        nonlocal interrupted
+        errors = record.setdefault('cleanup_errors', [])
+        if repr(error) not in errors:
+            errors.append(repr(error))
+        if isinstance(error, InterruptedError) or not isinstance(error, OSError):
+            interrupted = interrupted or error
+
+    def stopped():
+        try:
+            reaped = proc.poll() is not None
+            try:
+                os.killpg(proc.pid, 0)
+            except ProcessLookupError:
+                record['owned_group_absent'] = reaped
+                return reaped
+        except BaseException as error:
+            note(error)
+        return False
+
+    def completed():
+        if interrupted is not None:
+            raise interrupted
+
+    if stopped():
+        return completed()
+    for sig, offset in ((signal.SIGTERM, 2), (signal.SIGKILL, 3)):
+        if time.monotonic() >= start + 3:
+            break
         try:
             os.killpg(proc.pid, sig)
         except ProcessLookupError:
-            break
-        try:
-            proc.wait(timeout=wait)
-        except subprocess.TimeoutExpired:
             pass
-    if proc.poll() is None:
-        raise RuntimeError('Owned process did not reap')
+        except BaseException as error:
+            note(error)
+        deadline = start + offset
+        while True:
+            if stopped():
+                return completed()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                time.sleep(min(.02, remaining))
+            except BaseException as error:
+                note(error)
+    raise RuntimeError('Owned process/group cleanup unconfirmed: ' + repr(record.get('cleanup_errors', [])))
 
 
 def version(text):
@@ -248,6 +297,8 @@ def prepare_config(run):
 
 
 def collect(run):
+    # The original bundle, including existing Staging files, remains in OUT
+    # and is uploaded even if it is unfinished or cannot be decoded.
     result = OUT / 'result.xcresult'
     if not result.exists():
         raise RuntimeError('No xcresult produced')
@@ -308,11 +359,8 @@ def worker():
         readback = run.output(['xcrun', 'simctl', 'ui', uid, 'content_size'], 'ax5-readback.txt')
         assert readback == AX5
         run.meta['actual_system_content_size'] = readback
-        run.capture = Capture(root=ROOT, out=OUT, env=ENV, uid=uid,
-                              metadata=run.meta, remaining=run.remaining, persist=run.persist)
-        run.capture.start()
         run.persist()
-        assert run.remaining() >= 225, 'No full capture/test/drain budget left; do not start XCTest'
+        assert run.remaining() >= 215, 'No full runtime/cleanup budget left; do not start XCTest'
         run.meta['xcodebuild_returncode'] = run.command(
             ['xcodebuild', 'test-without-building', '-xctestrun', config,
              '-destination', 'platform=iOS Simulator,id=' + uid, '-parallel-testing-enabled', 'NO',
@@ -322,14 +370,6 @@ def worker():
     except BaseException as error:
         failed.append(repr(error))
     finally:
-        if run.capture is not None:
-            try:
-                issues = run.capture.finish()
-                failed.extend('Capture: ' + item for item in issues)
-                run.persist()
-            except BaseException as error:
-                failed.append('Capture finalization: ' + repr(error))
-        # Capture failure must never bypass owned-device cleanup.
         # Separate deadlines preserve deletion/absence time after one 30s shutdown.
         # Cleanup ends by 660s, leaving 112s for evidence (75s commands plus I/O).
         run.end = RECOVERY_END
@@ -356,10 +396,6 @@ def worker():
             try:
                 devices = json.loads(run.output(['xcrun', 'simctl', 'list', 'devices', '--json'], 'devices-after.json'))['devices']
                 run.meta['device_removed'] = not any(d['udid'] == uid for group in devices.values() for d in group)
-                if run.capture is not None:
-                    run.capture.record['owned_device_cleanup'] = {
-                        'commands': cleanup.copy(), 'device_removed': run.meta['device_removed'],
-                        'limit': 'Device absence does not independently attest the simulator logger PID.'}
                 assert cleanup == {'shutdown': 0, 'delete': 0} and run.meta['device_removed']
             except BaseException as error:
                 failed.append('Cleanup: ' + repr(error))
@@ -388,12 +424,11 @@ def worker():
 
 
 def stop_recorded_children(worker_pid, metadata, deadline):
-    """Last-resort host-group signals; simulator child absence is not implied."""
+    """Last-resort active command signal; group absence is not implied."""
     active = [c['owned_process_group'] for c in metadata.get('commands', [])
-              if 'owned_process_group' in c and 'finished_at' not in c]
-    channels = metadata.get('launch_capture', {}).get('channels', [])
-    candidates = active[-1:] + [c.get('owned_host_pgid') for c in channels
-                               if not c.get('host_group_absent')]
+              if 'owned_process_group' in c and
+              ('finished_at' not in c or c.get('owned_group_absent') is False)]
+    candidates = active[-1:]
     outcomes = []
     for pid in dict.fromkeys(p for p in candidates if type(p) is int and p > 1):
         remaining = deadline - time.monotonic()
