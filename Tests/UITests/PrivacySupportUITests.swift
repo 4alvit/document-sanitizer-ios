@@ -5,6 +5,7 @@ import UIKit
 /// and a synthetic document only; never presses an online, purchase or restore link.
 final class PrivacySupportUITests: XCTestCase {
     private var remainingScrollGestures = 80
+    private var remainingWorkspaceActionPairs = 2
     private let paragraphIDs = [
         "privacy-text-overview-0", "privacy-text-overview-1",
         "privacy-text-files-0", "privacy-text-files-1",
@@ -19,6 +20,7 @@ final class PrivacySupportUITests: XCTestCase {
         continueAfterFailure = false
         executionTimeAllowance = 180
         remainingScrollGestures = 80
+        remainingWorkspaceActionPairs = 2
     }
 
     @MainActor
@@ -202,6 +204,139 @@ final class PrivacySupportUITests: XCTestCase {
         let attachment = XCTAttachment(string: state)
         attachment.name = name + "-state"; attachment.lifetime = .keepAlways; add(attachment)
         capture(app, name: name)
+        if remainingWorkspaceActionPairs > 0,
+           ["before-wait", "ready-before-tap", "not-ready"].contains(stage) {
+            remainingWorkspaceActionPairs -= 1
+            captureWorkspaceActionPair(in: app, name: name, index: 2 - remainingWorkspaceActionPairs)
+        }
+    }
+
+    private struct WorkspaceActionNode: Equatable {
+        let type: XCUIElement.ElementType
+        let identifier: String
+        let label: String
+        let enabled: Bool
+        let frame: CGRect
+
+        @MainActor
+        init(_ snapshot: XCUIElementSnapshot) {
+            type = snapshot.elementType
+            identifier = snapshot.identifier
+            label = snapshot.label
+            enabled = snapshot.isEnabled
+            frame = snapshot.frame
+        }
+
+        var description: String {
+            "type=\(type.rawValue) id=\(String(reflecting: identifier)) label=\(String(reflecting: label)) enabled=\(enabled) frame=\(frame)"
+        }
+    }
+
+    @MainActor
+    private func captureWorkspaceActionPair(in app: XCUIApplication, name: String, index: Int) {
+        var state = "diagnostic=parent-leaf-v1 stage=\(name) pair=\(index) start=\(ProcessInfo.processInfo.systemUptime) target=app.buttons[workspace-actions]\n"
+        state += "P-before=NOT_READ L=NOT_READ P-after=NOT_READ; sequential observations, not atomic\n"
+        var step = "structure-before"
+        defer {
+            state += "end=\(ProcessInfo.processInfo.systemUptime)\n"
+            let attachment = XCTAttachment(string: state)
+            attachment.name = name + "-parent-leaf"; attachment.lifetime = .keepAlways; add(attachment)
+        }
+
+        // Materialize once, then bind only the sole result; never choose by index or hittability.
+        func sole(_ query: XCUIElementQuery, _ path: String) -> XCUIElement? {
+            let elements = query.allElementsBoundByAccessibilityElement
+            state += "\(step) \(path) count=\(elements.count)\n"
+            guard elements.count == 1 else { return nil }
+            return elements.first
+        }
+        func valid(_ frame: CGRect) -> Bool {
+            [frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite } && !frame.isEmpty
+        }
+        func shape() throws -> (parent: XCUIElement, leaf: XCUIElement, nodes: [WorkspaceActionNode], appFrame: CGRect, barFrame: CGRect)? {
+            let appState = app.state
+            let appFrame = app.frame
+            let appFrameValid = valid(appFrame)
+            state += "\(step) appState=\(appState.rawValue) appFrame=\(appFrame) frameValid=\(appFrameValid)\n"
+            guard appState == .runningForeground, appFrameValid,
+                  let bar = sole(app.navigationBars.matching(identifier: "RedactLeaf"), "NavigationBar[RedactLeaf]") else { return nil }
+            let barFrame = bar.frame
+            let namedCount = app.buttons.matching(identifier: "workspace-actions").count
+            let barFrameValid = valid(barFrame)
+            state += "\(step) barFrame=\(barFrame) frameValid=\(barFrameValid) appNamedButtons=\(namedCount)\n"
+            guard namedCount == 1, barFrameValid,
+                  let wrapper = sole(bar.children(matching: .other).matching(identifier: "workspace-actions"), "bar/W[workspace-actions]") else { return nil }
+            var snapshot = try wrapper.snapshot()
+            let expected: [(XCUIElement.ElementType, String?)] = [
+                (.other, "workspace-actions"), (.other, nil), (.button, "workspace-actions"),
+                (.button, nil), (.other, nil), (.image, "ellipsis.circle")
+            ]
+            var nodes: [WorkspaceActionNode] = []
+            for (depth, expectation) in expected.enumerated() {
+                let node = WorkspaceActionNode(snapshot)
+                let children = snapshot.children
+                let typeMatches = node.type == expectation.0
+                let idMatches = expectation.1 == nil || node.identifier == expectation.1
+                let frameValid = valid(node.frame)
+                let childrenMatch = children.count == (depth == expected.count - 1 ? 0 : 1)
+                state += "\(step) W-depth=\(depth) \(node.description) snapshotChildren=\(children.count) "
+                    + "typeMatches=\(typeMatches) idMatches=\(idMatches) frameValid=\(frameValid) childrenMatch=\(childrenMatch)\n"
+                guard typeMatches, idMatches, frameValid, childrenMatch else { return nil }
+                nodes.append(node)
+                if let child = children.first { snapshot = child }
+            }
+            // The exact L/Other/Image/terminal shape contains zero descendant Buttons.
+            state += "\(step) L.snapshotButtonDescendants=0\n"
+            let labelPresent = !nodes[2].label.isEmpty
+            let equalFrames = nodes[2].frame == nodes[3].frame
+            let inApp = appFrame.contains(nodes[2].frame)
+            let inBar = barFrame.contains(nodes[2].frame)
+            state += "\(step) labelPresent=\(labelPresent) equalFrames=\(equalFrames) inApp=\(inApp) inBar=\(inBar)\n"
+            guard labelPresent, equalFrames, inApp, inBar,
+                  let parent = sole(bar.buttons.matching(identifier: "workspace-actions"), "bar/P[workspace-actions]"),
+                  let leaf = sole(parent.children(matching: .any), "P/direct-child") else { return nil }
+            return (parent, leaf, nodes, appFrame, barFrame)
+        }
+        func read(_ element: XCUIElement, expected: WorkspaceActionNode) throws -> (node: WorkspaceActionNode, hit: Bool)? {
+            let exists = element.exists
+            state += "\(step) exists=\(exists) at=\(ProcessInfo.processInfo.systemUptime)\n"
+            guard exists else {
+                state += "\(step) attributes=NOT_READ hit=NOT_READ reason=absent\n"
+                return nil
+            }
+            let node = WorkspaceActionNode(try element.snapshot())
+            let attributesMatch = node == expected
+            state += "\(step) \(node.description) matchesExpected=\(attributesMatch)\n"
+            guard attributesMatch else {
+                state += "\(step) hit=NOT_READ reason=attributes-changed\n"
+                return nil
+            }
+            let start = ProcessInfo.processInfo.systemUptime
+            let hit = element.isHittable
+            let end = ProcessInfo.processInfo.systemUptime
+            state += "\(step) \(node.description) hit=\(hit) hitStart=\(start) hitEnd=\(end)\n"
+            return (node, hit)
+        }
+        do {
+            guard let before = try shape() else {
+                state += "result=STRUCTURE_NOT_MATCHED; extra measurement stopped\n"; return
+            }
+            step = "P-before"
+            guard let parentBefore = try read(before.parent, expected: before.nodes[2]) else { state += "result=INCONCLUSIVE\n"; return }
+            step = "L"
+            guard let leaf = try read(before.leaf, expected: before.nodes[3]) else { state += "result=INCONCLUSIVE\n"; return }
+            step = "P-after"
+            guard let parentAfter = try read(before.parent, expected: before.nodes[2]) else { state += "result=INCONCLUSIVE\n"; return }
+            step = "structure-after"
+            guard let after = try shape() else { state += "result=INCONCLUSIVE reason=structure-changed\n"; return }
+            let coherent = before.nodes == after.nodes && before.appFrame == after.appFrame && before.barFrame == after.barFrame
+                && parentBefore.node == before.nodes[2] && leaf.node == before.nodes[3]
+                && parentBefore.node == parentAfter.node && parentBefore.hit == parentAfter.hit
+            state += "result=\(coherent ? "COHERENT_SAMPLES" : "INCONCLUSIVE") P-before=\(parentBefore.hit) L=\(leaf.hit) P-after=\(parentAfter.hit)\n"
+            state += "No activation or simultaneous-state claim; original selector and acceptance are unchanged.\n"
+        } catch {
+            state += "result=INCONCLUSIVE step=\(step) snapshotError=\(String(reflecting: String(describing: error))) remaining=NOT_READ\n"
+        }
     }
 
     @MainActor
