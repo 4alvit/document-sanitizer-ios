@@ -19,6 +19,8 @@ import time
 import uuid
 import zipfile
 
+from privacy_capture import Capture
+
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / '.qa/privacy-ipad'
 DD = ROOT / '.qa/privacy-ipad-build'
@@ -65,6 +67,7 @@ def hosted_only():
 class Run:
     def __init__(self):
         self.start = time.monotonic()
+        self.capture = None
         self.end = WORK_END
         self.meta = {'started_at': now(), 'total_seconds': TOTAL, 'commands': [],
                      'native_storekit_tests': 0, 'retry': False, 'result': 'running',
@@ -92,7 +95,10 @@ class Run:
             item['owned_process_group'] = proc.pid
             self.persist()
             try:
-                proc.wait(timeout=allowance)
+                if self.capture is not None and name == 'test.log':
+                    self.capture.wait_for_test(proc, allowance)
+                else:
+                    proc.wait(timeout=allowance)
             except BaseException:
                 item['interrupted'] = True
                 stop_group(proc)
@@ -302,7 +308,11 @@ def worker():
         readback = run.output(['xcrun', 'simctl', 'ui', uid, 'content_size'], 'ax5-readback.txt')
         assert readback == AX5
         run.meta['actual_system_content_size'] = readback
-        assert run.remaining() >= 215, 'No full runtime budget left; do not start XCTest'
+        run.capture = Capture(root=ROOT, out=OUT, env=ENV, uid=uid,
+                              metadata=run.meta, remaining=run.remaining, persist=run.persist)
+        run.capture.start()
+        run.persist()
+        assert run.remaining() >= 225, 'No full capture/test/drain budget left; do not start XCTest'
         run.meta['xcodebuild_returncode'] = run.command(
             ['xcodebuild', 'test-without-building', '-xctestrun', config,
              '-destination', 'platform=iOS Simulator,id=' + uid, '-parallel-testing-enabled', 'NO',
@@ -312,6 +322,14 @@ def worker():
     except BaseException as error:
         failed.append(repr(error))
     finally:
+        if run.capture is not None:
+            try:
+                issues = run.capture.finish()
+                failed.extend('Capture: ' + item for item in issues)
+                run.persist()
+            except BaseException as error:
+                failed.append('Capture finalization: ' + repr(error))
+        # Capture failure must never bypass owned-device cleanup.
         # Separate deadlines preserve deletion/absence time after one 30s shutdown.
         # Cleanup ends by 660s, leaving 112s for evidence (75s commands plus I/O).
         run.end = RECOVERY_END
@@ -338,6 +356,10 @@ def worker():
             try:
                 devices = json.loads(run.output(['xcrun', 'simctl', 'list', 'devices', '--json'], 'devices-after.json'))['devices']
                 run.meta['device_removed'] = not any(d['udid'] == uid for group in devices.values() for d in group)
+                if run.capture is not None:
+                    run.capture.record['owned_device_cleanup'] = {
+                        'commands': cleanup.copy(), 'device_removed': run.meta['device_removed'],
+                        'limit': 'Device absence does not independently attest the simulator logger PID.'}
                 assert cleanup == {'shutdown': 0, 'delete': 0} and run.meta['device_removed']
             except BaseException as error:
                 failed.append('Cleanup: ' + repr(error))
@@ -363,6 +385,38 @@ def worker():
                         finished_at=now(), elapsed_seconds=time.monotonic() - run.start)
         run.persist()
     return 1 if failed else 0
+
+
+def stop_recorded_children(worker_pid, metadata, deadline):
+    """Last-resort host-group signals; simulator child absence is not implied."""
+    active = [c['owned_process_group'] for c in metadata.get('commands', [])
+              if 'owned_process_group' in c and 'finished_at' not in c]
+    channels = metadata.get('launch_capture', {}).get('channels', [])
+    candidates = active[-1:] + [c.get('owned_host_pgid') for c in channels
+                               if not c.get('host_group_absent')]
+    outcomes = []
+    for pid in dict.fromkeys(p for p in candidates if type(p) is int and p > 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            outcomes.append({'pid': pid, 'status': 'deadline_no_signal'})
+            break
+        try:
+            parent = subprocess.check_output(['ps', '-p', str(pid), '-o', 'ppid='],
+                                             text=True, timeout=min(1, remaining)).strip()
+            if time.monotonic() >= deadline:
+                status = 'deadline_no_signal'
+            elif parent == str(worker_pid) and os.getpgid(pid) == pid:
+                if time.monotonic() >= deadline:
+                    status = 'deadline_no_signal'
+                else:
+                    os.killpg(pid, signal.SIGKILL)
+                    status = 'signal_sent_absence_not_established'
+            else:
+                status = 'identity_mismatch_no_signal'
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            status = 'identity_or_signal_unavailable:' + type(error).__name__
+        outcomes.append({'pid': pid, 'status': status})
+    return outcomes
 
 
 def supervise():
@@ -391,12 +445,8 @@ def supervise():
             except (ProcessLookupError, subprocess.TimeoutExpired):
                 try:
                     meta = json.loads((OUT / 'metadata.json').read_text())
-                    active = [c for c in meta['commands'] if 'owned_process_group' in c and 'finished_at' not in c]
-                    if active:
-                        pid = active[-1]['owned_process_group']
-                        parent = subprocess.check_output(['ps', '-p', str(pid), '-o', 'ppid='], text=True, timeout=1).strip()
-                        if parent == str(proc.pid) and os.getpgid(pid) == pid:
-                            os.killpg(pid, signal.SIGKILL)
+                    record['recorded_child_termination'] = stop_recorded_children(
+                        proc.pid, meta, min(start + TOTAL - 2, time.monotonic() + 3))
                 except (OSError, ValueError, KeyError, subprocess.SubprocessError):
                     record['active_command_identity_unavailable'] = True
                 try:
