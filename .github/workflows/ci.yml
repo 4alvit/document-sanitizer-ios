@@ -43,4 +43,27 @@ jobs:
             .qa/release-scan-*.json
           include-hidden-files: true
           if-no-files-found: ignore
+  privacy-ipad:
+    name: Russian iPad privacy at system AX5
+    if: github.event_name == 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 2
+      - name: Run one bounded iPad privacy scenario
+        timeout-minutes: 15
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/check-privacy-ipad.py
+      - name: Save iPad privacy evidence
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: privacy-ipad-evidence
+          path: .qa/privacy-ipad/
+          include-hidden-files: true
+          if-no-files-found: error
 

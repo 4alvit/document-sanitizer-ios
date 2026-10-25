@@ -124,9 +124,31 @@ final class PrivacySupportUITests: XCTestCase {
         let entry = app.buttons["privacy-support-menu"].firstMatch
         XCTAssertTrue(entry.waitForExistence(timeout: 5))
         XCTAssertEqual(entry.label, language == "ru" ? "Конфиденциальность и поддержка" : "Privacy and support")
+        revealMenuEntry(entry, in: app)
         XCTAssertTrue(entry.isHittable)
         entry.tap()
         waitForInformation(in: app, language: language)
+    }
+
+    @MainActor
+    private func revealMenuEntry(_ entry: XCUIElement, in app: XCUIApplication) {
+        guard !entry.isHittable else { return }
+        capture(app, name: "privacy-menu-before-scroll")
+        // At AX5 the system menu can scroll independently of the workspace.
+        // Use an actual ancestor of this entry, never swipe the whole app.
+        let queries = [app.scrollViews, app.collectionViews, app.menus].map {
+            $0.containing(.button, identifier: entry.identifier)
+        }
+        guard let query = queries.first(where: { $0.count == 1 && $0.firstMatch.isHittable }) else {
+            XCTFail("No unique visible menu container contains the privacy entry.")
+            return
+        }
+        let menu = query.firstMatch
+        for _ in 0..<4 {
+            if entry.isHittable { break }
+            menu.swipeUp(velocity: .slow)
+        }
+        capture(app, name: "privacy-menu-after-scroll")
     }
 
     @MainActor
