@@ -73,7 +73,7 @@ The account address is intentionally excluded from public project materials.
 
 - Reserve the working App Store name `RedactLeaf: PDF & Photo`; availability is not confirmed until App Store Connect accepts it.
 - Verify Developer Program membership, the signing team, app and Share Extension identifiers, App Group and provisioning profiles. The account holder must handle any enrollment payment or legal agreement.
-- Verify paid-app agreements, tax and banking details in App Store Connect. Register the non-consumable product `io.github.4alvit.cleansend.pro`; the test price USD 19.99 is a hypothesis to validate, not a published price or a revenue forecast.
+- Verify paid-app agreements, tax and banking details in App Store Connect. Register the non-consumable product `io.github.4alvit.cleansend.pro`. The assigned one-time Pro target is USD 19.99. Configure and verify the actual App Store Connect price when account access is available; the local StoreKit price is not a live offer or a revenue forecast.
 - With local StoreKit configuration disabled, complete sandbox purchase, cancellation, pending approval, refund, restore on another device and offline relaunch on a physical device. Show Apple's localized price.
 - Publish working privacy and support pages. Check App Store privacy answers against the final binary. Supply final screenshots, accessibility review, metadata and reviewer instructions.
 - Produce and validate a signed archive, distribute through TestFlight, collect feedback, fix release blockers, then submit for App Review. Record approval and actual availability before claiming release.

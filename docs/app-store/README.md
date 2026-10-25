@@ -28,13 +28,23 @@ claimed.
 
 ## Screenshots
 
-The current set contains three English iPhone frames and one Russian iPhone
-frame showing manual controls at the largest text size. The Russian frame is
-a supplementary feature image; a normal-text-size Russian overview is absent.
-Current English and Russian 13-inch iPad frames are also absent. A bounded
-capture attempt stopped before any app scenario because its separate capture
-runner could not load XCTest. No new iPad image or app regression result is
-claimed. The inventory keeps these gaps open.
+The current set contains ten frames: three English iPhone images, three Russian
+iPhone images, and two 13-inch iPad images per language. The Russian iPhone set
+includes two normal-text-size overviews and the preserved supplementary image
+showing manual controls at the largest text size. The normal-size welcome frame
+shows the introduction and three steps; its import button extends below the
+scroll viewport. The sample frame shows the synthetic receipt and nearby
+controls, with lower OCR content outside the viewport.
+
+The first capture attempt stopped before any app scenario because its separate
+runner could not load XCTest. After correcting the generated loader environment,
+one replacement session passed all three capture cases and produced six new
+frames in 194 seconds including device cleanup. The same frozen `e40d693` app
+was supplied without rebuilding or re-signing it. Both pre-test installed
+payloads matched the release's 27 files; the frozen app and runner also remained
+unchanged. Post-test installed-payload inventories were not recorded, so no
+before-and-after verification of the installed copies is claimed. The inventory
+preserves this evidence limitation and the history of the first attempt.
 
 The selected images show actual app screens using synthetic content. They are
 not mockups and have no replaced text, composited prices, cropping or resizing.
@@ -71,13 +81,17 @@ stable URLs without authentication after merge. The owner must also provide
 approved public contact information; a reachable GitHub issue tracker alone
 does not establish that Apple's support-contact requirements are met.
 
-## Remaining owner and release decisions
+## Remaining owner facts and release work
 
-The owner must confirm the app name, seller and copyright identity, public
-support contact, private App Review contact, category and declarations,
-territories and pricing. Developer membership, signing, the App Store app/product
-records, agreements and account details remain separate owner-controlled work.
-Required metadata is intentionally unset when there is no verified value.
+Freemium and the USD 19.99 one-time Pro target are already specified. Current
+names, EN/RU locales, the Productivity category and manual release are proposed
+defaults pending account checks. These routine choices do not require a repeated
+product-preference decision. Actual seller/copyright identity, approved public
+support contact, private App Review contact and account-holder prerequisites
+are still required. Developer membership, signing, app/product registration,
+agreements and account details remain separate work. The configured App Store
+price and availability have not been verified; required actual values remain
+unset where there is no evidence.
 
 Before submission, review App Privacy answers against the actual device build
 and services, finish the [payment and physical-device gates](../RELEASE.md), and

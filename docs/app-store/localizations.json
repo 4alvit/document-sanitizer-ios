@@ -29,8 +29,8 @@
       },
       {
         "id": "nameAndCommercialSetup",
-        "status": "owner_input_required",
-        "requirement": "Confirm localized name availability, final product pricing and territories; no reservation, price or availability is asserted by this draft."
+        "status": "account_configuration_unverified",
+        "requirement": "Freemium and the USD 19.99 one-time Pro target are assigned. Verify name reservation, ASC product registration, actual configured price and territory availability; no live offer is asserted."
       },
       {
         "id": "publicContactAndPrivacy",
@@ -44,8 +44,9 @@
       },
       {
         "id": "screenshots",
-        "status": "open",
-        "requirement": "Provide and verify required device-size/localization screenshots from synthetic content and an IAP review screenshot of the actual offer. No screenshot readiness is asserted by this text package."
+        "status": "listing_frames_prepared_iap_review_pending",
+        "requirement": "Ten draft listing frames cover English/Russian iPhone and 13-inch iPad slots. See the inventory for raw-image provenance, viewport limits and the missing post-test installed-payload check. The IAP review screenshot of the real configured offer remains pending; listing frames do not establish payment or App Review acceptance.",
+        "reference": "screenshots.json"
       }
     ]
   },
