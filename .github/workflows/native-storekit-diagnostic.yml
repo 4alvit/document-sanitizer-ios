@@ -1,0 +1,177 @@
+name: Native StoreKit diagnostic
+on:
+  push:
+    branches: [codex/native-storekit-diagnostic]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    name: One native StoreKit diagnostic
+    if: github.run_attempt == '1'
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 2
+      - name: Verify unchanged application and record environment
+        run: |
+          mkdir -p .qa/native-storekit
+          git diff --exit-code e7064111bd8260ddda7a28db1ce9b5e039cb13a7 HEAD -- . ':(exclude).github/workflows/native-storekit-diagnostic.yml'
+          git rev-parse HEAD > .qa/native-storekit/diagnostic-commit.txt
+          xcodebuild -version > .qa/native-storekit/xcode-version.txt
+          xcrun swift --version > .qa/native-storekit/swift-version.txt
+          xcodebuild -showsdks > .qa/native-storekit/installed-sdks.txt
+          xcrun --sdk iphonesimulator --show-sdk-version > .qa/native-storekit/simulator-sdk-version.txt
+          xcrun simctl list runtimes --json > .qa/native-storekit/installed-runtimes.json
+      - name: Run unchanged native tests once with bounded failure stop
+        timeout-minutes: 10
+        env:
+          CLEANSEND_EXPECT_TEST_COUNT: '8'
+          CLEANSEND_KEEP_TEST_DEVICE: '1'
+          NSUnbufferedIO: 'YES'
+        run: |
+          python3 -u - <<'PY'
+          import json, os, queue, re, signal, subprocess, sys, threading, time
+          from pathlib import Path
+
+          output = Path('.qa/native-storekit')
+          command = ['bash', 'scripts/check-ios-tests.sh',
+                     '-only-testing:CleanSendTests/ProStoreTests', '-test-iterations', '1',
+                     '-testLanguage', 'en', '-testRegion', 'US']
+          process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True, bufsize=1, start_new_session=True)
+          (output / 'diagnostic-owner.json').write_text(json.dumps({
+              'pid': process.pid, 'device_name': f'CleanSend-QA-{process.pid}'
+          }, indent=2) + '\n')
+          lines = queue.Queue()
+          def read_output():
+              for line in process.stdout:
+                  lines.put(line)
+              lines.put(None)
+          threading.Thread(target=read_output, daemon=True).start()
+          started = time.monotonic()
+          stop_at = None
+          stop_reason = None
+          watcher_error = None
+          sent_term = sent_kill = False
+          stream_done = False
+          def send(sig):
+              try:
+                  os.killpg(process.pid, sig)
+              except ProcessLookupError:
+                  pass
+          try:
+              with (output / 'test.log').open('w') as log:
+                  while not stream_done or process.poll() is None:
+                      try:
+                          line = lines.get(timeout=1)
+                          if line is None:
+                              stream_done = True
+                          else:
+                              log.write(line)
+                              log.flush()
+                              print(line, end='', flush=True)
+                              failed = re.search(r"Test Case .*ProStoreTests.* (failed|skipped)", line)
+                              precondition = any(text in line for text in (
+                                  'The app is not receiving clean verified Xcode StoreKit history',
+                                  'The entitlement stream is outside Xcode StoreKit',
+                                  'The local entitlement is unverified:'))
+                              assertion = 'error:' in line and 'ProStoreTests' in line
+                              if stop_at is None and (failed or precondition or assertion):
+                                  stop_reason = 'first native test failure or environment precondition'
+                                  stop_at = time.monotonic()
+                                  send(signal.SIGINT)
+                      except queue.Empty:
+                          pass
+                      now = time.monotonic()
+                      if stop_at is None and now - started >= 480:
+                          stop_reason = 'eight-minute diagnostic limit; no retry'
+                          stop_at = now
+                          send(signal.SIGINT)
+                      if stop_at is not None and now - stop_at >= 30 and not sent_term:
+                          send(signal.SIGTERM)
+                          sent_term = True
+                      if stop_at is not None and now - stop_at >= 45 and not sent_kill:
+                          send(signal.SIGKILL)
+                          sent_kill = True
+                      if stop_at is not None and now - stop_at >= 50:
+                          break
+          except BaseException as error:
+              watcher_error = type(error).__name__
+          finally:
+              if process.poll() is None:
+                  send(signal.SIGKILL)
+              try:
+                  code = process.wait(timeout=5)
+              except subprocess.TimeoutExpired:
+                  code = None
+              (output / 'invocation.json').write_text(json.dumps({
+                  'command': command, 'invocations': 1, 'requested_iterations': 1,
+                  'exit_code': code, 'stop_reason': stop_reason, 'watcher_error': watcher_error,
+                  'elapsed_seconds': round(time.monotonic() - started, 2),
+                  'scope': 'Xcode-local native tests; not real Sandbox or paid acceptance'
+              }, indent=2) + '\n')
+          sys.exit(0 if code == 0 and stop_reason is None and watcher_error is None else 1)
+          PY
+      - name: Preserve result and runtime evidence, then remove diagnostic devices
+        if: always()
+        timeout-minutes: 3
+        run: |
+          python3 - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+
+          output = Path('.qa/native-storekit')
+          output.mkdir(parents=True, exist_ok=True)
+          errors = []
+          def invoke(command, timeout=20):
+              try:
+                  result = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
+                  if result.returncode:
+                      errors.append({'command': command, 'exit_code': result.returncode,
+                                     'stderr': result.stderr})
+                  return result
+              except (subprocess.TimeoutExpired, OSError) as error:
+                  errors.append({'command': command, 'error': type(error).__name__})
+                  return None
+          listing = invoke(['xcrun', 'simctl', 'list', 'devices', '--json'])
+          try:
+              devices = json.loads(listing.stdout) if listing and listing.returncode == 0 else {'devices': {}}
+          except ValueError:
+              devices = {'devices': {}}
+              errors.append({'error': 'Invalid simulator device listing JSON'})
+          owner_file = output / 'diagnostic-owner.json'
+          device_name = json.loads(owner_file.read_text())['device_name'] if owner_file.exists() else None
+          selected = [{'runtime_identifier': runtime, **device}
+                      for runtime, group in devices['devices'].items()
+                      for device in group if device['name'] == device_name]
+          (output / 'diagnostic-devices.json').write_text(json.dumps(selected, indent=2) + '\n')
+          for device in selected:
+              identifier = device['udid']
+              if device['state'] == 'Booted':
+                  invoke(['xcrun', 'simctl', 'io', identifier, 'screenshot',
+                          str(output / (identifier + '.png'))])
+              invoke(['xcrun', 'simctl', 'shutdown', identifier])
+              invoke(['xcrun', 'simctl', 'delete', identifier])
+          for result in Path('.qa').glob('hosted-tests-*.xcresult'):
+              summary = invoke(['xcrun', 'xcresulttool', 'get', 'test-results', 'summary',
+                                '--path', str(result), '--format', 'json'], timeout=30)
+              if summary:
+                  (output / (result.stem + '-summary.json')).write_text(summary.stdout)
+                  if summary.returncode:
+                      (output / (result.stem + '-summary-error.txt')).write_text(summary.stderr)
+          (output / 'evidence-collection-errors.json').write_text(json.dumps(errors, indent=2) + '\n')
+          PY
+      - name: Save diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-storekit-diagnostic
+          path: |
+            .qa/native-storekit/
+            .qa/hosted-tests-*.xcresult
+          include-hidden-files: true
+          if-no-files-found: error
