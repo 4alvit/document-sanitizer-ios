@@ -7,6 +7,7 @@ import json
 import plistlib
 import re
 import os
+import stat
 from pathlib import Path
 import subprocess
 import tempfile
@@ -33,6 +34,59 @@ def require_revision(revision):
         raise SystemExit('Source commit changed during packaging; rerun from the final commit.')
 
 
+def collect_provenance(revision):
+    """Bind the checked-out tree to its published head and hosted run, when present."""
+    assert re.fullmatch(r'[0-9a-f]{40}', revision), 'Invalid source revision'
+    tree = command('git', 'rev-parse', revision + '^{tree}', capture=True).strip()
+    parents = command('git', 'show', '-s', '--format=%P', revision, capture=True).split()
+    assert re.fullmatch(r'[0-9a-f]{40}', tree), 'Invalid source tree'
+    result = {'checkout_commit': revision, 'source_tree': tree,
+              'checkout_parents': parents, 'published_head': None,
+              'published_head_tree': None, 'checkout_tree_matches_published_head': None, 'github': None}
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        expected = os.environ.get('EXPECTED_HEAD_SHA', '')
+        assert re.fullmatch(r'[0-9a-f]{40}', expected), 'Hosted packaging requires EXPECTED_HEAD_SHA'
+        assert os.environ.get('GITHUB_SHA') == revision, 'Checkout differs from GitHub run commit'
+        event = os.environ.get('GITHUB_EVENT_NAME')
+        assert event in ('pull_request', 'push'), 'Unsupported packaging event'
+        expected_tree = command('git', 'rev-parse', expected + '^{tree}', capture=True).strip()
+        assert re.fullmatch(r'[0-9a-f]{40}', expected_tree), 'Invalid published head tree'
+        if event == 'push':
+            assert revision == expected, 'Push checkout differs from published head'
+            assert tree == expected_tree, 'Push checkout tree differs from published head'
+        else:
+            assert revision == expected or expected in parents, 'PR checkout does not contain published head'
+        repository = os.environ.get('GITHUB_REPOSITORY', '')
+        ref = os.environ.get('GITHUB_REF', '')
+        server = os.environ.get('GITHUB_SERVER_URL', '')
+        run_id = os.environ.get('GITHUB_RUN_ID', '')
+        attempt = os.environ.get('GITHUB_RUN_ATTEMPT', '')
+        assert re.fullmatch(r'[^/\s]+/[^/\s]+', repository) and ref
+        assert server.startswith('https://') and not server.endswith('/')
+        assert run_id.isdecimal() and int(run_id) > 0
+        assert attempt.isdecimal() and int(attempt) > 0
+        result.update(published_head=expected, published_head_tree=expected_tree,
+                      checkout_tree_matches_published_head=(tree == expected_tree),
+                      github={'repository': repository, 'event': event, 'ref': ref,
+                              'run_id': run_id, 'run_attempt': attempt,
+                              'run_url': f'{server}/{repository}/actions/runs/{run_id}'})
+    return result
+
+
+def inspect_bundle_paths(app):
+    """Require real bundle roots and executable files before and after extraction."""
+    assert app.name == 'CleanSend.app' and app.is_dir() and not app.is_symlink(), 'Invalid app root'
+    for bundle in (app, app / 'PlugIns/CleanSendShare.appex'):
+        assert bundle.is_dir() and not bundle.is_symlink(), 'Invalid bundle root'
+        assert bundle.stat().st_mode & stat.S_IXUSR, 'Bundle root is not traversable'
+        info = plistlib.loads((bundle / 'Info.plist').read_bytes())
+        name = info['CFBundleExecutable']
+        assert isinstance(name, str) and name not in ('', '.', '..') and Path(name).name == name
+        executable = bundle / name
+        assert executable.is_file() and not executable.is_symlink(), 'Invalid bundle executable'
+        assert executable.stat().st_mode & stat.S_IXUSR, 'Bundle executable lost its execute mode'
+
+
 def build_simulator(derived, *, signed):
     signing = ['CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-', 'DEVELOPMENT_TEAM='] if signed else ['CODE_SIGNING_ALLOWED=NO']
     command('xcodebuild', '-project', 'CleanSend.xcodeproj', '-scheme', 'CleanSend',
@@ -55,6 +109,7 @@ def inspect_release_metadata(path, stage):
 
 
 def inspect_identity(app, version):
+    inspect_bundle_paths(app)
     info = plistlib.loads((app / 'Info.plist').read_bytes())
     extension = app / 'PlugIns/CleanSendShare.appex'
     extension_info = plistlib.loads((extension / 'Info.plist').read_bytes())
@@ -121,13 +176,19 @@ def inspect_signature(bundle, entitlement_path):
 
 
 def payload_hashes(app):
+    inspect_bundle_paths(app)
     result = {}
-    for path in sorted(app.rglob('*')):
+    for path in [app, *sorted(app.rglob('*'))]:
         name = str(path.relative_to(app))
-        if path.is_symlink():
-            result[name] = {'symlink': os.readlink(path)}
-        elif path.is_file():
-            result[name] = {'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+        mode = path.lstat().st_mode
+        assert not stat.S_ISLNK(mode), 'Symlink in Release payload'
+        entry = {'mode': f'{stat.S_IMODE(mode):04o}'}
+        if stat.S_ISDIR(mode):
+            entry['directory'] = True
+        else:
+            assert stat.S_ISREG(mode), 'Unsupported Release payload file type'
+            entry['sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+        result[name] = entry
     return result
 
 
@@ -140,6 +201,7 @@ def main():
     args = parser.parse_args()
     require_clean()
     revision = command('git', 'rev-parse', 'HEAD', capture=True).strip()
+    provenance = collect_provenance(revision)
     # Build the committed project. Regeneration is an authoring step and can
     # change a local package's navigator name with the checkout directory.
     app = build_simulator(ROOT / '.qa/release-build', signed=False)
@@ -175,13 +237,15 @@ def main():
             extracted = Path(directory) / archive.stem
             command('ditto', '-x', '-k', archive, extracted)
             unpacked_app = extracted / 'CleanSend.app'
+            inspect_identity(unpacked_app, version)
             assert payload_hashes(unpacked_app) == payload_hashes(original), 'ZIP changed the app payload'
             if archive == signed_binary:
                 for bundle in [unpacked_app, unpacked_app / 'PlugIns/CleanSendShare.appex']:
                     command('codesign', '--verify', '--strict', '--all-architectures', bundle)
     metadata = {
         'product': 'RedactLeaf', 'version': version, 'build': info['CFBundleVersion'],
-        'source_commit': revision,
+        'source_commit': revision, 'source_tree': provenance['source_tree'],
+        'provenance': provenance,
         'created_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
         'xcode': command('xcodebuild', '-version', capture=True).strip(),
         'platform': 'iPhoneSimulator', 'configuration': 'Release',
@@ -205,7 +269,12 @@ def main():
     readme = destination / 'PREVIEW-README.txt'
     readme.write_text(
         f'RedactLeaf {version} development preview\n'
-        f'Source commit: {revision}\n\n'
+        f'Source checkout commit: {revision}\n'
+        f"Source tree: {provenance['source_tree']}\n"
+        f"Published head: {provenance['published_head'] or 'Not bound to a hosted run'}\n"
+        f"Published head tree: {provenance['published_head_tree'] or 'Not bound to a hosted run'}\n"
+        f"Checkout tree matches published head: {provenance['checkout_tree_matches_published_head']}\n"
+        'All archives use the source checkout commit above.\n\n'
         'These are two Release iOS Simulator variants, not an iPhone IPA,\n'
         'TestFlight build, App Store release, or proof of payment acceptance.\n'
         'RedactLeaf-adhoc-simulator.zip: local ad-hoc signature and App Group.\n'
@@ -237,6 +306,11 @@ def main():
         f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n'
         for p in [source, binary, signed_binary, manifest, payload_manifest, scan_manifest, readme]))
     require_revision(revision)
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        output = Path(os.environ['GITHUB_OUTPUT'])
+        assert '\n' not in str(destination) and '\r' not in str(destination)
+        with output.open('a') as stream:
+            stream.write(f'package_directory={destination}\n')
     print(json.dumps({'status': 'packaged', 'directory': str(destination), **metadata}, indent=2))
 
 

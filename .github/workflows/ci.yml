@@ -15,13 +15,26 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 2
       - name: Install build and independent verification tools
         run: |
           brew install xcodegen poppler
           python3 -m venv .venv
           .venv/bin/python -m pip install -r requirements-qa.txt
       - name: Verify Release packages
+        id: release-packages
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 scripts/package-prerelease.py
+      - name: Save verified Release simulator packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        timeout-minutes: 3
+        with:
+          name: release-simulator-packages
+          path: ${{ steps.release-packages.outputs.package_directory }}
+          include-hidden-files: true
+          if-no-files-found: error
       - name: Verify
         run: |
           export PATH="$PWD/.venv/bin:$PATH"
