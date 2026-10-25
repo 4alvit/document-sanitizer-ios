@@ -4,6 +4,8 @@ Run with unittest discovery. The sibling driver is imported without __main__;
 no Xcode, simulator, application, process group, or native test is executed.
 """
 from contextlib import ExitStack
+import ast
+import errno
 import importlib.util
 import inspect
 import json
@@ -13,6 +15,9 @@ import plistlib
 import signal
 import subprocess
 import tempfile
+import time
+import traceback
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -247,6 +252,8 @@ class Fixture:
         for name in ('killpg', 'getpgid', 'kill', 'system'):
             self.stack.enter_context(mock.patch.object(os, name, self.backend.deny))
         self.stack.enter_context(mock.patch.object(signal, 'signal', self.backend.deny))
+        self.stack.enter_context(mock.patch.object(time, 'monotonic', self.clock.monotonic))
+        self.stack.enter_context(mock.patch.object(time, 'sleep', self.clock.sleep))
         spec = importlib.util.spec_from_file_location('privacy_ipad_driver_offline_test', DRIVER)
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
@@ -336,7 +343,7 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertTrue(command['owned_group_absent'])
         self.assertEqual(observation['wait_or_persist_error'], 'TimeoutExpired')
         self.assertEqual(observation['output_bytes_at_wait_end'], 0)
-        self.assertEqual(observation['stop_signals'], [{'signal': 'SIGTERM', 'result': 'SENT'}])
+        self.assertEqual(observation['stop_signals'], [{'signal': 'SIGTERM', 'result': 'SYSCALL_RETURNED'}])
         self.assertEqual(observation['stop_probe_count'], 2)
         self.assertEqual(observation['last_stop_probe']['group'], 'ABSENT')
         self.assertTrue(observation['last_stop_probe']['leader_reaped'])
@@ -462,7 +469,7 @@ class BaselineWorkerTests(unittest.TestCase):
                     rc, meta = f.run()
                 self.assertEqual(injected, [field])
                 self.assertEqual(rc, 1)
-                self.assert_failed(meta, 'synthetic diagnostic cancellation')
+                self.assert_failed(meta, 'TimeoutExpired' if fault == 'timeout' else 'synthetic diagnostic cancellation')
                 proc = next(p for p in f.backend.processes if p.step == 'runtimes')
                 command = next(c for c in meta['commands'] if c.get('owned_process_group') == proc.pid)
                 self.assertFalse(proc.group_present)
@@ -470,6 +477,8 @@ class BaselineWorkerTests(unittest.TestCase):
                 self.assertTrue(command['owned_group_absent'])
                 if fault == 'timeout':
                     self.assertEqual(command['runtime_observation']['wait_error'], 'TimeoutExpired')
+                    self.assertEqual(command['command_error_operation'], 'wait')
+                    self.assertEqual(command['secondary_errors']['wait_observation']['exception_type'], 'InterruptedError')
                 self.assertFalse(any(p.step in ('build', 'create', 'test') for p in f.backend.processes))
 
     def test_runtime_lookup_cancellation_fails_before_child_launch(self):
@@ -489,13 +498,15 @@ class BaselineWorkerTests(unittest.TestCase):
                                        side_effect=InterruptedError('synthetic stat cancellation')):
                     rc, meta = f.run()
                 self.assertEqual(rc, 1)
-                self.assert_failed(meta, 'synthetic stat cancellation')
+                self.assert_failed(meta, 'TimeoutExpired' if fault == 'timeout' else 'synthetic stat cancellation')
                 proc = next(p for p in f.backend.processes if p.step == 'runtimes')
                 command = next(c for c in meta['commands'] if c.get('owned_process_group') == proc.pid)
                 self.assertFalse(proc.group_present)
                 self.assertTrue(command['owned_group_absent'])
                 if fault == 'timeout':
                     self.assertEqual(command['runtime_observation']['wait_error'], 'TimeoutExpired')
+                    self.assertEqual(command['command_error_operation'], 'wait')
+                    self.assertEqual(command['secondary_errors']['wait_observation']['exception_type'], 'InterruptedError')
                 self.assertFalse(any(p.step in ('build', 'create', 'test') for p in f.backend.processes))
 
     def test_runtime_relative_or_empty_path_is_explicitly_not_resolved(self):
@@ -760,6 +771,430 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertFalse(meta['device_removed'])
         self.assert_failed(meta, 'Cleanup:')
+
+
+# Frozen pre-Q24 stop policy, AST-extracted only for fully injected call-trace comparison.
+BASE_STOP_GROUP_SOURCE = 'def stop_group(proc, record=None):\n    """Require both leader reap and owned-group absence within the 3s reserve."""\n    record = record if record is not None else {}\n    record[\'owned_group_absent\'] = False\n    start = time.monotonic()\n    interrupted = None\n    observation = record.get(\'runtime_observation\')\n    if observation is not None:\n        observation.update(stop_probe_count=0, stop_signals=[])\n\n    def note(error):\n        nonlocal interrupted\n        errors = record.setdefault(\'cleanup_errors\', [])\n        if repr(error) not in errors:\n            errors.append(repr(error))\n        if isinstance(error, InterruptedError) or not isinstance(error, OSError):\n            interrupted = interrupted or error\n\n    def stopped():\n        try:\n            if observation is not None:\n                observation[\'stop_probe_count\'] += 1\n                observation[\'last_stop_probe\'] = {}\n            reaped = proc.poll() is not None\n            if observation is not None:\n                observation[\'last_stop_probe\'][\'leader_reaped\'] = reaped\n            try:\n                os.killpg(proc.pid, 0)\n                if observation is not None:\n                    observation[\'last_stop_probe\'][\'group\'] = \'PRESENT\'\n            except ProcessLookupError:\n                if observation is not None:\n                    observation[\'last_stop_probe\'][\'group\'] = \'ABSENT\'\n                record[\'owned_group_absent\'] = reaped\n                return reaped\n        except BaseException as error:\n            if observation is not None:\n                observation[\'last_stop_probe\'][\'error\'] = type(error).__name__\n            note(error)\n        return False\n\n    def completed():\n        if interrupted is not None:\n            raise interrupted\n\n    if stopped():\n        return completed()\n    for sig, offset in ((signal.SIGTERM, 2), (signal.SIGKILL, 3)):\n        if time.monotonic() >= start + 3:\n            break\n        event = None\n        try:\n            if observation is not None:\n                event = {\'signal\': sig.name}\n                observation[\'stop_signals\'].append(event)  # At most the existing TERM and KILL.\n            os.killpg(proc.pid, sig)\n            if event is not None:\n                event[\'result\'] = \'SENT\'\n        except ProcessLookupError:\n            if event is not None:\n                event[\'result\'] = \'ALREADY_ABSENT\'\n        except BaseException as error:\n            if event is not None:\n                event[\'result\'] = type(error).__name__\n            note(error)\n        deadline = start + offset\n        while True:\n            if stopped():\n                return completed()\n            remaining = deadline - time.monotonic()\n            if remaining <= 0:\n                break\n            try:\n                time.sleep(min(.02, remaining))\n            except BaseException as error:\n                note(error)\n    raise RuntimeError(\'Owned process/group cleanup unconfirmed: \' + repr(record.get(\'cleanup_errors\', [])))'
+
+
+STOP_OPERATIONS = ('leader_poll', 'group_probe', 'SIGTERM', 'SIGKILL', 'sleep')
+
+
+class ScriptedStop:
+    """A deterministic group model; diagnostic clock reads never advance time."""
+    def __init__(self, operation=None, error=None, policy='term'):
+        self.operation, self.error, self.policy = operation, error, policy
+        self.trace, self.injected = [], False
+        self.clock = FakeClock()
+        self.absent = policy == 'absent'
+        self.proc = SimpleNamespace(pid=7171, poll=self.poll)
+
+    def fault(self, operation):
+        if operation == self.operation and not self.injected:
+            self.injected = True
+            if operation in ('SIGTERM', 'SIGKILL', 'sleep'):
+                self.absent = True
+            raise self.error
+
+    def poll(self):
+        self.trace.append(('poll',))
+        self.fault('leader_poll')
+        return 0 if self.absent else None
+
+    def killpg(self, pid, sig):
+        assert pid == self.proc.pid
+        self.trace.append(('killpg', int(sig)))
+        if sig == 0:
+            self.fault('group_probe')
+            if self.absent:
+                raise ProcessLookupError(errno.ESRCH, 'injected group absent')
+            return
+        self.fault(sig.name)
+        if (sig == signal.SIGTERM and self.policy == 'term') or (sig == signal.SIGKILL and self.policy == 'kill'):
+            self.absent = True
+
+    def sleep(self, seconds):
+        self.trace.append(('sleep', seconds))
+        self.fault('sleep')
+        self.clock.sleep(seconds)
+
+
+class CleanupObservationTests(unittest.TestCase):
+    def setUp(self):
+        self.f = Fixture(self)
+
+    def stop(self, scenario, record=None, reference=False, clock=None):
+        record = {'runtime_observation': {}} if record is None else record
+        if reference:
+            parsed = ast.parse(BASE_STOP_GROUP_SOURCE)
+            self.assertEqual(len(parsed.body), 1)
+            self.assertIsInstance(parsed.body[0], ast.FunctionDef)
+            namespace = {'time': SimpleNamespace(monotonic=scenario.clock.monotonic, sleep=scenario.sleep),
+                         'os': SimpleNamespace(killpg=scenario.killpg), 'signal': signal}
+            exec(compile(parsed, '<frozen-base-stop-policy>', 'exec'), namespace)
+            target = namespace['stop_group']
+        else:
+            target = self.f.module.stop_group
+        error = None
+        with mock.patch.object(self.f.module.os, 'killpg', scenario.killpg), \
+             mock.patch.object(self.f.module.time, 'sleep', scenario.sleep), \
+             mock.patch.object(self.f.module.time, 'monotonic', clock or scenario.clock.monotonic):
+            try:
+                target(scenario.proc, record)
+            except BaseException as caught:
+                error = caught
+        return record, error
+
+    def assert_fixed_observation(self, record):
+        observation = record['cleanup_observation']
+        self.assertEqual(observation['counter_limit'], 65535)
+        self.assertEqual(set(observation['error_counts']), set(STOP_OPERATIONS))
+        self.assertEqual(set(observation['first_errors']), set(STOP_OPERATIONS))
+        self.assertEqual(record['runtime_observation']['stop_probe_count'], observation['probe_count'])
+        self.assertEqual(record['runtime_observation']['last_stop_probe'], observation['last_probe'])
+        self.assertLessEqual(len(record['runtime_observation']['stop_signals']), 2)
+        return observation
+
+    def test_each_operation_retains_first_EPERM_after_final_reaped_absence(self):
+        for operation in STOP_OPERATIONS:
+            with self.subTest(operation=operation):
+                fault = PermissionError(errno.EPERM, 'injected early permission error')
+                policy = 'kill' if operation in ('SIGKILL', 'sleep') else 'term'
+                scenario = ScriptedStop(operation, fault, policy)
+                record, error = self.stop(scenario)
+                self.assertIsNone(error)
+                self.assertTrue(scenario.injected)
+                self.assertTrue(record['owned_group_absent'])
+                obs = self.assert_fixed_observation(record)
+                self.assertEqual(obs['last_probe'], {'leader_reaped': True, 'group': 'ABSENT'})
+                self.assertEqual(obs['error_counts'][operation], 1)
+                self.assertEqual(obs['first_errors'][operation], {
+                    'operation': operation, 'exception_type': 'PermissionError',
+                    'errno': errno.EPERM, 'monotonic': 2.0 if operation == 'SIGKILL' else 0.0})
+                self.assertIn(repr(fault), record['cleanup_errors'])
+                self.assertEqual(sum(obs['error_counts'].values()), 1)
+                self.assertTrue(all(value is None for key, value in obs['first_errors'].items() if key != operation))
+
+    def test_interruption_and_non_os_error_rethrow_original_after_confirmed_absence(self):
+        for operation in STOP_OPERATIONS:
+            for kind in (InterruptedError, RuntimeError):
+                with self.subTest(operation=operation, kind=kind.__name__):
+                    fault = kind('injected cancellation')
+                    scenario = ScriptedStop(operation, fault, 'kill' if operation in ('SIGKILL', 'sleep') else 'term')
+                    record, caught = self.stop(scenario)
+                    self.assertIs(caught, fault)
+                    self.assertTrue(record['owned_group_absent'])
+                    self.assertEqual(record['cleanup_observation']['first_errors'][operation]['exception_type'], kind.__name__)
+
+    def test_diagnostic_clock_failure_does_not_skip_cleanup_or_erase_operation_error(self):
+        fault = PermissionError(errno.EPERM, 'group denied before absence')
+        clock_fault = InterruptedError('diagnostic timestamp cancelled')
+        scenario = ScriptedStop('group_probe', fault)
+        triggered = []
+        def clock():
+            if inspect.currentframe().f_back.f_code.co_name == 'note' and not triggered:
+                triggered.append(True)
+                raise clock_fault
+            return scenario.clock.value
+        record, caught = self.stop(scenario, clock=clock)
+        self.assertEqual(triggered, [True])
+        self.assertIs(caught, clock_fault)
+        self.assertTrue(record['owned_group_absent'])
+        slot = record['cleanup_observation']['first_errors']['group_probe']
+        self.assertIsNone(slot['monotonic'])
+        self.assertEqual(slot['exception_type'], 'PermissionError')
+        self.assertEqual(slot['errno'], errno.EPERM)
+        self.assertEqual(slot['timestamp_error']['exception_type'], 'InterruptedError')
+        self.assertIn(repr(fault), record['cleanup_errors'])
+        self.assertIn(repr(clock_fault), record['cleanup_errors'])
+
+    def test_later_different_error_does_not_replace_first_operation_slot(self):
+        first = PermissionError(errno.EPERM, 'first')
+        later = OSError(errno.EIO, 'later')
+        scenario = ScriptedStop(policy='persistent')
+        count = []
+        def group(pid, sig):
+            scenario.trace.append(('killpg', int(sig)))
+            if sig:
+                return
+            count.append(True)
+            if len(count) == 3:
+                scenario.absent = True
+                raise ProcessLookupError(errno.ESRCH, 'gone')
+            if len(count) > 3:
+                raise ProcessLookupError(errno.ESRCH, 'gone')
+            raise first if len(count) == 1 else later
+        scenario.killpg = group
+        record, caught = self.stop(scenario)
+        self.assertIsNone(caught)
+        self.assertTrue(record['owned_group_absent'])
+        self.assertEqual(record['cleanup_observation']['error_counts']['group_probe'], 2)
+        self.assertEqual(record['cleanup_observation']['first_errors']['group_probe']['errno'], errno.EPERM)
+        self.assertEqual(record['cleanup_errors'], [repr(first), repr(later)])
+
+    def test_new_counters_saturate_and_fixed_storage_remains_bounded(self):
+        scenario = ScriptedStop(policy='persistent')
+        calls = []
+        fault = PermissionError(errno.EPERM, 'same injected group failure')
+        def group(pid, sig):
+            if sig == 0:
+                calls.append(1)
+                raise fault
+        scenario.killpg = group
+        # More than 65,535 synthetic probes within the unchanged 3s deadline.
+        scenario.sleep = lambda seconds: setattr(scenario.clock, 'value', scenario.clock.value + 1 / 30000)
+        record, caught = self.stop(scenario)
+        self.assertIsInstance(caught, RuntimeError)
+        self.assertGreater(len(calls), 65535)
+        obs = self.assert_fixed_observation(record)
+        self.assertEqual(obs['probe_count'], 65535)
+        self.assertEqual(obs['error_counts']['group_probe'], 65535)
+        self.assertEqual(record['runtime_observation']['stop_probe_count'], 65535)
+        self.assertEqual(record['cleanup_errors'], [repr(fault)])
+        self.assertLess(len(json.dumps(obs)), 1500)
+        self.assertEqual(obs['first_errors']['group_probe']['monotonic'], 0.0)
+
+    def test_new_telemetry_never_adds_poll_signal_or_sleep_against_frozen_base(self):
+        scenarios = [(None, 'absent'), (None, 'term'), (None, 'kill'), (None, 'persistent')]
+        scenarios += [(operation, 'kill' if operation in ('SIGKILL', 'sleep') else 'term') for operation in STOP_OPERATIONS]
+        for operation, policy in scenarios:
+            with self.subTest(operation=operation, policy=policy):
+                a = ScriptedStop(operation, PermissionError(errno.EPERM, 'fixed'), policy)
+                b = ScriptedStop(operation, PermissionError(errno.EPERM, 'fixed'), policy)
+                current, current_error = self.stop(a)
+                base, base_error = self.stop(b, reference=True)
+                self.assertEqual(a.trace, b.trace)
+                self.assertEqual(a.clock.value, b.clock.value)
+                self.assertEqual(current['owned_group_absent'], base['owned_group_absent'])
+                self.assertEqual(type(current_error), type(base_error))
+                if current_error:
+                    self.assertEqual(str(current_error), str(base_error))
+                self.assertTrue(all(e['result'] != 'SENT' for e in current['runtime_observation']['stop_signals']))
+
+
+class CommandErrorPrecedenceTests(unittest.TestCase):
+    def setUp(self):
+        self.f = Fixture(self)
+
+    def caught(self, fn):
+        try:
+            fn()
+        except BaseException as error:
+            return error, traceback.extract_tb(error.__traceback__)
+        self.fail('injected command failure must propagate')
+
+    def test_primary_exception_identity_and_traceback_survive_cleanup_and_persist(self):
+        for stage in ('timeout', 'cancel', 'spawn', 'body'):
+            with self.subTest(stage=stage):
+                f = Fixture(self)
+                run = f.module.Run()
+                primary = subprocess.TimeoutExpired(['synthetic'], 15) if stage == 'timeout' else (
+                    InterruptedError('primary cancellation') if stage == 'cancel' else RuntimeError('primary ' + stage))
+                cleanup_error, persist_error = RuntimeError('secondary cleanup'), OSError(errno.EIO, 'secondary persist')
+                persist_calls, cleanup_calls, primary_tracebacks = [], [], []
+                real_popen, real_stop = f.backend.popen, f.module.stop_group
+                def raise_primary():
+                    try:
+                        raise primary
+                    except BaseException as error:
+                        primary_tracebacks.append(error.__traceback__)
+                        raise
+                def popen(args, **kwargs):
+                    if stage == 'spawn':
+                        raise_primary()
+                    proc = real_popen(args, **kwargs)
+                    if stage in ('timeout', 'cancel'):
+                        proc.wait = lambda timeout=None: raise_primary()
+                    return proc
+                def persist():
+                    persist_calls.append(True)
+                    if stage == 'body' and len(persist_calls) == 2:
+                        raise_primary()
+                    if len(persist_calls) == (2 if stage == 'spawn' else 3):
+                        raise persist_error
+                def cleanup(proc, record):
+                    cleanup_calls.append(proc.pid)
+                    real_stop(proc, record)
+                    raise cleanup_error
+                with mock.patch.object(f.module.subprocess, 'Popen', popen), \
+                     mock.patch.object(run, 'persist', persist), \
+                     mock.patch.object(f.module, 'stop_group', cleanup):
+                    caught, frames = self.caught(lambda: run.command(['xcodebuild', '-version'], 'command.log'))
+                self.assertIs(caught, primary)
+                self.assertIn('raise_primary', [frame.name for frame in frames])
+                chain = []
+                current = caught.__traceback__
+                while current is not None:
+                    chain.append(current)
+                    current = current.tb_next
+                self.assertTrue(any(node is primary_tracebacks[0] for node in chain))
+                item = run.meta['commands'][0]
+                self.assertEqual(item['command_error_operation'], 'wait' if stage in ('timeout', 'cancel') else stage)
+                self.assertEqual(item['secondary_errors']['final_persist']['error'], repr(persist_error))
+                if stage == 'spawn':
+                    self.assertEqual(cleanup_calls, [])
+                    self.assertEqual(f.backend.processes, [])
+                else:
+                    self.assertEqual(len(cleanup_calls), 1)
+                    self.assertTrue(item['owned_group_absent'])
+                    self.assertEqual(item['secondary_errors']['cleanup']['error'], repr(cleanup_error))
+
+    def test_timeout_stays_primary_through_wait_and_final_observation_failures(self):
+        f = self.f
+        run = f.module.Run()
+        primary = subprocess.TimeoutExpired(['synthetic'], 60)
+        wait_error = InterruptedError('secondary stat cancellation')
+        final_error = RuntimeError('secondary final clock')
+        original = f.backend.popen
+        def popen(args, **kwargs):
+            proc = original(args, **kwargs)
+            def wait(timeout=None):
+                raise primary
+            proc.wait = wait
+            return proc
+        now_calls = []
+        def now():
+            now_calls.append(True)
+            if len(now_calls) > 1:
+                raise final_error
+            return 'synthetic start'
+        with mock.patch.object(f.module.subprocess, 'Popen', popen), \
+             mock.patch.object(f.module.os, 'fstat', side_effect=wait_error), \
+             mock.patch.object(f.module, 'now', now):
+            caught, frames = self.caught(lambda: run.command(['xcrun', 'simctl', 'list', 'runtimes', '--json'], 'runtimes.json', 60))
+        self.assertIs(caught, primary)
+        self.assertIn('wait', [frame.name for frame in frames])
+        item = run.meta['commands'][0]
+        self.assertTrue(item['owned_group_absent'])
+        self.assertEqual(item['secondary_errors']['wait_observation']['error'], repr(wait_error))
+        self.assertEqual(item['secondary_errors']['final_observation']['error'], repr(final_error))
+
+    def test_successful_command_secondary_cleanup_or_persist_still_fails(self):
+        for operation in ('cleanup', 'final_persist'):
+            with self.subTest(operation=operation):
+                f = Fixture(self)
+                run = f.module.Run()
+                error = OSError(errno.EIO, 'injected ' + operation)
+                real_stop = f.module.stop_group
+                calls = []
+                def stop(proc, item):
+                    real_stop(proc, item)
+                    if operation == 'cleanup':
+                        raise error
+                def persist():
+                    calls.append(True)
+                    if operation == 'final_persist' and len(calls) == 3:
+                        raise error
+                with mock.patch.object(run, 'persist', persist), mock.patch.object(f.module, 'stop_group', stop):
+                    caught, frames = self.caught(lambda: run.command(['xcodebuild', '-version'], 'version.log'))
+                self.assertIs(caught, error)
+                self.assertEqual(run.meta['commands'][0]['returncode'], 0)
+                self.assertEqual(run.meta['commands'][0]['command_error_operation'], operation)
+                self.assertTrue(run.meta['commands'][0]['owned_group_absent'])
+
+    def test_nonzero_required_precedes_persist_without_adding_non_xcode_cleanup(self):
+        f = self.f
+        run = f.module.Run()
+        f.backend.fault_step, f.backend.fault = 'macos', 'nonzero'
+        calls = []
+        def persist():
+            calls.append(True)
+            if len(calls) == 3:
+                raise OSError(errno.EIO, 'late persist')
+        with mock.patch.object(run, 'persist', persist), mock.patch.object(f.module, 'stop_group') as cleanup:
+            caught, _ = self.caught(lambda: run.command(['sw_vers'], 'macos.log', required=True))
+        self.assertIsInstance(caught, RuntimeError)
+        self.assertEqual(str(caught), 'macos.log exited 7')
+        item = run.meta['commands'][0]
+        self.assertEqual(item['command_error_operation'], 'exit_status')
+        self.assertEqual(item['secondary_errors']['final_persist']['exception_type'], 'OSError')
+        cleanup.assert_not_called()
+        self.assertEqual(f.backend.signals, [])
+
+    def test_nonzero_optional_retains_return_value_and_no_extra_cleanup(self):
+        self.f.backend.fault_step, self.f.backend.fault = 'macos', 'nonzero'
+        run = self.f.module.Run()
+        with mock.patch.object(self.f.module, 'stop_group') as cleanup:
+            self.assertEqual(run.command(['sw_vers'], 'macos.log', required=False), 7)
+        cleanup.assert_not_called()
+        self.assertNotIn('command_error', run.meta['commands'][0])
+        self.assertEqual(self.f.backend.signals, [])
+
+
+    def test_returncode_property_failure_still_attempts_owned_cleanup_once(self):
+        f = self.f
+        run = f.module.Run()
+        primary = InterruptedError('returncode observation cancelled')
+        real_popen, real_stop = f.backend.popen, f.module.stop_group
+        cleanup_calls = []
+        class StatusFault:
+            def __init__(self, process):
+                self.process, self.armed = process, False
+                self.pid = process.pid
+            def wait(self, timeout=None):
+                result = self.process.wait(timeout=timeout)
+                self.armed = True
+                return result
+            @property
+            def returncode(self):
+                if self.armed:
+                    self.armed = False
+                    raise primary
+                return self.process.returncode
+            def poll(self):
+                return self.process.poll()
+        def popen(args, **kwargs):
+            return StatusFault(real_popen(args, **kwargs))
+        def stop(proc, item):
+            cleanup_calls.append(proc.pid)
+            return real_stop(proc, item)
+        with mock.patch.object(f.module.subprocess, 'Popen', popen), mock.patch.object(f.module, 'stop_group', stop):
+            caught, frames = self.caught(lambda: run.command(['xcodebuild', '-version'], 'version.log'))
+        self.assertIs(caught, primary)
+        self.assertIn('returncode', [frame.name for frame in frames])
+        self.assertEqual(len(cleanup_calls), 1)
+        self.assertEqual(len(f.backend.processes), 1)
+        self.assertEqual(f.backend.processes[0].wait_calls, [15])
+        self.assertTrue(run.meta['commands'][0]['owned_group_absent'])
+
+    def test_post_timeout_metadata_failure_is_secondary_and_does_not_skip_cleanup(self):
+        f = self.f
+        run = f.module.Run()
+        primary = subprocess.TimeoutExpired(['synthetic'], 60)
+        metadata_error = RuntimeError('wait-error metadata failed')
+        real_popen, real_stop = f.backend.popen, f.module.stop_group
+        cleanup_calls, persist_calls, injected = [], [], []
+        class Observation(dict):
+            def __setitem__(self, key, value):
+                if key == 'wait_error' and not injected:
+                    injected.append(key)
+                    raise metadata_error
+                super().__setitem__(key, value)
+        def persist():
+            persist_calls.append(True)
+            if len(persist_calls) == 2:
+                item = run.meta['commands'][-1]
+                item['runtime_observation'] = Observation(item['runtime_observation'])
+        def popen(args, **kwargs):
+            proc = real_popen(args, **kwargs)
+            def wait(timeout=None):
+                raise primary
+            proc.wait = wait
+            return proc
+        def stop(proc, item):
+            cleanup_calls.append(proc.pid)
+            return real_stop(proc, item)
+        with mock.patch.object(f.module.subprocess, 'Popen', popen), \
+             mock.patch.object(f.module, 'stop_group', stop), mock.patch.object(run, 'persist', persist):
+            caught, frames = self.caught(lambda: run.command(['xcrun', 'simctl', 'list', 'runtimes', '--json'], 'runtimes.json', 60))
+        self.assertIs(caught, primary)
+        self.assertIn('wait', [frame.name for frame in frames])
+        self.assertEqual(injected, ['wait_error'])
+        self.assertEqual(len(cleanup_calls), 1)
+        item = run.meta['commands'][0]
+        self.assertTrue(item['owned_group_absent'])
+        self.assertEqual(item['command_error_operation'], 'wait')
+        self.assertIn(repr(metadata_error), [e['error'] for e in item['secondary_errors'].values()])
 
 
 if __name__ == '__main__':

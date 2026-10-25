@@ -134,63 +134,110 @@ class Run:
                                            'cwd': str(ROOT), 'new_session': True}
         self.meta['commands'].append(item)
         self.persist()
-        with (OUT / name).open('wb') as log:
-            try:
-                if observe:
-                    item['runtime_observation']['spawn_started_monotonic'] = time.monotonic()
-                proc = subprocess.Popen(item['args'], cwd=ROOT, env=ENV, stdout=log,
-                                        stderr=subprocess.STDOUT, start_new_session=True)
-            except BaseException as error:
-                if observe:
-                    item['runtime_observation'].update(spawn_error=type(error).__name__,
-                        spawn_failed_monotonic=time.monotonic())
-                    item.update(command_error=repr(error), finished_at=now())
-                raise
-            item['owned_process_group'] = proc.pid
-            cleanup_required = item['args'][0] == 'xcodebuild'
-            try:
-                if observe:
-                    item['runtime_observation']['spawn_returned_monotonic'] = time.monotonic()
-                self.persist()
-                if observe:
-                    item['runtime_observation']['wait_started_monotonic'] = time.monotonic()
+        failure = None
+
+        def secondary(error, operation):
+            # Fixed call sites, at most one retained error per stage; no retry or I/O.
+            item.setdefault('secondary_errors', {}).setdefault(operation, {
+                'operation': operation, 'exception_type': type(error).__name__,
+                'errno': getattr(error, 'errno', None), 'error': repr(error)})
+
+        def failed(error, operation):
+            nonlocal failure
+            if failure is None:
+                failure = (error, error.__traceback__)
+                item.update(command_error=repr(error), command_error_operation=operation)
+            else:
+                secondary(error, operation)
+
+        proc = None
+        try:
+            with (OUT / name).open('wb') as log:
+                cleanup_required = item['args'][0] == 'xcodebuild'
                 try:
-                    proc.wait(timeout=allowance)
-                except BaseException as error:
-                    if observe:
-                        item['runtime_observation']['wait_error'] = type(error).__name__
-                    raise
-                finally:
-                    # These observations stay inside the same cleanup protection as wait().
-                    if observe:
-                        item['runtime_observation']['wait_finished_monotonic'] = time.monotonic()
+                    try:
+                        if observe:
+                            item['runtime_observation']['spawn_started_monotonic'] = time.monotonic()
+                        proc = subprocess.Popen(item['args'], cwd=ROOT, env=ENV, stdout=log,
+                                                stderr=subprocess.STDOUT, start_new_session=True)
+                    except BaseException as error:
+                        failed(error, 'spawn')
+                        if observe:
+                            item['runtime_observation']['spawn_error'] = type(error).__name__
+                            try:
+                                item['runtime_observation']['spawn_failed_monotonic'] = time.monotonic()
+                            except BaseException as observation_error:
+                                failed(observation_error, 'spawn_observation')
+                    else:
+                        item['owned_process_group'] = proc.pid
                         try:
-                            item['runtime_observation']['output_bytes_at_wait_end'] = os.fstat(log.fileno()).st_size
-                        except InterruptedError:
-                            raise
-                        except OSError as error:
-                            item['runtime_observation']['output_size_error'] = type(error).__name__
-            except BaseException as error:
-                if observe:
-                    item['runtime_observation']['wait_or_persist_error'] = type(error).__name__
-                item['interrupted'] = True
-                item['command_error'] = repr(error)
-                cleanup_required = True
-                raise
-            finally:
-                try:
-                    if cleanup_required:
-                        item['owned_group_absent'] = False
-                        try:
-                            stop_group(proc, item)
+                            if observe:
+                                item['runtime_observation']['spawn_returned_monotonic'] = time.monotonic()
+                            self.persist()
+                            if observe:
+                                item['runtime_observation']['wait_started_monotonic'] = time.monotonic()
+                            try:
+                                proc.wait(timeout=allowance)
+                            except BaseException as error:
+                                # Capture before sampling: a later diagnostic cannot replace wait().
+                                failed(error, 'wait')
+                                cleanup_required = True
+                                if observe:
+                                    item['runtime_observation']['wait_error'] = type(error).__name__
+                            finally:
+                                try:
+                                    if observe:
+                                        item['runtime_observation']['wait_finished_monotonic'] = time.monotonic()
+                                        try:
+                                            item['runtime_observation']['output_bytes_at_wait_end'] = os.fstat(log.fileno()).st_size
+                                        except InterruptedError:
+                                            raise
+                                        except OSError as error:
+                                            item['runtime_observation']['output_size_error'] = type(error).__name__
+                                            secondary(error, 'output_size')
+                                except BaseException as error:
+                                    failed(error, 'wait_observation')
+                                    cleanup_required = True
                         except BaseException as error:
-                            item['cleanup_error'] = repr(error)
-                            raise
+                            failed(error, 'body')
+                            cleanup_required = True
+                        if failure is not None:
+                            item['interrupted'] = True
+                            if observe:
+                                item['runtime_observation']['wait_or_persist_error'] = type(failure[0]).__name__
+                        if failure is None and required and proc.returncode:
+                            # A known command failure precedes finalization errors. This does not
+                            # change the existing cleanup policy for a returned nonzero status.
+                            failed(RuntimeError(name + ' exited ' + str(proc.returncode)), 'exit_status')
+                except BaseException as error:
+                    failed(error, 'body')
+                    cleanup_required = True
                 finally:
-                    item.update(returncode=proc.returncode, finished_at=now())
-                    self.persist()
-        if required and proc.returncode:
-            raise RuntimeError(name + ' exited ' + str(proc.returncode))
+                    try:
+                        if proc is not None and cleanup_required:
+                            item['owned_group_absent'] = False
+                            try:
+                                stop_group(proc, item)
+                            except BaseException as error:
+                                item['cleanup_error'] = repr(error)
+                                failed(error, 'cleanup')
+                    finally:
+                        try:
+                            if proc is not None:
+                                item['returncode'] = proc.returncode
+                            item['finished_at'] = now()
+                        except BaseException as error:
+                            failed(error, 'final_observation')
+                        try:
+                            self.persist()
+                        except BaseException as error:
+                            failed(error, 'final_persist')
+        except BaseException as error:
+            # Includes log open/close; close must not replace an earlier command failure.
+            failed(error, 'log_io')
+        if failure is not None:
+            error, traceback = failure
+            raise error.with_traceback(traceback)
         return proc.returncode
 
     def output(self, args, name, limit=15):
@@ -207,36 +254,57 @@ def stop_group(proc, record=None):
     observation = record.get('runtime_observation')
     if observation is not None:
         observation.update(stop_probe_count=0, stop_signals=[])
+    operations = ('leader_poll', 'group_probe', 'SIGTERM', 'SIGKILL', 'sleep')
+    counter_limit = 65535
+    cleanup = record['cleanup_observation'] = {
+        'counter_limit': counter_limit, 'probe_count': 0,
+        'error_counts': dict.fromkeys(operations, 0),
+        'first_errors': dict.fromkeys(operations), 'last_probe': {}}
 
-    def note(error):
+    def note(error, operation):
         nonlocal interrupted
         errors = record.setdefault('cleanup_errors', [])
         if repr(error) not in errors:
             errors.append(repr(error))
+        cleanup['error_counts'][operation] = min(counter_limit, cleanup['error_counts'][operation] + 1)
         if isinstance(error, InterruptedError) or not isinstance(error, OSError):
             interrupted = interrupted or error
+        if cleanup['first_errors'][operation] is None:
+            # Preserve the failure before reading diagnostic time. A clock error must
+            # neither skip required cleanup nor replace its original exception.
+            slot = {'operation': operation, 'exception_type': type(error).__name__,
+                    'errno': getattr(error, 'errno', None), 'monotonic': None}
+            cleanup['first_errors'][operation] = slot
+            try:
+                slot['monotonic'] = time.monotonic()
+            except BaseException as clock_error:
+                slot['timestamp_error'] = {'exception_type': type(clock_error).__name__,
+                    'errno': getattr(clock_error, 'errno', None), 'error': repr(clock_error)}
+                if repr(clock_error) not in errors:
+                    errors.append(repr(clock_error))
+                interrupted = interrupted or clock_error
 
     def stopped():
+        operation = 'leader_poll'
+        cleanup['probe_count'] = min(counter_limit, cleanup['probe_count'] + 1)
+        last = cleanup['last_probe'] = {}
+        if observation is not None:
+            observation['stop_probe_count'] = cleanup['probe_count']
+            observation['last_stop_probe'] = last
         try:
-            if observation is not None:
-                observation['stop_probe_count'] += 1
-                observation['last_stop_probe'] = {}
             reaped = proc.poll() is not None
-            if observation is not None:
-                observation['last_stop_probe']['leader_reaped'] = reaped
+            last['leader_reaped'] = reaped
+            operation = 'group_probe'
             try:
                 os.killpg(proc.pid, 0)
-                if observation is not None:
-                    observation['last_stop_probe']['group'] = 'PRESENT'
+                last['group'] = 'PRESENT'
             except ProcessLookupError:
-                if observation is not None:
-                    observation['last_stop_probe']['group'] = 'ABSENT'
+                last['group'] = 'ABSENT'
                 record['owned_group_absent'] = reaped
                 return reaped
         except BaseException as error:
-            if observation is not None:
-                observation['last_stop_probe']['error'] = type(error).__name__
-            note(error)
+            last.update(error=type(error).__name__, operation=operation)
+            note(error, operation)
         return False
 
     def completed():
@@ -255,14 +323,14 @@ def stop_group(proc, record=None):
                 observation['stop_signals'].append(event)  # At most the existing TERM and KILL.
             os.killpg(proc.pid, sig)
             if event is not None:
-                event['result'] = 'SENT'
+                event['result'] = 'SYSCALL_RETURNED'
         except ProcessLookupError:
             if event is not None:
                 event['result'] = 'ALREADY_ABSENT'
         except BaseException as error:
             if event is not None:
                 event['result'] = type(error).__name__
-            note(error)
+            note(error, sig.name)
         deadline = start + offset
         while True:
             if stopped():
@@ -273,7 +341,7 @@ def stop_group(proc, record=None):
             try:
                 time.sleep(min(.02, remaining))
             except BaseException as error:
-                note(error)
+                note(error, 'sleep')
     raise RuntimeError('Owned process/group cleanup unconfirmed: ' + repr(record.get('cleanup_errors', [])))
 
 
