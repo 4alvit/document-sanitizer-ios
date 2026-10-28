@@ -13,6 +13,11 @@ jobs:
     name: macOS core, independent export corpus, iOS build
     runs-on: macos-15
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      release_assets_ready: ${{ steps.release_upload.outcome == 'success' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -28,6 +33,7 @@ jobs:
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 scripts/package-prerelease.py
       - name: Save verified Release simulator packages
+        id: release_upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         timeout-minutes: 3
         with:
@@ -44,8 +50,16 @@ jobs:
           bash scripts/check-ios-tests.sh
           -only-testing:CleanSendTests
           -skip-testing:CleanSendTests/ProStoreTests
+      - name: Run all eight bounded native StoreKit cases
+        if: github.event_name == 'pull_request'
+        timeout-minutes: 14
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B scripts/check-native-storekit.py
       - name: Save verification evidence
         if: always()
+        timeout-minutes: 2
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: verification-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
@@ -54,6 +68,7 @@ jobs:
             .qa/verifier-probe.json
             .qa/hosted-tests-*.xcresult
             .qa/release-scan-*.json
+            .qa/native-storekit/run-${{ github.run_id }}-attempt-${{ github.run_attempt }}/
           include-hidden-files: true
           if-no-files-found: ignore
   privacy-ipad:
@@ -84,7 +99,7 @@ jobs:
   package-smoke:
     name: Exact packaged Release share smoke
     needs: [verify, privacy-ipad]
-    if: github.event_name == 'pull_request'
+    if: ${{ always() && github.event_name == 'pull_request' && needs.verify.outputs.release_assets_ready == 'true' && needs['privacy-ipad'].result == 'success' }}
     runs-on: macos-15
     timeout-minutes: 25
     permissions:

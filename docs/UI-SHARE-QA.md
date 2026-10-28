@@ -91,7 +91,10 @@ evidence. A passing signature check alone does not prove these behaviors.
 
 ## Same-run packaged Release smoke in CI
 
-The `package-smoke` job waits for both existing verification and privacy jobs.
+The `package-smoke` job waits until verification and privacy finish. It requires
+a successful Release asset upload and a successful privacy job; a later core
+or native-payment failure keeps verification red without hiding package-smoke
+diagnostics. Overall acceptance still requires all three jobs to pass.
 It binds exactly their current run/attempt/head artifacts, preserves checksums
 and source provenance, and uses the Release UI runner already built by the
 privacy job. It does not rebuild or re-sign the packaged app. The one selected

@@ -47,7 +47,7 @@ class HostedPreparationTests(unittest.TestCase):
         with mock.patch.dict(sys.modules,{'verify_release_package':self.scanner}):
             self.fixtures=load('scanner_fixtures',ROOT/'scripts/test_verify_release_package.py')
         self.head,self.checkout,self.tree='a'*40,'b'*40,'c'*40
-        self.gets=0;self.outputs=self.root/'outputs'
+        self.gets=0;self.auth_failure=False;self.receipt_failure=False;self.state_failure=False;self.expire_during_auth=False;self.synthetic_time=None;self.diagnostic_writes=[];self.outputs=self.root/'outputs'
         self.scope=self.root/'redact-package-smoke-123-attempt-1'
     def tearDown(self):self.temp.cleanup()
 
@@ -110,19 +110,37 @@ class HostedPreparationTests(unittest.TestCase):
                 elif args[1]=='rev-parse':data=owner.tree.encode()
                 else:raise AssertionError(args)
                 yield io.BytesIO(data)
-            def token(self):return 'inert-token'
+            def token(self):
+                if owner.auth_failure:
+                    if owner.expire_during_auth:owner.synthetic_time=clock_anchor+301
+                    raise RuntimeError('injected authentication failure')
+                return 'inert-token'
             @contextlib.contextmanager
             def zip(self,token,size):
                 owner.gets+=1;ident=int(transport.URL.split('/')[-2]);yield io.BytesIO(owner.zips[ident])
         transport=SimpleNamespace(Transport=FakeTransport,GH='/usr/bin/true',CURL='/usr/bin/true',environment=lambda *_:{},URL=None)
+        original_clock=self.prep.time.monotonic;clock_anchor=original_clock()
+        def controlled_clock():return owner.synthetic_time if owner.synthetic_time is not None else original_clock()
         original_load=self.prep.load;original_admit=self.window.Window.admit
+        original_copy=self.window.Window.copy;original_state=self.window.Window.state
+        def controlled_state(window):
+            if owner.state_failure:raise owner.window.Rejected('fixture-sensitive-state-message')
+            return original_state(window)
+        def controlled_copy(window,stream,name,*args,**kwargs):
+            if owner.receipt_failure and name=='preparation.json':raise owner.window.Rejected('injected receipt capacity failure')
+            return original_copy(window,stream,name,*args,**kwargs)
+        original_write=os.write
+        def observed_write(fd,raw):
+            if fd==2:owner.diagnostic_writes.append(raw);return len(raw)
+            return original_write(fd,raw)
         def local_load(name,path=None):
             return self.window if name=='window' else transport if name=='transport' else original_load(name,path)
         env={'GITHUB_ACTIONS':'true','RUNNER_OS':'macOS','GITHUB_EVENT_NAME':'pull_request','GITHUB_REPOSITORY':self.prep.REPO,'GITHUB_RUN_ID':'123','GITHUB_RUN_ATTEMPT':'1','EXPECTED_HEAD_SHA':self.head,'GITHUB_SHA':self.checkout,'RUNNER_TEMP':str(self.root),'GITHUB_OUTPUT':str(self.outputs)}
-        with mock.patch.dict(os.environ,env),mock.patch.object(self.prep,'ROOT',self.repo),mock.patch.object(self.prep,'load',side_effect=local_load),mock.patch.object(self.window.Window,'admit',side_effect=lambda scope,started:original_admit(scope,started=started,disk_usage=lambda _:SimpleNamespace(free=100*2**30))),mock.patch.object(shutil,'disk_usage',return_value=SimpleNamespace(free=100*2**30)):
+        with mock.patch.object(self.prep.time,'monotonic',side_effect=controlled_clock),mock.patch.object(self.window.Window,'state',controlled_state),mock.patch.object(self.window.Window,'copy',controlled_copy),mock.patch.object(os,'write',side_effect=observed_write),mock.patch.dict(os.environ,env),mock.patch.object(self.prep,'ROOT',self.repo),mock.patch.object(self.prep,'load',side_effect=local_load),mock.patch.object(self.window.Window,'admit',side_effect=lambda scope,started:original_admit(scope,started=started,clock=controlled_clock,disk_usage=lambda _:SimpleNamespace(free=100*2**30))),mock.patch.object(shutil,'disk_usage',return_value=SimpleNamespace(free=100*2**30)):
             try:self.prep.main()
             except SystemExit as error:self.assertEqual(error.code,1)
-        return json.loads((self.scope/'preparation.json').read_bytes())
+        receipt=self.scope/'preparation.json'
+        return json.loads(receipt.read_bytes()) if receipt.exists() else {'status':'missing_receipt'}
 
     def test_real_preparation_and_rebound_config(self):
         self.inputs();report=self.execute();self.assertEqual(report['status'],'prepared',report);self.assertEqual(self.gets,2)
@@ -188,11 +206,45 @@ class HostedPreparationTests(unittest.TestCase):
                 self.assertTrue(receipt['cleanup_obligation']['cleanup_required'])
                 self.assertEqual(receipt['status'],'failed')
 
+    def test_primary_and_receipt_failures_are_visible_without_payload_or_native(self):
+        self.inputs();self.auth_failure=True;self.receipt_failure=True
+        self.assertEqual(self.execute()['status'],'missing_receipt');self.assertEqual(self.gets,0)
+        self.assertEqual(len(self.diagnostic_writes),1)
+        raw=self.diagnostic_writes[0];self.assertLessEqual(len(raw),4096)
+        diagnostic=json.loads(raw)
+        self.assertEqual(diagnostic['stage'],'artifact_authentication')
+        self.assertEqual(diagnostic['primary_error']['type'],'RuntimeError')
+        self.assertEqual(diagnostic['receipt_error']['type'],'Rejected')
+        self.assertTrue(diagnostic['primary_error']['frames'])
+        self.assertNotIn('inert-token',raw.decode());self.assertNotIn('injected authentication failure',raw.decode());self.assertNotIn('injected receipt capacity failure',raw.decode())
+
+    def test_final_state_failure_cannot_preserve_prepared_success(self):
+        self.inputs();self.state_failure=True
+        report=self.execute();self.assertEqual(report['status'],'failed');self.assertEqual(self.gets,2)
+        diagnostic=json.loads(self.diagnostic_writes[0])
+        self.assertEqual(diagnostic['primary_error']['type'],'Rejected')
+        self.assertNotIn('fixture-sensitive-state-message',self.diagnostic_writes[0].decode())
+
+    def test_capacity_failure_preserves_sample_without_extra_disk_read(self):
+        window=object.__new__(self.window.Window)
+        window.scope=self.root;window.entries={};window.started=0
+        window.check=mock.Mock();window.validate_entries=mock.Mock()
+        window.disk_usage=mock.Mock(return_value=SimpleNamespace(free=1))
+        with self.assertRaises(self.window.Rejected):window.capacity()
+        window.disk_usage.assert_called_once_with(self.root)
+        self.assertEqual(window.last_capacity_sample['free_bytes'],1)
+        self.assertEqual(window.last_capacity_sample['required_free_bytes'],self.window.FLOOR+self.window.OTHER+self.window.CAP)
+
+    def test_expired_original_window_emits_no_further_failure_output(self):
+        self.inputs();self.auth_failure=True;self.expire_during_auth=True
+        self.assertEqual(self.execute()['status'],'missing_receipt')
+        self.assertEqual(self.gets,0);self.assertEqual(self.diagnostic_writes,[])
+
     def test_wrong_head_rejected_before_payload(self):
-        self.inputs('head');report=self.execute();self.assertEqual(report['status'],'failed');self.assertIn('artifact provenance',report['error']);self.assertEqual(self.gets,0)
+        self.inputs('head');report=self.execute();self.assertEqual(report['status'],'failed');self.assertEqual(report['stage'],'artifact_metadata_identities');self.assertEqual(self.gets,0)
     def test_nested_runner_mode_drift_rejected(self):
-        self.inputs('mode');report=self.execute();self.assertEqual(report['status'],'failed');self.assertIn('runner ZIP mode',report['error']);self.assertEqual(self.gets,2)
+        self.inputs('mode');report=self.execute();self.assertEqual(report['status'],'failed');self.assertEqual(report['stage'],'runner_reconstruction');self.assertEqual(self.gets,2)
     def test_retained_scan_must_match_actual_binary_scan(self):
-        self.inputs('scanner');report=self.execute();self.assertEqual(report['status'],'failed');self.assertIn('live binary scan',report['error']);self.assertEqual(self.gets,2)
+        self.inputs('scanner');report=self.execute();self.assertEqual(report['status'],'failed');self.assertEqual(report['stage'],'release_binary_scans');self.assertEqual(self.gets,2)
 
 if __name__=='__main__':unittest.main()

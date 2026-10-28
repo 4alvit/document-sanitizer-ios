@@ -18,6 +18,7 @@ final class ProStoreTests: XCTestCase {
 
         await store.purchase()
         XCTAssertTrue(store.isPro)
+        try await waitForLocalEntitlement(present: true)
         XCTAssertFalse(store.isBusy)
 
         let relaunched = ProStore()
@@ -67,6 +68,7 @@ final class ProStoreTests: XCTestCase {
         XCTAssertFalse(store.isBusy)
         XCTAssertTrue(store.message?.contains("awaiting approval") == true)
         let pending = try XCTUnwrap(session.allTransactions().first(where: \.pendingAskToBuyConfirmation))
+        try await observePendingBeforeApproval(store, session: session)
         try session.approveAskToBuyTransaction(identifier: pending.identifier)
         try await eventually { store.isPro }
     }
@@ -117,6 +119,52 @@ final class ProStoreTests: XCTestCase {
         await store.restore()
         XCTAssertFalse(store.isPro)
         XCTAssertTrue(store.message?.contains("No active Pro purchase") == true)
+    }
+
+    /// Observe the existing production listener and native entitlement stream
+    /// while the synthetic transaction remains unapproved. This is evidence for
+    /// this finite window, not a guarantee about every possible future delivery.
+    private func observePendingBeforeApproval(_ store: ProStore, session: SKTestSession) async throws {
+        let clock = ContinuousClock()
+        let started = clock.now
+        let deadline = started.advanced(by: .seconds(10))
+        var observations: [[String: String]] = []
+        defer {
+            if let data = try? JSONSerialization.data(withJSONObject: observations, options: [.sortedKeys]) {
+                let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+                attachment.name = "native-pending-before-approval"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+        }
+        while clock.now < deadline {
+            var active = 0
+            var outsideXcode = false
+            for await result in Transaction.currentEntitlements {
+                guard case .verified(let value) = result,
+                      value.productID == ProStore.productID else { continue }
+                outsideXcode = outsideXcode || value.environment != .xcode
+                if value.revocationDate == nil && value.productType == .nonConsumable { active += 1 }
+            }
+            let ledger = session.allTransactions()
+            let pending = ledger.filter(\.pendingAskToBuyConfirmation).count
+            let elapsed = started.duration(to: clock.now).components
+            observations.append([
+                "elapsedSeconds": String(elapsed.seconds),
+                "matchingActiveVerifiedEntitlements": String(active),
+                "outsideXcodeEnvironment": String(outsideXcode),
+                "proAccess": String(store.isPro),
+                "syntheticLedgerCount": String(ledger.count),
+                "syntheticPendingCount": String(pending)
+            ])
+            guard observations.count <= 101, !outsideXcode, pending == 1,
+                  active == 0, !store.isPro else {
+                XCTFail("Native state changed before approval; stop without approving. See bounded synthetic-state attachment.")
+                throw NSError(domain: "CleanSendStoreKitTests", code: 4,
+                    userInfo: [NSLocalizedDescriptionKey: "Pre-approval native entitlement observation failed."])
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
     }
 
     private func makeSession() async throws -> SKTestSession {

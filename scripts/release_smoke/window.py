@@ -112,6 +112,8 @@ class Window:
         self.check()
         # Includes unspent reservations, not only unreserved allowance.
         remaining = CAP - self.total("allocated")
+        self.last_capacity_sample = {"free_bytes": free, "required_free_bytes": FLOOR + OTHER + remaining,
+                                     "remaining_allocation_allowance_bytes": remaining}
         require(free >= FLOOR + OTHER + remaining, "free floor plus reserve plus remaining allowance")
 
     def observe(self, name, info):

@@ -35,6 +35,15 @@ def index(archive,w,total=512*2**20):
   result[name]=row
  return result
 
+def failure_detail(error):
+ # The caller owns these exceptions; no command argv, token, environment or
+ # response content is included in this bounded diagnostic.
+ frames=[];trace=error.__traceback__
+ while trace is not None:
+  frames.append({'file':Path(trace.tb_frame.f_code.co_filename).name,'line':trace.tb_lineno,'function':trace.tb_frame.f_code.co_name})
+  trace=trace.tb_next
+ return {'type':type(error).__name__,'frames':frames[-4:]}
+
 def main():
  if not __debug__:raise SystemExit('Assertions must be enabled')
  assert os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_OS')=='macOS'
@@ -47,7 +56,7 @@ def main():
  b.IDENTITY={'repository':REPO,'run':run,'attempt':attempt,'head':head}
  w=b.Window.admit(base,started=start);w.safe=b.safe
  w.reserve([('preparation.json','file',256*1024),('artifact-list.json','file',1024*1024),('context.json','file',1024*1024),('runner-binding.json','file',1024*1024)])
- report={'identity':b.IDENTITY,'transports':[],'status':'running','started':start,'transfer_end':start+180,'preparation_end':start+300};primary=None
+ report={'identity':b.IDENTITY,'stage':'admitted','transports':[],'status':'running','started':start,'transfer_end':start+180,'preparation_end':start+300};primary=None
  def save(name,value):
   raw=(json.dumps(value,indent=2)+'\n').encode();return w.copy(io.BytesIO(raw),name,len(raw))
  def git(args,name,cap=512*1024):
@@ -57,16 +66,28 @@ def main():
   with w.reader(name) as stream:return stream.read(cap+1).decode().strip()
  try:
   assert t.GH and Path(t.GH).is_file() and Path(t.CURL).is_file()
+  report['stage']='artifact_metadata_command'
   listing=t.Transport(start+180,str(ROOT));report['transports'].append(listing.report)
-  with listing.command('artifact_metadata',12,1024*1024,lambda _:[t.GH,'api',f'repos/{REPO}/actions/runs/{run}/artifacts?per_page=100'],t.environment(True)) as stream:w.copy(stream,'artifact-list.json')
-  with w.reader('artifact-list.json') as stream:rows=identities(json.load(stream,object_pairs_hook=b.unique),REPO,run,attempt,head)
+  with listing.command('artifact_metadata',12,1024*1024,lambda _:[t.GH,'api',f'repos/{REPO}/actions/runs/{run}/artifacts?per_page=100'],t.environment(True)) as stream:
+   report['stage']='artifact_metadata_copy';w.copy(stream,'artifact-list.json')
+   report['stage']='artifact_metadata_transport_close'
+  report['stage']='artifact_metadata_read'
+  with w.reader('artifact-list.json') as stream:
+   data=json.load(stream,object_pairs_hook=b.unique);report['stage']='artifact_metadata_identities'
+   rows=identities(data,REPO,run,attempt,head);report['stage']='artifact_metadata_reader_close'
   report['artifacts']=rows
+  report['stage']='artifact_authentication'
   auth=t.Transport(start+180,str(ROOT));report['transports'].append(auth.report);token=auth.token()
   for row,folder,allowed in zip(rows,('release-assets','privacy-inputs'),(RELEASE,PRIVACY)):
+   report['stage']='download:'+folder
    name=str(row['id'])+'.zip';w.reserve([(name,'file',row['bytes']+1024*1024),(folder,'directory',0)])
    transport=t.Transport(start+180,str(ROOT));report['transports'].append(transport.report)
    t.URL=f'https://api.github.com/repos/{REPO}/actions/artifacts/{row["id"]}/zip'
-   with transport.zip(token,row['bytes']) as stream:w.copy(stream,name,row['bytes'],row['sha256'])
+   report['stage']='download_command:'+folder
+   with transport.zip(token,row['bytes']) as stream:
+    report['stage']='download_copy:'+folder;w.copy(stream,name,row['bytes'],row['sha256'])
+    report['stage']='download_transport_close:'+folder
+   report['stage']='extract:'+folder
    w.mkdir(folder)
    with w.reader(name) as stream,zipfile.ZipFile(stream) as archive:
     contents=index(archive,w);assert set(allowed)<=set(contents)
@@ -82,6 +103,7 @@ def main():
    with w.reader(name) as stream:data=stream.read(cap+1)
    assert len(data)<=cap;return data
   def doc(name):return json.loads(raw(name),object_pairs_hook=b.unique)
+  report['stage']='producer_and_source_provenance'
   privacy=doc('privacy-inputs/source-provenance.json');meta=doc('privacy-inputs/metadata.json')
   assert privacy['published_head']==head and privacy['run_id']==run and privacy['run_attempt']==attempt
   assert privacy['build_configuration']=='Release' and privacy['sdk']=='18.5' and privacy['xcode']=='Xcode 16.4\nBuild version 16F6'
@@ -124,6 +146,7 @@ def main():
     w.check();assert row.file_size<=8*2**20
     with archive.open(row) as member:data=member.read(row.file_size+1)
     assert len(data)==row.file_size and hashlib.sha256(data).hexdigest()==privacy['source_files'][name]
+  report['stage']='release_binary_scans'
   scanner=load('verify_release_package',ROOT/'scripts/verify_release_package.py');scans=doc('release-assets/release-binary-scan.json')
   for variant in ('unsigned','adhoc'):
    name=f'RedactLeaf-{variant}-simulator.zip'
@@ -131,6 +154,7 @@ def main():
     binary_rows=index(archive,w,32*2**20);assert all(r.file_size<=8*2**20 for r in binary_rows.values())
    w.check();actual=scanner.scan_package(base/'release-assets'/name);w.check()
    assert actual['ok'] and actual==scans[variant+'_zip'] and actual['binaries']==scans[variant+'_app']['binaries'],'live binary scan mismatch'
+  report['stage']='runner_reconstruction'
   runner_folder='runner/CleanSendUITests-Runner.app';w.reserve([('runner','directory',0)]);w.mkdir('runner')
   runner_modes=modes['runner'];assert set(before['runner']['files'])=={n for n,v in runner_modes.items() if not v['directory']}
   for name,mode in sorted(runner_modes.items(),key=lambda pair:(pair[0].count('/'),pair[0])):
@@ -154,17 +178,30 @@ def main():
    entries[name]=row
   binding={'runner':str(runner),'runner_entries':entries,'runner_source_commit':checkout,'selected_test_source_path':str(ROOT/'Tests/UITests/ShareExtensionEntryTests.swift'),'test_source_sha256':privacy['source_files']['Tests/UITests/ShareExtensionEntryTests.swift'],'runner_Info':{k:plistlib.loads((runner/'Info.plist').read_bytes()).get(k) for k in ('CFBundleIdentifier','MinimumOSVersion','DTXcodeBuild')},'original_runner':before['runner']['path'],'original_AUT':before['AUT']['path'],'template_sha256':hashlib.sha256(raw('privacy-inputs/generated-original.xctestrun')).hexdigest()}
   save('runner-binding.json',binding)
+  report['stage']='native_context'
   context={'repository':REPO,'run':run,'attempt':attempt,'head':head,'tree':tree,'checkout':checkout,'base':str(base),'scope':str(base/'native'),'assets':str(base/'release-assets'),'runner_binding':str(base/'runner-binding.json'),'runner_template':str(base/'privacy-inputs/generated-original.xctestrun'),'adhoc_zip_sha256':checksums['RedactLeaf-adhoc-simulator.zip'],'adhoc_zip_bytes':(base/'release-assets/RedactLeaf-adhoc-simulator.zip').stat().st_size,'payload_manifest_sha256':checksums['payload-sha256.json'],'runtime_id':meta['runtime']['identifier'],'device_type':meta['device_type']['identifier'],'runtime_version':'18.5','xcode_build':'16F6','seconds':780,'owned_cap_bytes':2*2**30,'free_floor_bytes':12*2**30,'get_count':0,'native_worker_count':1,'retry_authorized':False,'pipeline_deadline':start+1080,'expires_unix':time.time()+300,'source_files':privacy['source_files']}
   assert context['runtime_id']=='com.apple.CoreSimulator.SimRuntime.iOS-18-5'
   assert context['device_type']=='com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4-16GB'
   assert time.monotonic()<start+300 and shutil.disk_usage(base).free>=14*2**30
   saved=save('context.json',context);report.update(status='prepared',context_sha256=saved['sha256'],context=str(base/'context.json'))
   with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:output.write('context='+str(base/'context.json')+'\ncontext_sha256='+saved['sha256']+'\nscope='+str(base)+'\n')
- except BaseException as error:primary=error;report.update(status='failed',error=repr(error))
+ except BaseException as error:primary=error;report.update(status='failed',error=type(error).__name__,primary_error=failure_detail(error))
  finally:
   report['elapsed_seconds']=time.monotonic()-start
-  try:report['window']=w.state();save('preparation.json',report)
-  except BaseException:primary=primary or RuntimeError('Preparation receipt unavailable within original bound')
+  report['last_capacity_sample']=getattr(w,'last_capacity_sample',None)
+  try:report['window']=w.state()
+  except BaseException as error:
+   report['window_error']=failure_detail(error);report['status']='failed'
+   if primary is None:primary=error;report['primary_error']=failure_detail(error)
+  try:save('preparation.json',report)
+  except BaseException as error:
+   report['receipt_error']=failure_detail(error)
+   primary=primary or error
+  if primary and time.monotonic()<start+300:
+   diagnostic={'status':'failed','stage':report['stage'],'identity':b.IDENTITY,'primary_error':report.get('primary_error'),'window_error':report.get('window_error'),'receipt_error':report.get('receipt_error'),'last_capacity_sample':getattr(w,'last_capacity_sample',None)}
+   encoded=(json.dumps(diagnostic)+'\n').encode()
+   if len(encoded)<=4096 and time.monotonic()<start+300:
+    os.write(2,encoded)
  if primary:raise SystemExit(1)
 
 if __name__=='__main__':main()

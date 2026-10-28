@@ -105,11 +105,10 @@ instantiates the real production `ProStore`.
 
 The history preflight is diagnostic, not a guarantee that all StoreKit APIs
 use the same environment. A test on a previously prepared simulator cannot
-replace a reproducible cold run. GitHub CI runs the hosted application suite
-with controlled purchase-service fixtures and explicitly excludes the native
-`ProStoreTests`. Those tests remain in the repository for a deliberate payment
-validation run with the required environment. Passing CI or an independent UI
-run does not satisfy this payment release gate.
+replace a reproducible cold run. The regular hosted application step uses controlled purchase-service fixtures
+and excludes `ProStoreTests`. A separate guarded step on that same host selects
+all eight native cases from the products already compiled by that step. These
+results must be evaluated separately from the controlled fixtures and UI smoke.
 
 ## Related upstream report and next acceptance
 
@@ -123,7 +122,39 @@ This similarity does not prove that our Xcode 27 observation has the same cause.
 The next accepted result must record the source, toolchain, configuration,
 fresh device and complete payment path. Purchase, cancellation, pending
 approval, unverified transactions, refund, restore and network-error cases
-must execute against the intended local service. Physical-device sandbox
-testing with the actual App Store Connect product remains a separate release
-requirement. Do not use private service overrides, invented entitlements or
+must execute against the intended local service. Apple account, signing, App Store Connect product and legal checks remain
+separate from this Simulator evidence. Physical-device testing is outside this
+preview's requested validation scope. Do not use private service overrides, invented entitlements or
 an undisclosed warm-up to turn this gate green.
+
+## Bounded hosted native payment gate
+
+The dedicated step uses one `test-without-building` invocation for all eight
+existing `ProStoreTests`, on a fresh owned iPhone 16 Pro Simulator with iOS 18.5
+and Xcode 16.4. It reuses the same job's Debug application and unit-test bundle;
+it does not build, re-sign or enter an Apple Account.
+The existing empty Debug unit-test host lets each case initialize its local
+StoreKit session before constructing the real production `ProStore`. The existing
+per-case preflight performs a synthetic purchase, verifies `.xcode` history, then
+clears it and waits for an empty entitlement stream. That disclosed barrier is
+unchanged; the adapter adds no separate warm-up.
+
+The purchase case verifies local native history after `Product.purchase()`,
+then exercises a new store instance and restore. The pending case observes the
+native verified entitlement stream and live Pro access for ten seconds before
+its approval call. A failure stops that case before approval and retains a
+bounded attachment without account identifiers or receipts. This finite
+observation does not prove that a delayed event can never occur, or that a
+different toolchain fixed the historical P1.
+
+All eight exact case identities must pass with zero failures or skips. They
+share one 300-second XCTest command ceiling; the existing per-case maximum
+remains 180 seconds. Native work ends at 560 seconds, owned-device cleanup at
+660, and the whole step at 780. The parent verifies actual remaining time in
+the unchanged 30-minute job before admitting native work, preserving cleanup
+and evidence-upload time. There is no automatic retry or cap increase.
+
+Release asset upload and privacy success independently admit the packaged
+share smoke after both producer jobs finish, even if this native payment gate
+fails. The verification job and overall CI still fail; acceptance requires all
+three jobs. A local-service result cannot establish App Store purchase routing.
