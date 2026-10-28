@@ -137,15 +137,22 @@ final class PrivacySupportUITests: XCTestCase {
     @MainActor
     private func readyWorkspaceActions(in app: XCUIApplication) -> XCUIElement? {
         let matches = app.buttons.matching(identifier: "workspace-actions")
-        let actions = app.buttons["workspace-actions"]
+        let identifiedActions = app.buttons["workspace-actions"]
+        // SwiftUI Menu exposes the identified wrapper above its direct action button.
+        // Bind by that unique structure, never by position, coordinates or hit status.
+        let actionButtons = identifiedActions.children(matching: .button)
+        let actions = actionButtons.element
         var previous = CGRect.null
         var previousAppFrame = CGRect.null
         var stableSince = ProcessInfo.processInfo.systemUptime
 
         func isActionable() -> Bool {
             guard matches.count == 1, app.state == .runningForeground,
-                  actions.exists, actions.isEnabled, actions.isHittable else { return false }
-            return !actions.frame.isEmpty && app.frame.contains(actions.frame)
+                  identifiedActions.exists, identifiedActions.isEnabled,
+                  actionButtons.count == 1, actions.exists,
+                  actions.isEnabled, actions.isHittable else { return false }
+            let frame = actions.frame
+            return !frame.isEmpty && frame == identifiedActions.frame && app.frame.contains(frame)
         }
 
         captureWorkspaceActions(in: app, stage: "before-wait")
@@ -191,7 +198,7 @@ final class PrivacySupportUITests: XCTestCase {
               ["before-wait", "ready-before-tap", "not-ready"].contains(stage) else { return }
         remainingWorkspaceContextSamples -= 1
         let name = "privacy-workspace-actions-" + stage
-        var state = "diagnostic=toolbar-reference-v1 stage=\(stage) capture=\(2 - remainingWorkspaceContextSamples) start=\(ProcessInfo.processInfo.systemUptime)\n"
+        var state = "diagnostic=toolbar-reference-v2 binding=sole-direct-button stage=\(stage) capture=\(2 - remainingWorkspaceContextSamples) start=\(ProcessInfo.processInfo.systemUptime)\n"
         state += "targetHit=NOT_READ referenceHit=NOT_READ; sequential observations, not atomic\n"
         state += "AUTInterfaceOrientation=NOT_READ; device orientation is physical, frame aspect is derived geometry\n"
         state += "soleWindowMainOrKeyStatus=NOT_READ; window uniqueness does not establish main/key status\n"
@@ -224,8 +231,20 @@ final class PrivacySupportUITests: XCTestCase {
         let windows = app.windows.allElementsBoundByAccessibilityElement
         state += "targetCount=\(targets.count) referenceCount=\(references.count) windowCount=\(windows.count)\n"
         guard targets.count == 1, references.count == 1, windows.count == 1,
-              let target = targets.first, let reference = references.first, let window = windows.first else {
+              let identifiedTarget = targets.first, let reference = references.first, let window = windows.first else {
             state += "result=INCONCLUSIVE reason=nonunique-or-missing-binding remaining=NOT_READ\n"
+            return
+        }
+        let identifiedTargetExists = identifiedTarget.exists
+        state += "identifiedTargetExists=\(identifiedTargetExists)\n"
+        guard identifiedTargetExists else {
+            state += "result=INCONCLUSIVE reason=identified-ancestor-absent remaining=NOT_READ\n"
+            return
+        }
+        let children = identifiedTarget.children(matching: .button).allElementsBoundByAccessibilityElement
+        state += "targetDirectButtonCount=\(children.count)\n"
+        guard children.count == 1, let target = children.first else {
+            state += "result=INCONCLUSIVE reason=nonunique-or-missing-direct-button remaining=NOT_READ\n"
             return
         }
         let targetExists = target.exists
@@ -236,22 +255,28 @@ final class PrivacySupportUITests: XCTestCase {
             state += "result=INCONCLUSIVE reason=absent-after-binding remaining=NOT_READ\n"
             return
         }
+        let identifiedTargetEnabled = identifiedTarget.isEnabled
+        let identifiedTargetFrame = identifiedTarget.frame
         let targetEnabled = target.isEnabled
         let referenceEnabled = reference.isEnabled
         let targetFrame = target.frame
         let referenceFrame = reference.frame
         let windowFrame = window.frame
         let targetLabel = target.label
-        let validFrames = valid(appFrame) && valid(windowFrame) && valid(targetFrame) && valid(referenceFrame)
+        let validFrames = valid(appFrame) && valid(windowFrame) && valid(identifiedTargetFrame)
+            && valid(targetFrame) && valid(referenceFrame)
+        let targetMatchesAncestor = targetFrame == identifiedTargetFrame
         let targetInApp = appFrame.contains(targetFrame)
         let referenceInApp = appFrame.contains(referenceFrame)
         let targetInWindow = windowFrame.contains(targetFrame)
         let referenceInWindow = windowFrame.contains(referenceFrame)
+        state += "identifiedTargetEnabled=\(identifiedTargetEnabled) identifiedTargetFrame=\(identifiedTargetFrame) targetMatchesAncestor=\(targetMatchesAncestor)\n"
         state += "targetEnabled=\(targetEnabled) targetFrame=\(targetFrame) targetLabel=\(String(reflecting: targetLabel))\n"
         state += "referenceEnabled=\(referenceEnabled) referenceFrame=\(referenceFrame) reference=open-pro observationOnly=true\n"
         state += "soleWindowFrame=\(windowFrame) windowAspect=\(aspect(windowFrame)) windowEqualsApp=\(windowFrame == appFrame)\n"
         state += "validFrames=\(validFrames) targetInApp=\(targetInApp) referenceInApp=\(referenceInApp) targetInWindow=\(targetInWindow) referenceInWindow=\(referenceInWindow)\n"
-        guard appState == .runningForeground, targetEnabled, referenceEnabled, validFrames,
+        guard appState == .runningForeground, identifiedTargetEnabled, targetEnabled, referenceEnabled,
+              validFrames, targetMatchesAncestor,
               targetInApp, referenceInApp, targetInWindow, referenceInWindow else {
             state += "result=INCONCLUSIVE reason=ineligible-state-or-geometry remaining=NOT_READ\n"
             return
