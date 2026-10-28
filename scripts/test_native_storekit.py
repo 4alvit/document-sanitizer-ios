@@ -11,7 +11,7 @@ def load(name,path):
     spec=importlib.util.spec_from_file_location(name,path);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 
 def jobs(now,elapsed=300):
-    return {'total_count':1,'jobs':[{'id':7,'name':'Native StoreKit eight-case acceptance','run_id':123,'run_attempt':1,'head_sha':'a'*40,'status':'in_progress','runner_id':55,'runner_name':'fixture','labels':['macos-15-intel'],'started_at':(now-dt.timedelta(seconds=elapsed)).isoformat()}]}
+    return {'total_count':1,'jobs':[{'id':7,'name':'Native StoreKit eight-case acceptance','run_id':123,'run_attempt':1,'head_sha':'a'*40,'status':'in_progress','runner_id':55,'runner_name':'fixture','labels':['macos-15'],'started_at':(now-dt.timedelta(seconds=elapsed)).isoformat()}]}
 
 class NativeStoreKitBindingTests(unittest.TestCase):
     def setUp(self):self.m=load('native_storekit_test',DRIVER);self.now=dt.datetime.now(dt.timezone.utc)
@@ -57,16 +57,16 @@ class NativeStoreKitBindingTests(unittest.TestCase):
         with self.assertRaises(AssertionError):self.m.admit_job(jobs(self.now,600),'123','1','a'*40,self.now,1200)
         with self.assertRaises(AssertionError):self.m.admit_job(jobs(self.now,421),'123','1','a'*40,self.now,1200)
     def test_wrong_head_attempt_runner_and_plan_fail_closed(self):
-        for key,value in (('head_sha','b'*40),('run_attempt',2),('labels',['macos-14']),('labels',['macos-15']),('labels',['macos-15-large'])):
+        for key,value in (('head_sha','b'*40),('run_attempt',2),('labels',['macos-14']),('labels',['macos-15-intel']),('labels',['macos-15-large'])):
             data=jobs(self.now);data['jobs'][0][key]=value
             with self.assertRaises(AssertionError):self.m.admit_job(data,'123','1','a'*40,self.now,1200)
         plan=json.loads((ROOT/'CleanSend.xctestplan').read_bytes());plan['defaultOptions']['maximumTestExecutionTimeAllowance']=240
         with self.assertRaises(AssertionError):self.m.validate_test_plan(plan)
     def test_wrong_host_rejected_before_metadata_or_scope_creation(self):
         env={'GITHUB_ACTIONS':'true','RUNNER_OS':'macOS'}
-        for architecture in ('arm64','unknown'):
+        for architecture in ('x86_64','unknown'):
             with self.subTest(architecture=architecture),mock.patch.dict(os.environ,env),mock.patch.object(os,'uname',return_value=SimpleNamespace(machine=architecture)),mock.patch.object(self.m,'load',side_effect=AssertionError('transport must not load')):
-                with self.assertRaisesRegex(AssertionError,'Intel host profile'):self.m.prepare_context(time.monotonic())
+                with self.assertRaisesRegex(AssertionError,'ARM host profile'):self.m.prepare_context(time.monotonic())
 
     def test_actual_context_preparation_does_one_metadata_read_and_drops_tokens(self):
         with tempfile.TemporaryDirectory(prefix='redact-payment-bind-') as temp:
@@ -78,7 +78,7 @@ class NativeStoreKitBindingTests(unittest.TestCase):
                     calls.append((kind,limit,cap,argv(None)));yield io.BytesIO(json.dumps(jobs(self.now)).encode())
             transport=SimpleNamespace(Transport=FakeTransport,GH='/fixture/gh',environment=lambda *_:{})
             env={'GITHUB_ACTIONS':'true','RUNNER_OS':'macOS','GITHUB_EVENT_NAME':'pull_request','GITHUB_REPOSITORY':self.m.REPO,'GITHUB_RUN_ID':'123','GITHUB_RUN_ATTEMPT':'1','EXPECTED_HEAD_SHA':'a'*40,'GITHUB_SHA':'b'*40,'GH_TOKEN':'fixture-secret','GITHUB_TOKEN':'other-secret'}
-            with mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='x86_64')),mock.patch.dict(os.environ,env),mock.patch.object(self.m,'ROOT',root),mock.patch.object(self.m,'load',side_effect=lambda name:window if name=='window' else transport),mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=100*2**30)),mock.patch.object(subprocess,'Popen',side_effect=AssertionError('real process forbidden')):
+            with mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='arm64')),mock.patch.dict(os.environ,env),mock.patch.object(self.m,'ROOT',root),mock.patch.object(self.m,'load',side_effect=lambda name:window if name=='window' else transport),mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=100*2**30)),mock.patch.object(subprocess,'Popen',side_effect=AssertionError('real process forbidden')):
                 started=time.monotonic();path,context=self.m.prepare_context(started)
                 self.assertNotIn('GH_TOKEN',os.environ);self.assertNotIn('GITHUB_TOKEN',os.environ)
                 self.assertEqual(len(calls),1);self.assertEqual(calls[0][:3],('job_metadata',12,1024*1024))

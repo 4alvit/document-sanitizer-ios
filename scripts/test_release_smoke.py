@@ -57,8 +57,8 @@ class HostedPreparationTests(unittest.TestCase):
         for name,data in sources.items():
             p=self.repo/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
         source_hashes={n:digest(v) for n,v in sources.items()}
-        binary=self.fixtures.thin(cpu=0x0100000C) if fault=='arm64_only_binary' else self.fixtures.fat([self.fixtures.thin(),self.fixtures.thin(cpu=0x0100000C)])
-        binaries=self.fixtures.bundle_files(binary)
+        binary=self.fixtures.thin() if fault=='x86_64_only_binary' else self.fixtures.fat([self.fixtures.thin(),self.fixtures.thin(cpu=0x0100000C)])
+        binaries=self.fixtures.bundle_files(binary, extension=self.fixtures.thin(cpu=0x0100000C))
         binary_zip=archive({'CleanSend.app/'+n:v for n,v in binaries.items()})
         scanned=self.root/'inert.zip';scanned.write_bytes(binary_zip)
         scan=self.scanner.scan_package(scanned);self.assertTrue(scan['ok'],scan)
@@ -70,11 +70,11 @@ class HostedPreparationTests(unittest.TestCase):
         release={
             'RedactLeaf-source.zip':archive({'RedactLeaf-source/'+n:v for n,v in sources.items()}),
             'RedactLeaf-unsigned-simulator.zip':binary_zip,'RedactLeaf-adhoc-simulator.zip':binary_zip,
-            'preview-build.json':encoded({'source_commit':self.checkout,'source_tree':self.tree,'configuration':'Release','platform':'iPhoneSimulator','host_architecture':'x86_64','xcode':'Xcode 16.4\nBuild version 16F6','app_store_release':False,'provenance':{'published_head':self.head,'published_head_tree':self.tree,'checkout_tree_matches_published_head':True,'github':{'run_id':'123','run_attempt':'1','repository':self.prep.REPO}}}),
+            'preview-build.json':encoded({'source_commit':self.checkout,'source_tree':self.tree,'configuration':'Release','platform':'iPhoneSimulator','host_architecture':'arm64','xcode':'Xcode 16.4\nBuild version 16F6','app_store_release':False,'provenance':{'published_head':self.head,'published_head_tree':self.tree,'checkout_tree_matches_published_head':True,'github':{'run_id':'123','run_attempt':'1','repository':self.prep.REPO}}}),
             'payload-sha256.json':b'{}','release-binary-scan.json':encoded(scans),'PREVIEW-README.txt':b'Inert source control only.\n'}
         release['SHA256SUMS']=''.join(digest(v)+'  '+n+'\n' for n,v in release.items()).encode()
         if fault=='release_profile':
-            preview=json.loads(release['preview-build.json']);preview['host_architecture']='arm64';release['preview-build.json']=encoded(preview)
+            preview=json.loads(release['preview-build.json']);preview['host_architecture']='x86_64';release['preview-build.json']=encoded(preview)
             release['SHA256SUMS']=''.join(digest(v)+'  '+n+'\n' for n,v in release.items() if n!='SHA256SUMS').encode()
         original='/producer/Build/Products/Release-iphonesimulator'
         runner_files={'Info.plist':plistlib.dumps({'CFBundleIdentifier':'fixture.runner','MinimumOSVersion':'17.0','DTXcodeBuild':'16F6'}),'CleanSendUITests-Runner':b'runner','PlugIns/CleanSendUITests.xctest/CleanSendUITests':b'test','Frameworks/XCTest.framework/XCTest':b'framework'}
@@ -87,10 +87,10 @@ class HostedPreparationTests(unittest.TestCase):
         payloads={}
         for n,v in runner_files.items():payloads['runner/'+n]=(v,stat.S_IFREG|int(modes[n]['mode'],8))
         if fault=='mode':payloads['runner/Frameworks/XCTest.framework/XCTest']=(b'framework',0o100644)
-        provenance={'published_head':self.head,'run_id':'123','run_attempt':'1','build_configuration':'Release','host_architecture':'x86_64','sdk':'18.5','xcode':'Xcode 16.4\nBuild version 16F6','equal_trees':True,'actual_tree':self.tree,'head_tree':self.tree,'actual_checkout':self.checkout,'source_files':source_hashes}
-        metadata={'commands':[{'args':['xcodebuild','-scheme','CleanSendPrivacyRelease','-configuration','Release','ENABLE_TESTABILITY=NO','ARCHS=x86_64','ONLY_ACTIVE_ARCH=YES','build-for-testing'],'returncode':0,'owned_group_absent':True}],'source_and_built_payloads_unchanged':True,'device_removed':True,'cleanup':{'shutdown':0,'delete':0},'xcodebuild_returncode':0,'failures':[],'runtime':{'identifier':'com.apple.CoreSimulator.SimRuntime.iOS-18-5'},'device_type':{'identifier':'com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4-16GB'}}
-        if fault=='privacy_profile':provenance['host_architecture']='arm64'
-        if fault=='runner_profile':metadata['commands'][0]['args'].remove('ARCHS=x86_64');metadata['commands'][0]['args'].append('ARCHS=arm64')
+        provenance={'published_head':self.head,'run_id':'123','run_attempt':'1','build_configuration':'Release','host_architecture':'arm64','sdk':'18.5','xcode':'Xcode 16.4\nBuild version 16F6','equal_trees':True,'actual_tree':self.tree,'head_tree':self.tree,'actual_checkout':self.checkout,'source_files':source_hashes}
+        metadata={'commands':[{'args':['xcodebuild','-scheme','CleanSendPrivacyRelease','-configuration','Release','ENABLE_TESTABILITY=NO','ARCHS=arm64','ONLY_ACTIVE_ARCH=YES','build-for-testing'],'returncode':0,'owned_group_absent':True}],'source_and_built_payloads_unchanged':True,'device_removed':True,'cleanup':{'shutdown':0,'delete':0},'xcodebuild_returncode':0,'failures':[],'runtime':{'identifier':'com.apple.CoreSimulator.SimRuntime.iOS-18-5'},'device_type':{'identifier':'com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4-16GB'}}
+        if fault=='privacy_profile':provenance['host_architecture']='x86_64'
+        if fault=='runner_profile':metadata['commands'][0]['args'].remove('ARCHS=arm64');metadata['commands'][0]['args'].append('ARCHS=x86_64')
         privacy={'tested-payloads.zip':archive(payloads),'generated-original.xctestrun':self.template,'selected.xctestrun':self.template,'source-provenance.json':encoded(provenance),'metadata.json':encoded(metadata),'summary.json':encoded({'passedTests':1,'failedTests':0,'skippedTests':0,'totalTestCount':1}),'selected-cases.json':b'{}','invocation.json':b'{}'}
         for when in ('before','after'):
             privacy['payload-'+when+'.json']=encoded(before)
@@ -142,25 +142,25 @@ class HostedPreparationTests(unittest.TestCase):
         def local_load(name,path=None):
             return self.window if name=='window' else transport if name=='transport' else original_load(name,path)
         env={'GITHUB_ACTIONS':'true','RUNNER_OS':'macOS','GITHUB_EVENT_NAME':'pull_request','GITHUB_REPOSITORY':self.prep.REPO,'GITHUB_RUN_ID':'123','GITHUB_RUN_ATTEMPT':'1','EXPECTED_HEAD_SHA':self.head,'GITHUB_SHA':self.checkout,'RUNNER_TEMP':str(self.root),'GITHUB_OUTPUT':str(self.outputs)}
-        with mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='x86_64')),mock.patch.object(self.prep.time,'monotonic',side_effect=controlled_clock),mock.patch.object(self.window.Window,'state',controlled_state),mock.patch.object(self.window.Window,'copy',controlled_copy),mock.patch.object(os,'write',side_effect=observed_write),mock.patch.dict(os.environ,env),mock.patch.object(self.prep,'ROOT',self.repo),mock.patch.object(self.prep,'load',side_effect=local_load),mock.patch.object(self.window.Window,'admit',side_effect=lambda scope,started:original_admit(scope,started=started,clock=controlled_clock,disk_usage=lambda _:SimpleNamespace(free=100*2**30))),mock.patch.object(shutil,'disk_usage',return_value=SimpleNamespace(free=100*2**30)):
+        with mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='arm64')),mock.patch.object(self.prep.time,'monotonic',side_effect=controlled_clock),mock.patch.object(self.window.Window,'state',controlled_state),mock.patch.object(self.window.Window,'copy',controlled_copy),mock.patch.object(os,'write',side_effect=observed_write),mock.patch.dict(os.environ,env),mock.patch.object(self.prep,'ROOT',self.repo),mock.patch.object(self.prep,'load',side_effect=local_load),mock.patch.object(self.window.Window,'admit',side_effect=lambda scope,started:original_admit(scope,started=started,clock=controlled_clock,disk_usage=lambda _:SimpleNamespace(free=100*2**30))),mock.patch.object(shutil,'disk_usage',return_value=SimpleNamespace(free=100*2**30)):
             try:self.prep.main()
             except SystemExit as error:self.assertEqual(error.code,1)
         receipt=self.scope/'preparation.json'
         return json.loads(receipt.read_bytes()) if receipt.exists() else {'status':'missing_receipt'}
 
     def test_mixed_producer_profiles_are_rejected_by_actual_preparation(self):
-        for fault in ('privacy_profile','release_profile','runner_profile','arm64_only_binary'):
+        for fault in ('privacy_profile','release_profile','runner_profile','x86_64_only_binary'):
             with self.subTest(fault=fault):
                 self.inputs(fault);report=self.execute();self.assertEqual(report['status'],'failed',report)
                 self.assertFalse((self.scope/'context.json').exists())
                 shutil.rmtree(self.scope)
 
-    def test_non_intel_consumer_is_rejected_before_preparation(self):
-        with mock.patch.dict(os.environ,{'GITHUB_ACTIONS':'true','RUNNER_OS':'macOS'}),mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='arm64')),mock.patch.object(self.prep,'load',side_effect=AssertionError('no transport')):
-            with self.assertRaisesRegex(AssertionError,'Intel host profile'):self.prep.main()
+    def test_non_arm_consumer_is_rejected_before_preparation(self):
+        with mock.patch.dict(os.environ,{'GITHUB_ACTIONS':'true','RUNNER_OS':'macOS'}),mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='x86_64')),mock.patch.object(self.prep,'load',side_effect=AssertionError('no transport')):
+            with self.assertRaisesRegex(AssertionError,'ARM host profile'):self.prep.main()
         native=load('profile_smoke_native',SMOKE/'run.py')
-        with mock.patch.dict(os.environ,{'GITHUB_ACTIONS':'true','GITHUB_EVENT_NAME':'pull_request'}),mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='arm64')):
-            with self.assertRaisesRegex(AssertionError,'Intel host profile'):native.validate_grant(self.root/'absent-context.json')
+        with mock.patch.dict(os.environ,{'GITHUB_ACTIONS':'true','GITHUB_EVENT_NAME':'pull_request'}),mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='x86_64')):
+            with self.assertRaisesRegex(AssertionError,'ARM host profile'):native.validate_grant(self.root/'absent-context.json')
 
     def test_real_preparation_and_rebound_config(self):
         self.inputs();report=self.execute();self.assertEqual(report['status'],'prepared',report);self.assertEqual(self.gets,2)
@@ -235,7 +235,7 @@ class HostedPreparationTests(unittest.TestCase):
         developer=self.root/'Developer';template=developer/'Platforms/iPhoneSimulator.platform/Developer/Library/Xcode/Agents/XCTRunner.app/Info.plist';template.parent.mkdir(parents=True)
         carrier_info={'CFBundleIdentifier':'io.github.4alvit.cleansend.uitests.xctrunner','MinimumOSVersion':'13.0','DTXcodeBuild':'16F1t','DTSDKName':'iphonesimulator18.4.internal','DTSDKBuild':'22E169','DTPlatformName':'iphonesimulator','DTPlatformVersion':'18.4','DTPlatformBuild':'22E169'}
         unit_info={'CFBundleIdentifier':'io.github.4alvit.cleansend.uitests','MinimumOSVersion':'17.0','DTXcodeBuild':'16F6','DTSDKName':'iphonesimulator18.5','DTPlatformName':'iphonesimulator'}
-        context={'host_architecture':'x86_64','head':self.head,'tree':self.tree,'checkout':self.checkout,'run':'123','attempt':'1','xcode_build':'16F6','runtime_version':'18.5'}
+        context={'host_architecture':'arm64','head':self.head,'tree':self.tree,'checkout':self.checkout,'run':'123','attempt':'1','xcode_build':'16F6','runtime_version':'18.5'}
         producer={k:context[k]for k in ('host_architecture','head','tree','checkout','run','attempt')};producer.update(configuration='Release',xcode='Xcode 16.4\nBuild version 16F6',sdk='18.5')
         binding={'runner':str(runner),'producer':producer,'runner_entries':{}}
         def write_infos():

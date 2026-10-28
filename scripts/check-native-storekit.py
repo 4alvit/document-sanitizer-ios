@@ -67,7 +67,7 @@ def admit_job(data,run,attempt,head,now,native_remaining):
  assert len(jobs)==1
  job=jobs[0]
  assert job['run_id']==int(run) and job['run_attempt']==int(attempt) and job['head_sha']==head
- assert job['status']=='in_progress' and job['runner_id'] and job['labels']==['macos-15-intel']
+ assert job['status']=='in_progress' and job['runner_id'] and job['labels']==['macos-15']
  started=dt.datetime.fromisoformat(job['started_at'].replace('Z','+00:00'))
  elapsed=(now-started).total_seconds();assert elapsed>=0
  remaining=1800-elapsed
@@ -117,7 +117,7 @@ def write_small(path,value,start,*,deadline=None):
 def prepare_context(start):
  global SCOPE,OWNED_ROOT
  assert __debug__ and os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_OS')=='macOS'
- assert os.uname().machine=='x86_64','reviewed Intel host profile required'
+ assert os.uname().machine=='arm64','reviewed ARM host profile required'
  assert os.environ.get('GITHUB_EVENT_NAME')=='pull_request' and os.environ['GITHUB_REPOSITORY']==REPO
  run,attempt,head=os.environ['GITHUB_RUN_ID'],os.environ['GITHUB_RUN_ATTEMPT'],os.environ['EXPECTED_HEAD_SHA']
  assert re.fullmatch('[1-9][0-9]*',run) and re.fullmatch('[1-9][0-9]*',attempt) and re.fullmatch('[0-9a-f]{40}',head)
@@ -155,7 +155,7 @@ def validate_context(path,start):
  assert __debug__ and 0<=time.monotonic()-start<TOTAL
  raw=path.read_bytes();assert len(raw)<=65536 and hashlib.sha256(raw).hexdigest()==os.environ['NATIVE_STOREKIT_CONTEXT_SHA']
  context=json.loads(raw);assert context['repository']==REPO and context['start_monotonic']==start
- assert context['host_architecture']==os.uname().machine=='x86_64'
+ assert context['host_architecture']==os.uname().machine=='arm64'
  assert context['case_identities']==sorted(CASES) and context['case_count']==8 and context['outer_seconds']==300 and context['case_seconds']==180 and context['seconds']==TOTAL
  assert context['phase_deadlines_seconds']==NATIVE_PHASES
  assert context['runtime']==RUNTIME and context['device_type']==DEVICE and context['retry'] is False

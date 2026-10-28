@@ -64,7 +64,7 @@ def failure_detail(error):
 def main():
  if not __debug__:raise SystemExit('Assertions must be enabled')
  assert os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_OS')=='macOS'
- assert os.uname().machine=='x86_64','reviewed Intel host profile required'
+ assert os.uname().machine=='arm64','reviewed ARM host profile required'
  assert os.environ.get('GITHUB_EVENT_NAME')=='pull_request' and os.environ['GITHUB_REPOSITORY']==REPO
  run,attempt,head=os.environ['GITHUB_RUN_ID'],os.environ['GITHUB_RUN_ATTEMPT'],os.environ['EXPECTED_HEAD_SHA']
  assert re.fullmatch('[1-9][0-9]*',run) and re.fullmatch('[1-9][0-9]*',attempt) and re.fullmatch('[0-9a-f]{40}',head)
@@ -126,7 +126,7 @@ def main():
   report['stage']='producer_and_source_provenance'
   privacy=doc('privacy-inputs/source-provenance.json');meta=doc('privacy-inputs/metadata.json')
   assert privacy['published_head']==head and privacy['run_id']==run and privacy['run_attempt']==attempt
-  assert privacy['host_architecture']==os.uname().machine=='x86_64','privacy producer profile mismatch'
+  assert privacy['host_architecture']==os.uname().machine=='arm64','privacy producer profile mismatch'
   assert privacy['build_configuration']=='Release' and privacy['sdk']=='18.5' and privacy['xcode']=='Xcode 16.4\nBuild version 16F6'
   assert privacy['equal_trees'] and privacy['actual_tree']==privacy['head_tree']
   assert meta['source_and_built_payloads_unchanged'] and meta['device_removed'] and meta['cleanup']=={'shutdown':0,'delete':0}
@@ -176,7 +176,7 @@ def main():
     binary_rows=index(archive,w,32*2**20);assert all(r.file_size<=8*2**20 for r in binary_rows.values())
    w.check();actual=scanner.scan_package(base/'release-assets'/name);w.check()
    assert actual['ok'] and actual==scans[variant+'_zip'] and actual['binaries']==scans[variant+'_app']['binaries'],'live binary scan mismatch'
-   assert all(any(s['architecture']=='x86_64' for s in binary['slices']) for binary in actual['binaries']),'Intel simulator slice required'
+   assert all(any(s['architecture']=='arm64' for s in binary['slices']) for binary in actual['binaries']),'ARM simulator slice required'
   report['stage']='runner_reconstruction'
   runner_folder='runner/CleanSendUITests-Runner.app';w.reserve([('runner','directory',0)]);w.mkdir('runner')
   runner_modes=modes['runner'];assert set(before['runner']['files'])=={n for n,v in runner_modes.items() if not v['directory']}
@@ -204,7 +204,7 @@ def main():
   args=build_commands[0]['args']
   assert args[args.index('-scheme')+1]=='CleanSendPrivacyRelease' and args[args.index('-configuration')+1]=='Release'
   assert 'ENABLE_TESTABILITY=NO' in args
-  assert 'ARCHS=x86_64' in args and 'ONLY_ACTIVE_ARCH=YES' in args,'UI runner producer architecture mismatch'
+  assert 'ARCHS=arm64' in args and 'ONLY_ACTIVE_ARCH=YES' in args,'UI runner producer architecture mismatch'
   producer={'host_architecture':privacy['host_architecture'],'head':head,'tree':tree,'checkout':checkout,'run':run,'attempt':attempt,'configuration':privacy['build_configuration'],
    'xcode':privacy['xcode'],'sdk':privacy['sdk'],'source_provenance_sha256':hashlib.sha256(raw('privacy-inputs/source-provenance.json')).hexdigest(),
    'build_for_testing':{k:build_commands[0][k]for k in ('args','returncode','owned_group_absent')}}

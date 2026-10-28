@@ -83,7 +83,7 @@ def prepare(app,developer,output,binding_path,template_path,head,tree,diagnostic
 def runner_toolchain(binding,developer,context,check):
  # The Apple carrier is prebuilt; its compiler/SDK metadata need not equal the
  # compiler that produced the UI test bundle. Bind these two origins separately.
- assert context['host_architecture']=='x86_64'
+ assert context['host_architecture']=='arm64'
  producer=binding['producer'];expected={'host_architecture':context['host_architecture'],'head':context['head'],'tree':context['tree'],
   'checkout':context['checkout'],'run':context['run'],'attempt':context['attempt'],
   'configuration':'Release','xcode':'Xcode 16.4\nBuild version '+context['xcode_build'],'sdk':context['runtime_version']}

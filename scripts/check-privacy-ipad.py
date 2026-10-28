@@ -142,7 +142,7 @@ def payload_modes(path, check=lambda: None):
 def hosted_only():
     assert os.environ.get('GITHUB_ACTIONS') == 'true', 'This driver must not run locally'
     assert os.environ.get('RUNNER_OS') == 'macOS'
-    assert os.uname().machine == 'x86_64', 'reviewed Intel host profile required'
+    assert os.uname().machine == 'arm64', 'reviewed ARM host profile required'
     assert os.environ.get('GITHUB_EVENT_NAME') == 'pull_request'
     identity = {'run_id': os.environ.get('GITHUB_RUN_ID', ''),
                 'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT', '')}
@@ -677,7 +677,7 @@ def worker():
         run.command(['xcodebuild', '-project', 'CleanSend.xcodeproj', '-scheme', SCHEME, '-testPlan', TEST_PLAN,
                      *(['-configuration', 'Release', 'ENABLE_TESTABILITY=NO'] if CONFIGURATION == 'Release' else []),
                      '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', DD, '-jobs', '2',
-                     'ARCHS=arm64' if os.uname().machine == 'arm64' else 'ARCHS=x86_64', 'ONLY_ACTIVE_ARCH=YES',
+                     'ARCHS=arm64', 'ONLY_ACTIVE_ARCH=YES',
                      'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-', 'build-for-testing',
                      '-only-testing:' + TARGET + '/' + CASE], 'build.log', 300)
         runtime, device_type = select_device(run)
