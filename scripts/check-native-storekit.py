@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """One bounded same-host native StoreKit invocation; no build, account sign-in or retry."""
+from contextlib import contextmanager
 import datetime as dt
 import hashlib, importlib.util, json, os, plistlib, re, shutil, signal, stat, subprocess, sys, time, uuid
 from pathlib import Path
@@ -151,6 +152,38 @@ class Resources:
   assert total<=CAP,'owned allocation cap'
 
 
+# Absolute offsets from the one original worker start, within WORK_END=560.
+INSTALL_END=196
+INSTALLED_BEFORE_END=226
+TEST_BODY_END=526
+TEST_STOP_END=530
+FINAL_VERIFY_END=560
+TEST_ADMISSION=334
+
+@contextmanager
+def work_phase(run,resources,deadline):
+ previous=run.end;run.end=min(previous,deadline)
+ try:
+  resources.check(run.end)
+  yield
+  resources.check(run.end)
+ finally:run.end=previous
+
+def install_once(run,resources,uid,host):
+ with work_phase(run,resources,INSTALL_END):
+  # Existing command lifecycle clips to the original phase minus its4s stop reserve.
+  return run.command(['xcrun','simctl','install',uid,host],'install.log',INSTALL_END)
+
+def phase_payload_inventory(run,resources,evidence,budget,path):
+ phase=run.end
+ def check():resources.check(phase)
+ check();result=evidence.payload_inventory(path,budget,check);check()
+ return result
+
+def native_test_end(run,now):
+ assert run.remaining()>=TEST_ADMISSION,'300s XCTest and final verification admission unavailable'
+ return min(now+300,run.start+TEST_BODY_END)
+
 def worker(start,context):
  b,e,l=load('window'),load('evidence'),load('lifecycle')
  l.OUT=SCOPE;l.ROOT=ROOT;l.CONFIGURATION='Debug'
@@ -162,7 +195,7 @@ def worker(start,context):
   raise InterruptedError('SIGTERM')
  signal.signal(signal.SIGTERM,interrupted)
  def command(args,name,limit=15,required=True):
-  if run.end==560:resources.check()
+  if run.end<=560:resources.check(run.end)
   return run.command(args,name,limit,required)
  def output(args,name,limit=15):
   command(args,name,limit);return (SCOPE/name).read_text().strip()
@@ -177,8 +210,10 @@ def worker(start,context):
  def installed(name):
   value=output(['xcrun','simctl','get_app_container',uid,APP_ID,'app'],name+'-path.txt')
   path=Path(value);assert path.is_absolute() and str(path)==str(path.resolve()) and path.is_relative_to(resources.device/'data')
-  files=e.payload_inventory(path,b,resources.check);assert files==expected
-  l.save(SCOPE/name,{'path':str(path),'exact_payload':True,'files':files});return path
+  resources.check(run.end)
+  files=phase_payload_inventory(run,resources,e,b,path);assert files==expected
+  resources.check(run.end);l.save(SCOPE/name,{'path':str(path),'exact_payload':True,'files':files});resources.check(run.end)
+  return path
  try:
   names=output(['git','ls-files'],'tracked-files.txt').splitlines();assert 0<len(names)<=1000
   checkout=output(['git','rev-parse','HEAD'],'checkout.txt');tree=output(['git','rev-parse','HEAD^{tree}'],'tree.txt')
@@ -204,34 +239,38 @@ def worker(start,context):
   l.save(SCOPE/'compiled-host-before.json',expected)
   l.save(SCOPE/'config-binding.json',{'plan':plan,'plan_sha256':sources['CleanSend.xctestplan'],'scheme_sha256':scheme_hash,'configuration_sha256':sources['App/CleanSend.storekit'],'native_tests_source_sha256':sources['Tests/EntitlementTests/ProStoreTests.swift'],'host':str(host),'unit_bundle':str(unit),'rebuild':False,'resign':False,'host_UI':'existing Debug EmptyView test host; real production ProStore constructed by each case','no_real_account_sign_in':True})
   command(['codesign','--verify','--strict','--all-architectures',host],'signature-host.log',15)
-  assert run.remaining()>=304,'full test admission unavailable before device creation'
+  assert run.remaining()>=TEST_ADMISSION,'test and final verification admission unavailable before device creation'
   name='RedactLeaf-Native-Payment-'+str(uuid.uuid4());run.meta['owned_device_name']=name;run.persist()
   uid=output(['xcrun','simctl','create',name,DEVICE,RUNTIME],'create.txt');uuid.UUID(uid)
   run.meta['owned_uuid']=uid;resources.device=Path.home()/'Library/Developer/CoreSimulator/Devices'/uid;run.persist()
   command(['xcrun','simctl','boot',uid],'boot.log',20);command(['xcrun','simctl','bootstatus',uid,'-b'],'bootstatus.log',90)
-  command(['xcrun','simctl','install',uid,host],'install.log',30);installed('installed-before.json')
-  assert run.remaining()>=304,'full300s XCTest admission unavailable'
+  install_once(run,resources,uid,host)
+  with work_phase(run,resources,INSTALLED_BEFORE_END):installed('installed-before.json')
+  assert run.remaining()>=TEST_ADMISSION,'full300s XCTest and final verification admission unavailable'
   argv=test_arguments(uid,SCOPE/'result.xcresult');item={'args':argv,'started_at':l.now(),'timeout_seconds':300};run.meta['commands'].append(item);run.persist()
-  proc=None;tail=b'';log_read=0;end=min(time.monotonic()+300,start+560-4);previous_end=run.end;run.end=min(previous_end,end-start)
+  proc=None;tail=b'';log_read=0;end=native_test_end(run,time.monotonic());previous_end=run.end;run.end=min(previous_end,end-start)
   try:
    with (SCOPE/'test.log').open('xb') as log:
     proc=subprocess.Popen(argv,cwd=ROOT,env=l.ENV,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
     item['owned_process_group']=proc.pid;run.persist()
     with (SCOPE/'test.log').open('rb') as reader:
      while proc.poll() is None:
-      resources.check();assert time.monotonic()<end,'native StoreKit outer300s limit'
+      resources.check(run.end);assert time.monotonic()<end,'native StoreKit outer300s limit'
       chunk=reader.read(65536);log_read+=len(chunk);assert log_read<=16*2**20
       tail=(tail+chunk)[-131072:]
       if not during and b'ProStoreTests test' in tail and b"' started" in tail:
        installed('installed-during.json');during=True
       time.sleep(min(.25,max(0,end-time.monotonic())))
+   resources.check(run.end);assert time.monotonic()<end,'native StoreKit outer300s completion limit'
    run.meta['xcodebuild_returncode']=proc.returncode;assert proc.returncode==0 and during
   finally:
    if proc is not None:l.stop_group(proc,item);item['returncode']=proc.returncode
    item['finished_at']=l.now();run.end=previous_end;run.persist()
-  installed('installed-after.json')
-  assert e.payload_inventory(host,b,resources.check)==expected and sha(scheme)==scheme_hash
-  run.meta['compiled_host_unchanged']=True
+  with work_phase(run,resources,FINAL_VERIFY_END):
+   installed('installed-after.json')
+   assert phase_payload_inventory(run,resources,e,b,host)==expected
+   resources.check(run.end);assert sha(scheme)==scheme_hash;resources.check(run.end)
+   run.meta['compiled_host_unchanged']=True
  except BaseException as error:failures.append(safe_failure(error))
  finally:
   mark_cleanup(run,start,failures,l)

@@ -23,6 +23,18 @@ def identities(data,repo,run,attempt,head):
   result.append({'repo':repo,'run':int(run),'attempt':int(attempt),'head':head,'name':name,'id':a['id'],'bytes':a['size_in_bytes'],'sha256':digest[7:]})
  return result
 
+def reserve_archives(window, rows):
+ # A streamed file may allocate beyond its logical length. Precharge a finite
+ # ceiling; retain exact copy length/hash and the unchanged cumulative cap.
+ plans=[];allocation_limits={}
+ for row,folder in zip(rows,('release-assets','privacy-inputs')):
+  name=str(row['id'])+'.zip';size=row['bytes']
+  plans.extend([(name,'file',size),(folder,'directory',0)])
+  quantum=4*2**20
+  allocation_limits[name]=max(16*2**20,((2*size+quantum-1)//quantum)*quantum)
+ window.reserve(plans,allocation_limits=allocation_limits)
+ return allocation_limits
+
 def index(archive,w,total=512*2**20):
  rows=archive.infolist();assert len(rows)<=4000 and sum(r.file_size for r in rows)<=total
  result={};aliases=set()
@@ -42,7 +54,12 @@ def failure_detail(error):
  while trace is not None:
   frames.append({'file':Path(trace.tb_frame.f_code.co_filename).name,'line':trace.tb_lineno,'function':trace.tb_frame.f_code.co_name})
   trace=trace.tb_next
- return {'type':type(error).__name__,'frames':frames[-4:]}
+ result={'type':type(error).__name__,'frames':frames[-4:]}
+ row=getattr(error,'ledger_row',None)
+ if isinstance(row,dict):
+  result['ledger_row']={key:row[key] for key in ('kind','logical','allocated','logical_charge','allocated_charge')}
+  result['ledger_row']['name']=row['name'][:256]
+ return result
 
 def main():
  if not __debug__:raise SystemExit('Assertions must be enabled')
@@ -76,11 +93,13 @@ def main():
    data=json.load(stream,object_pairs_hook=b.unique);report['stage']='artifact_metadata_identities'
    rows=identities(data,REPO,run,attempt,head);report['stage']='artifact_metadata_reader_close'
   report['artifacts']=rows
+  report['stage']='archive_reservation'
+  report['archive_allocation_limits']=reserve_archives(w,rows)
   report['stage']='artifact_authentication'
   auth=t.Transport(start+180,str(ROOT));report['transports'].append(auth.report);token=auth.token()
   for row,folder,allowed in zip(rows,('release-assets','privacy-inputs'),(RELEASE,PRIVACY)):
    report['stage']='download:'+folder
-   name=str(row['id'])+'.zip';w.reserve([(name,'file',row['bytes']+1024*1024),(folder,'directory',0)])
+   name=str(row['id'])+'.zip'
    transport=t.Transport(start+180,str(ROOT));report['transports'].append(transport.report)
    t.URL=f'https://api.github.com/repos/{REPO}/actions/artifacts/{row["id"]}/zip'
    report['stage']='download_command:'+folder

@@ -98,7 +98,11 @@ class Window:
             require(type(row["materialization_started"]) is bool
                     and (row["dev"] is None or row["materialization_started"]), "ledger materialization state")
             require(all(integer(row[k]) for k in ("logical", "allocated", "logical_charge", "allocated_charge")), "ledger counters")
-            require(row["logical"] <= row["logical_charge"] and row["allocated"] <= row["allocated_charge"], "undercharged ledger")
+            if row["logical"] > row["logical_charge"] or row["allocated"] > row["allocated_charge"]:
+                error = Rejected("undercharged ledger")
+                error.ledger_row = {"name": name, **{key: row[key] for key in
+                    ("kind", "logical", "allocated", "logical_charge", "allocated_charge")}}
+                raise error
             require((row["dev"] is None and row["ino"] is None) or (integer(row["dev"]) and integer(row["ino"])), "ledger identity")
         require(self.total("logical_charge") <= CAP and self.total("allocated_charge") <= CAP, "cumulative32MiB cap")
 
@@ -178,7 +182,10 @@ class Window:
         window.inventory(admit=True)
         return window
 
-    def reserve(self, plans):
+    def reserve(self, plans, *, allocation_limits=None):
+        # Allocation ceilings are charged before materialization and never grown.
+        allocation_limits = {} if allocation_limits is None else allocation_limits
+        require(type(allocation_limits) is dict, "allocation limit mapping")
         self.capacity()
         proposed = dict(self.entries)
         aliases = {alias(name) for name in proposed}
@@ -187,9 +194,15 @@ class Window:
             require(name not in proposed and alias(name) not in aliases and kind in ("file", "directory") and integer(size), "reservation collision/shape")
             require(kind == "file" or size == 0, "directory size")
             aliases.add(alias(name))
+            default_allocation = ((size + 4095) // 4096) * 4096 + SLACK
+            allocation_limit = allocation_limits.get(name, default_allocation)
+            require(integer(allocation_limit) and allocation_limit >= default_allocation,
+                    "allocation ceiling below ordinary reservation")
+            require(name not in allocation_limits or kind == "file", "file allocation ceiling required")
             proposed[name] = {"kind": kind, "dev": None, "ino": None, "logical": 0, "allocated": 0,
-                "logical_charge": size, "allocated_charge": ((size + 4095) // 4096) * 4096 + SLACK,
+                "logical_charge": size, "allocated_charge": allocation_limit,
                 "materialization_started": False}
+        require(set(allocation_limits) <= (set(proposed) - set(self.entries)), "unknown allocation ceiling")
         for name in proposed:
             for parent in PurePosixPath(name).parents:
                 key = "" if str(parent) == "." else str(parent)

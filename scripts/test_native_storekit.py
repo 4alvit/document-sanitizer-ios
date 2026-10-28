@@ -95,4 +95,78 @@ class NativeStoreKitBindingTests(unittest.TestCase):
                 self.assertTrue(receipt['cleanup_obligation']['cleanup_required'])
                 self.assertEqual(receipt['status'],'failed')
 
+class NativeStartupBudgetTests(unittest.TestCase):
+    def setUp(self):
+        self.m=load('native_budget_driver',DRIVER)
+        self.l=load('native_budget_lifecycle',MODULES/'lifecycle.py')
+        self.clock=[183.0];self.start=100.0
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.l.OUT=Path(self.temp.name).resolve();self.l.ROOT=self.l.OUT
+        self.clock_patch=mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]);self.clock_patch.start();self.addCleanup(self.clock_patch.stop)
+        self.run=self.l.Run();self.run.start=self.start;self.run.persist=lambda:None
+        self.phases=[]
+        def check(phase):
+            self.phases.append(phase)
+            assert self.clock[0]<self.start+phase,'original phase deadline'
+        self.resources=SimpleNamespace(check=check)
+    def test_actual_install_command_uses_remaining_original_phase_once(self):
+        proc=SimpleNamespace(pid=77,returncode=None)
+        def wait(timeout):
+            self.assertEqual(timeout,109);self.clock[0]+=10;proc.returncode=0
+        proc.wait=wait
+        with mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(self.l,'stop_group',side_effect=lambda p,row:row.update(owned_group_absent=True)):
+            self.assertEqual(self.m.install_once(self.run,self.resources,'owned','/fixture/app'),0)
+        self.assertEqual(spawn.call_count,1);self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
+        self.assertEqual(self.run.meta['commands'][0]['timeout_seconds'],109)
+        self.assertEqual(self.phases,[196,196])
+    def test_install_timeout_preserves_closure_and_original_cleanup_clock(self):
+        proc=SimpleNamespace(pid=77,returncode=None)
+        proc.wait=lambda **_:(_ for _ in ()).throw(subprocess.TimeoutExpired('install',109))
+        def close(p,row):p.returncode=-15;row['owned_group_absent']=True
+        with mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(self.l,'stop_group',side_effect=close):
+            with self.assertRaises(subprocess.TimeoutExpired):self.m.install_once(self.run,self.resources,'owned','/fixture/app')
+        self.assertEqual(spawn.call_count,1);self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
+        self.assertTrue(self.run.meta['commands'][0]['owned_group_absent'])
+        self.assertEqual(self.run.meta['commands'][0]['returncode'],-15)
+        self.assertEqual(self.l.CLEANUP_END,660)
+    def test_late_install_does_not_spawn_and_does_not_reset_clock(self):
+        self.clock[0]=292
+        with mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')) as spawn:
+            with self.assertRaises(TimeoutError):self.m.install_once(self.run,self.resources,'owned','/fixture/app')
+        spawn.assert_not_called();self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
+    def test_phase_never_extends_an_earlier_deadline_and_restores_after_failure(self):
+        self.run.end=150;self.clock[0]=249
+        with self.assertRaises(AssertionError):
+            with self.m.work_phase(self.run,self.resources,196):
+                self.assertEqual(self.run.end,150);self.clock[0]=250
+        self.assertEqual(self.run.end,150);self.assertEqual(self.run.start,100)
+    def test_before_inventory_checks_during_and_after_hashing(self):
+        self.run.end=226;self.clock[0]=325
+        def inventory(path,budget,check):
+            check();self.clock[0]=326
+            return {'hash':'unchanged'}
+        with self.assertRaises(AssertionError):self.m.phase_payload_inventory(self.run,self.resources,SimpleNamespace(payload_inventory=inventory),None,'/fixture/app')
+        self.assertEqual(self.phases,[226,226,226])
+    def test_actual_resource_scan_respects_phase_after_each_stat(self):
+        self.clock[0]=325;self.m.SCOPE=Path('/fixture');self.m.OWNED_ROOT=self.m.SCOPE
+        resources=self.m.Resources(self.start)
+        def late_stat(path):
+            self.clock[0]=326
+            return SimpleNamespace(st_blocks=0,st_mode=0o040700)
+        with mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=32*2**30)),mock.patch.object(os,'walk',return_value=[('/fixture',[],[])]),mock.patch.object(Path,'lstat',late_stat):
+            with self.assertRaisesRegex(AssertionError,'owned stat deadline'):resources.check(226)
+    def test_test_budget_retains300_body4_stop30_final_and_rejects_late_admission(self):
+        self.clock[0]=326
+        self.assertEqual(self.m.native_test_end(self.run,self.clock[0]),626)
+        self.assertEqual(self.m.TEST_STOP_END-self.m.TEST_BODY_END,4)
+        self.assertEqual(self.m.FINAL_VERIFY_END-self.m.TEST_STOP_END,30)
+        self.clock[0]=326.001
+        with self.assertRaises(AssertionError):self.m.native_test_end(self.run,self.clock[0])
+        self.assertEqual(self.run.start,100)
+    def test_final_inventory_has_original560_deadline(self):
+        self.run.end=560;self.clock[0]=659
+        def inventory(path,budget,check):check();self.clock[0]=660;return {}
+        with self.assertRaises(AssertionError):self.m.phase_payload_inventory(self.run,self.resources,SimpleNamespace(payload_inventory=inventory),None,'/fixture/app')
+        self.assertEqual(self.phases,[560,560,560])
+
 if __name__=='__main__':unittest.main()
