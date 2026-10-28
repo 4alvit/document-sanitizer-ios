@@ -11,7 +11,7 @@ def load(name,path):
     spec=importlib.util.spec_from_file_location(name,path);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 
 def jobs(now,elapsed=600):
-    return {'total_count':1,'jobs':[{'id':7,'name':'macOS core, independent export corpus, iOS build','run_id':123,'run_attempt':1,'head_sha':'a'*40,'status':'in_progress','runner_id':55,'runner_name':'fixture','labels':['macos-15-intel'],'started_at':(now-dt.timedelta(seconds=elapsed)).isoformat()}]}
+    return {'total_count':1,'jobs':[{'id':7,'name':'Native StoreKit eight-case acceptance','run_id':123,'run_attempt':1,'head_sha':'a'*40,'status':'in_progress','runner_id':55,'runner_name':'fixture','labels':['macos-15-intel'],'started_at':(now-dt.timedelta(seconds=elapsed)).isoformat()}]}
 
 class NativeStoreKitBindingTests(unittest.TestCase):
     def setUp(self):self.m=load('native_storekit_test',DRIVER);self.now=dt.datetime.now(dt.timezone.utc)
@@ -36,6 +36,25 @@ class NativeStoreKitBindingTests(unittest.TestCase):
         self.assertEqual(accepted['remaining_job_seconds'],960)
         with self.assertRaises(AssertionError):self.m.admit_job(jobs(self.now,841),'123','1','a'*40,self.now,780)
         with self.assertRaises(AssertionError):self.m.admit_job(jobs(self.now,-1),'123','1','a'*40,self.now,780)
+    def test_dedicated_job_identity_in_four_job_run(self):
+        data=jobs(self.now)
+        for index,name in enumerate(('macOS core, independent export corpus, iOS build','Russian iPad privacy at system AX5','Exact packaged Release share smoke'),8):
+            data['jobs'].append(dict(data['jobs'][0],id=index,name=name,status='completed'))
+        data['total_count']=4
+        self.assertEqual(self.m.admit_job(data,'123','1','a'*40,self.now,780)['job_id'],7)
+        # A legacy Main row, even with valid identity/time, cannot own native work.
+        wrong=json.loads(json.dumps(data));wrong['jobs'][0]['name']='legacy-main'
+        with self.assertRaises(AssertionError):self.m.admit_job(wrong,'123','1','a'*40,self.now,780)
+        duplicate=json.loads(json.dumps(data));duplicate['jobs'][1]['name']=duplicate['jobs'][0]['name']
+        with self.assertRaises(AssertionError):self.m.admit_job(duplicate,'123','1','a'*40,self.now,780)
+        data['jobs'].append(dict(data['jobs'][1],id=12,name='unexpected fifth job'));data['total_count']=5
+        with self.assertRaises(AssertionError):self.m.admit_job(data,'123','1','a'*40,self.now,780)
+    def test_dedicated_build_budget_does_not_renew_native_allowance(self):
+        # At the full9m build allowance plus1m profile, original native780 and
+        # its180s job reserve fit; later actual job elapsed still governs.
+        result=self.m.admit_job(jobs(self.now,600),'123','1','a'*40,self.now,780)
+        self.assertEqual(result['remaining_job_seconds']-result['required_remaining_seconds'],240)
+        with self.assertRaises(AssertionError):self.m.admit_job(jobs(self.now,841),'123','1','a'*40,self.now,780)
     def test_wrong_head_attempt_runner_and_plan_fail_closed(self):
         for key,value in (('head_sha','b'*40),('run_attempt',2),('labels',['macos-14']),('labels',['macos-15']),('labels',['macos-15-large'])):
             data=jobs(self.now);data['jobs'][0][key]=value

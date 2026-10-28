@@ -42,8 +42,17 @@ XCTEST_COMMAND_LIMIT = 300
 TOTAL = 780
 WORK_END = 560
 RECOVERY_END, SHUTDOWN_END, DELETE_END, CLEANUP_END = 582, 619, 638, 660
-ENV = {k: os.environ[k] for k in ('HOME', 'USER', 'LOGNAME', 'PATH', 'TMPDIR', 'DEVELOPER_DIR') if k in os.environ}
-ENV['LANG'] = 'en_US.UTF-8'
+NATIVE_CONTEXT_KEYS = ('XPC_SERVICE_NAME', 'XPC_FLAGS', '__CF_USER_TEXT_ENCODING')
+
+
+def child_environment(parent):
+    # Preserve only these parent-provided system values; never synthesize them.
+    keys = ('HOME', 'USER', 'LOGNAME', 'PATH', 'TMPDIR', 'DEVELOPER_DIR') + NATIVE_CONTEXT_KEYS
+    return {**{key: parent[key] for key in keys if key in parent}, 'LANG': 'en_US.UTF-8'}
+
+
+ENV = child_environment(os.environ)
+
 
 
 def now():
@@ -110,6 +119,10 @@ def runtime_context():
                                        ('SDKROOT', 'TOOLCHAINS', 'xcrun_log', 'xcrun_verbose',
                                         'xcrun_nocache', 'XPC_SERVICE_NAME', 'XPC_FLAGS',
                                         '__CF_USER_TEXT_ENCODING', 'DYLD_LIBRARY_PATH', 'DYLD_FRAMEWORK_PATH')},
+               'native_context': {key: {'parent_present': key in os.environ,
+                                        'child_present': key in ENV,
+                                        'equal_to_parent': key in ENV and key in os.environ
+                                            and ENV[key] == os.environ[key]} for key in NATIVE_CONTEXT_KEYS},
                'lookup_basis': 'child PATH; os.defpath only if PATH is absent', 'tools': {}}
     path = ENV.get('PATH', os.defpath)
     for tool in ('xcrun', 'xcodebuild'):
@@ -431,6 +444,9 @@ def provenance(run):
             'macos': run.output(['sw_vers'], 'macos.txt')}
     save(OUT / 'source-provenance.json', info)
     run.meta['simulator_sdk_version'] = info['sdk']
+    run.meta['source_binding'] = {key: info[key] for key in
+                                  ('published_head', 'actual_checkout', 'actual_tree', 'head_tree', 'equal_trees')}
+    run.meta['source_binding']['driver_sha256'] = sources['scripts/check-privacy-ipad.py']
     return sources
 
 

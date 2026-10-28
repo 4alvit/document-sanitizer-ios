@@ -46,8 +46,8 @@ def safe_failure(error):
  return {'type':type(error).__name__,'frames':frames[-4:]}
 
 def admit_job(data,run,attempt,head,now,native_remaining):
- assert data['total_count']==len(data['jobs']) and len(data['jobs'])<=3
- jobs=[j for j in data['jobs'] if j['name']=='macOS core, independent export corpus, iOS build']
+ assert data['total_count']==len(data['jobs']) and len(data['jobs'])<=4
+ jobs=[j for j in data['jobs'] if j['name']=='Native StoreKit eight-case acceptance']
  assert len(jobs)==1
  job=jobs[0]
  assert job['run_id']==int(run) and job['run_attempt']==int(attempt) and job['head_sha']==head

@@ -106,8 +106,8 @@ instantiates the real production `ProStore`.
 The history preflight is diagnostic, not a guarantee that all StoreKit APIs
 use the same environment. A test on a previously prepared simulator cannot
 replace a reproducible cold run. The regular hosted application step uses controlled purchase-service fixtures
-and excludes `ProStoreTests`. A separate guarded step on that same host selects
-all eight native cases from the products already compiled by that step. These
+and excludes `ProStoreTests`. A separate guarded job builds signed Debug test
+products from the same source, then selects all eight native cases on that host. These
 results must be evaluated separately from the controlled fixtures and UI smoke.
 
 ## Related upstream report and next acceptance
@@ -129,10 +129,13 @@ an undisclosed warm-up to turn this gate green.
 
 ## Bounded hosted native payment gate
 
-The dedicated step uses one `test-without-building` invocation for all eight
+The dedicated job builds signed Debug test products from the committed Xcode
+project, with the iOS18.5 Simulator SDK, in a step limited to nine minutes. It
+uses one `test-without-building` invocation for all eight
 existing `ProStoreTests`, on a fresh owned iPhone 16 Pro Simulator with iOS 18.5
 and Xcode 16.4. It reuses the same job's Debug application and unit-test bundle;
-it does not build, re-sign or enter an Apple Account.
+the native test driver does not rebuild, re-sign or enter an Apple Account.
+Missing embedded test products, invalid signatures or changed source fail closed.
 The existing empty Debug unit-test host lets each case initialize its local
 StoreKit session before constructing the real production `ProStore`. The existing
 per-case preflight performs a synthetic purchase, verifies `.xcode` history, then
@@ -151,10 +154,17 @@ All eight exact case identities must pass with zero failures or skips. They
 share one 300-second XCTest command ceiling; the existing per-case maximum
 remains 180 seconds. Native work ends at 560 seconds, owned-device cleanup at
 660, and the whole step at 780. The parent verifies actual remaining time in
-the unchanged 30-minute job before admitting native work, preserving cleanup
-and evidence-upload time. There is no automatic retry or cap increase.
+the dedicated 30-minute job before admitting native work, preserving 180 seconds
+for cleanup and evidence upload beyond the remaining native allowance. A one-minute
+profile check, nine-minute build and full 780-second native window plus that reserve
+leave four minutes for checkout and scheduling overhead. Actual elapsed time, not
+this estimate, controls admission. There is no automatic retry or cap increase.
 
-Release asset upload and privacy success independently admit the packaged
-share smoke after both producer jobs finish, even if this native payment gate
-fails. The verification job and overall CI still fail; acceptance requires all
-three jobs. A local-service result cannot establish App Store purchase routing.
+The native job waits for the verification job and requires its successful Release
+asset upload. It can run if a later ordinary test failed, but that failure remains
+fatal to overall acceptance. Release asset upload and privacy success independently
+admit the packaged share smoke after both producer jobs finish. Verification and
+privacy run first; native payment and packaged smoke can then run in parallel.
+This four-job graph permits at most two workers. Acceptance requires all four jobs,
+including the independent exact Release-package smoke; Debug payment evidence does
+not replace it. A local-service result cannot establish App Store purchase routing.

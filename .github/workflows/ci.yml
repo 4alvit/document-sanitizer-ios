@@ -57,13 +57,6 @@ jobs:
           bash scripts/check-ios-tests.sh
           -only-testing:CleanSendTests
           -skip-testing:CleanSendTests/ProStoreTests
-      - name: Run all eight bounded native StoreKit cases
-        if: github.event_name == 'pull_request'
-        timeout-minutes: 14
-        env:
-          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          GH_TOKEN: ${{ github.token }}
-        run: python3 -B scripts/check-native-storekit.py
       - name: Save verification evidence
         if: always()
         timeout-minutes: 2
@@ -75,7 +68,6 @@ jobs:
             .qa/verifier-probe.json
             .qa/hosted-tests-*.xcresult
             .qa/release-scan-*.json
-            .qa/native-storekit/run-${{ github.run_id }}-attempt-${{ github.run_attempt }}/
           include-hidden-files: true
           if-no-files-found: ignore
   privacy-ipad:
@@ -105,6 +97,53 @@ jobs:
         with:
           name: privacy-ipad-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: .qa/privacy-ipad/run-${{ github.run_id }}-attempt-${{ github.run_attempt }}/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  native-storekit:
+    name: Native StoreKit eight-case acceptance
+    needs: [verify]
+    if: ${{ always() && github.event_name == 'pull_request' && needs.verify.outputs.release_assets_ready == 'true' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 2
+      - name: Require reviewed Intel toolchain profile
+        timeout-minutes: 1
+        run: |
+          test "$(uname -m)" = x86_64
+          test "$(xcodebuild -version)" = $'Xcode 16.4\nBuild version 16F6'
+      - name: Build signed Debug native test products on this host
+        timeout-minutes: 9
+        run: |
+          set -o pipefail
+          mkdir -p .qa/native-storekit-build
+          xcodebuild build-for-testing -project CleanSend.xcodeproj -scheme CleanSend \
+            -testPlan CleanSend -configuration Debug -sdk iphonesimulator18.5 \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath .derivedData \
+            -jobs 2 -only-testing:CleanSendTests/ProStoreTests \
+            ARCHS=x86_64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee .qa/native-storekit-build/build.log
+      - name: Run all eight bounded native StoreKit cases
+        timeout-minutes: 14
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B scripts/check-native-storekit.py
+      - name: Preserve native payment evidence
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-storekit-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            .qa/native-storekit-build/build.log
+            .qa/native-storekit/run-${{ github.run_id }}-attempt-${{ github.run_attempt }}/
           include-hidden-files: true
           if-no-files-found: error
 

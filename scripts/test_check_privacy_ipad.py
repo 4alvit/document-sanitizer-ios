@@ -186,7 +186,7 @@ class FakeBackend:
             elif a[1] == 'rev-parse':
                 output = 'wrong-tree' if self.bad_tree and a[2] == 'HEAD^{tree}' else 'tree'
             elif a[1] == 'ls-files':
-                output = 'source.txt\n'
+                output = 'source.txt\nscripts/check-privacy-ipad.py\n'
             elif a[1] != 'status':
                 return self.deny(a)
         elif step == 'version':
@@ -294,6 +294,8 @@ class Fixture:
         (runner / 'Runner').write_bytes(b'synthetic runner, never executable')
         (bundle / 'Tests').write_bytes(b'synthetic test bundle, never executable')
         (self.root / 'source.txt').write_text('frozen synthetic source')
+        (self.root / 'scripts').mkdir()
+        (self.root / 'scripts/check-privacy-ipad.py').write_bytes(DRIVER.read_bytes())
         target = {'BlueprintName': 'CleanSendUITests', 'IsUITestBundle': True,
                   'IsXCTRunnerHostedTestBundle': True,
                   'TestHostPath': '__TESTROOT__/Debug-iphonesimulator/CleanSendUITests-Runner.app',
@@ -326,6 +328,52 @@ class Fixture:
         return [p for p in self.backend.processes if p.step == 'test']
 
 
+
+class PrivacyContextTrialTests(unittest.TestCase):
+    def setUp(self):
+        self.f = Fixture(self)
+
+    def test_only_parent_present_system_context_is_forwarded_exactly(self):
+        f = self.f
+        keys = f.module.NATIVE_CONTEXT_KEYS
+        parent = {**{key: 'system-value-' + key for key in keys}, 'PATH': '/synthetic/bin',
+                  'DEVELOPER_DIR': '/synthetic/developer', 'GH_TOKEN': 'auth-sentinel',
+                  'SDKROOT': 'sdk-sentinel', 'TOOLCHAINS': 'tool-sentinel',
+                  'DYLD_LIBRARY_PATH': 'dyld-sentinel', 'OTHER': 'other-sentinel'}
+        env = f.module.child_environment(parent)
+        self.assertEqual(set(env), set(keys) | {'PATH', 'DEVELOPER_DIR', 'LANG'})
+        self.assertTrue(all(env[key] == parent[key] for key in keys))
+        self.assertEqual(f.module.child_environment({}), {'LANG': 'en_US.UTF-8'})
+        original, captured = f.backend.popen, []
+        def popen(args, **kwargs):
+            captured.append((list(args), dict(kwargs['env'])))
+            return original(args, **kwargs)
+        with mock.patch.object(f.module, 'ENV', env), mock.patch.object(f.module.subprocess, 'Popen', popen):
+            run = f.module.Run()
+            run.command(['xcrun', 'simctl', 'list', 'runtimes', '--json'], 'runtimes.json', 60)
+        self.assertEqual(captured, [(['xcrun', 'simctl', 'list', 'runtimes', '--json'], env)])
+        self.assertEqual(f.backend.processes[0].wait_calls, [60])
+        self.assertEqual(run.start, 0)
+        self.assertEqual(run.end, 560)
+
+    def test_context_reports_only_presence_and_equality_without_system_values(self):
+        f = self.f;keys = f.module.NATIVE_CONTEXT_KEYS
+        parent = {key: 'sensitive-system-' + key for key in keys}
+        with mock.patch.object(f.module, 'ENV', f.module.child_environment(parent)), \
+             mock.patch.dict(os.environ, parent, clear=True):
+            context = f.module.runtime_context()
+        self.assertEqual(context['native_context'], {key: {'parent_present': True,
+            'child_present': True, 'equal_to_parent': True} for key in keys})
+        self.assertNotIn('sensitive-system-', json.dumps(context))
+        self.assertTrue(all(key not in context['child_env'] for key in keys))
+        with mock.patch.object(f.module, 'ENV', {keys[0]: 'changed'}), \
+             mock.patch.dict(os.environ, {keys[0]: 'original'}, clear=True):
+            flags = f.module.runtime_context()['native_context']
+        self.assertFalse(flags[keys[0]]['equal_to_parent'])
+        self.assertEqual(flags[keys[1]], {'parent_present': False, 'child_present': False,
+                                        'equal_to_parent': False})
+
+
 class BaselineWorkerTests(unittest.TestCase):
     def setUp(self):
         self.f = Fixture(self)
@@ -355,6 +403,9 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertTrue(observation['last_stop_probe']['leader_reaped'])
         self.assertEqual(meta['runtime_discovery_context']['child_env']['DEVELOPER_DIR'], None)
         self.assertEqual(meta['runtime_discovery_context']['child_env']['PATH']['value'], '/synthetic/bin')
+        self.assertEqual(meta['source_binding'], {'published_head': 'head', 'actual_checkout': 'checkout',
+            'actual_tree': 'tree', 'head_tree': 'tree', 'equal_trees': True,
+            'driver_sha256': self.f.module.sha(DRIVER)})
         self.assertFalse(any(p.step in ('build', 'create', 'test') for p in self.f.backend.processes))
         self.assertNotIn('owned_uuid', meta)
 

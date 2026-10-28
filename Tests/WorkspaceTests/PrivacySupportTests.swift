@@ -97,10 +97,10 @@ final class PrivacySupportTests: XCTestCase {
             previousKeyWindow?.makeKey()
         }
 
-        await fulfillment(of: [appeared], timeout: 3)
         host.view.layoutIfNeeded()
         await Task.yield()
         host.view.layoutIfNeeded()
+        await fulfillment(of: [appeared], timeout: 3)
         XCTAssertTrue(host.view.window === window)
         XCTAssertFalse(host.view.bounds.isEmpty)
         XCTAssertTrue(containsScrollView(host.view), "The information List must actually be mounted.")
