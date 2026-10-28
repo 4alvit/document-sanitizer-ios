@@ -324,4 +324,37 @@ class HostedPreparationTests(unittest.TestCase):
     def test_retained_scan_must_match_actual_binary_scan(self):
         self.inputs('scanner');report=self.execute();self.assertEqual(report['status'],'failed');self.assertEqual(report['stage'],'release_binary_scans');self.assertEqual(self.gets,2)
 
+class InstalledRunnerReceiptTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name).resolve();self.runner=self.root/'Runner.app';self.runner.mkdir(mode=0o755)
+        (self.runner/'binary').write_bytes(b'original');(self.runner/'binary').chmod(0o755)
+        self.expected={'.':{'directory':True,'mode':'0755'},'binary':{'mode':'0755','sha256':digest(b'original')}}
+        self.e=load('installed_runner_evidence',SMOKE/'evidence.py');self.b=load('installed_runner_window',SMOKE/'window.py');self.r=load('installed_runner_writer',SMOKE/'run.py')
+        self.receipt=self.root/'installed-runner.json'
+    def record(self,value):self.r.save_installed_runner(self.receipt,value,lambda:None)
+    def test_actual_hash_mode_changes_are_saved_before_strict_failure(self):
+        (self.runner/'binary').write_bytes(b'changed');(self.runner/'binary').chmod(0o600);(self.runner/'added').write_bytes(b'added')
+        with self.assertRaisesRegex(AssertionError,'bounded inventory saved'):
+            self.e.verify_installed_runner(self.runner,self.expected,self.b,lambda:None,self.record)
+        result=json.loads(self.receipt.read_bytes());self.assertFalse(result['exact_payload']);rows={x['path']:x for x in result['differences']}
+        self.assertEqual(rows['binary']['fields'],['mode','sha256']);self.assertEqual(rows['binary']['actual']['mode'],'0600');self.assertEqual(rows['binary']['expected']['sha256'],digest(b'original'));self.assertEqual(rows['added']['change'],'added')
+    def test_exact_installed_runner_still_passes(self):
+        result=self.e.verify_installed_runner(self.runner,self.expected,self.b,lambda:None,self.record)
+        self.assertTrue(result['exact_payload']);self.assertEqual(result['differences'],[]);self.assertEqual(json.loads(self.receipt.read_bytes()),result)
+    def test_receipt_failure_is_fatal_and_never_becomes_payload_pass(self):
+        def fail(_):raise OSError('owned receipt fixture')
+        with self.assertRaises(OSError):self.e.verify_installed_runner(self.runner,self.expected,self.b,lambda:None,fail)
+    def test_expired_serialization_and_existing_receipt_never_write(self):
+        expired=[False];encode=self.r.json.dumps
+        def check():
+            if expired[0]:raise TimeoutError('original phase')
+        def during(*args,**kwargs):
+            result=encode(*args,**kwargs);expired[0]=True;return result
+        with mock.patch.object(self.r.json,'dumps',side_effect=during),mock.patch.object(Path,'open')as opened:
+            with self.assertRaises(TimeoutError):self.r.save_installed_runner(self.receipt,{},check)
+        opened.assert_not_called();self.receipt.write_bytes(b'original')
+        with self.assertRaises(FileExistsError):self.r.save_installed_runner(self.receipt,{},lambda:None)
+        self.assertEqual(self.receipt.read_bytes(),b'original')
+
 if __name__=='__main__':unittest.main()

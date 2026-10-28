@@ -87,9 +87,23 @@ def payload_inventory(root,budget,check):
  return result
 
 
-def verify_installed_runner(root,entries,budget,check):
+def verify_installed_runner(root,entries,budget,check,record):
  actual=payload_inventory(root,budget,check)
  expected={key:{k:v for k,v in row.items() if k in ('mode','directory','sha256')} for key,row in entries.items()}
- assert actual==expected,'installed runner differs from pinned original'
+ differences=[]
+ for name in sorted(set(actual)|set(expected)):
+  found,wanted=actual.get(name),expected.get(name)
+  if found==wanted:continue
+  kind='added' if name not in expected else 'missing' if name not in actual else 'changed'
+  fields=[]
+  if kind=='changed':
+   if bool(found.get('directory'))!=bool(wanted.get('directory')):fields.append('type')
+   if found.get('mode')!=wanted.get('mode'):fields.append('mode')
+   if found.get('sha256')!=wanted.get('sha256'):fields.append('sha256')
+   if set(found)!=set(wanted):fields.append('entry_fields')
+  differences.append({'path':name,'change':kind,'fields':fields,'expected':wanted,'actual':found})
  info=Path(root).lstat()
- return {'path':str(root),'root_device_inode':[info.st_dev,info.st_ino],'files':actual,'exact_payload':True}
+ receipt={'path':str(root),'root_device_inode':[info.st_dev,info.st_ino],'files':actual,'exact_payload':actual==expected,'differences':differences,'expected_entries':len(expected),'actual_entries':len(actual)}
+ check();record(receipt);check()
+ assert actual==expected,'installed runner differs from pinned original; bounded inventory saved'
+ return receipt

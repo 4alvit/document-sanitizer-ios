@@ -210,4 +210,67 @@ class InstalledInventoryReceiptTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):self.m.persist_installed_payload(self.run,self.resources,'/fixture/app',{}, {},self.path)
         self.assertEqual(self.path.read_bytes(),b'original')
 
+class InitialInstallModeTests(unittest.TestCase):
+    # Retained iOS18.5 installed-host observation, with synthetic file contents/hashes.
+    observed_paths=(
+        'CleanSend.debug.dylib','Frameworks/Testing.framework/Testing',
+        'Frameworks/XCTAutomationSupport.framework/XCTAutomationSupport',
+        'Frameworks/XCTest.framework/XCTest','Frameworks/XCTestCore.framework/XCTestCore',
+        'Frameworks/XCTestSupport.framework/XCTestSupport','Frameworks/XCUIAutomation.framework/XCUIAutomation',
+        'Frameworks/XCUnit.framework/XCUnit','Frameworks/libXCTestBundleInject.dylib',
+        'Frameworks/libXCTestSwiftSupport.dylib','PlugIns/CleanSendShare.appex/CleanSendShare.debug.dylib',
+        'PlugIns/CleanSendShare.appex/__preview.dylib','PlugIns/CleanSendTests.xctest/CleanSendTests','__preview.dylib')
+    def setUp(self):
+        self.m=load('initial_install_modes',DRIVER)
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name).resolve()
+        self.run=SimpleNamespace(start=time.monotonic(),end=226);self.resources=SimpleNamespace(check=lambda _:None)
+        self.expected={name:{'mode':'0755','sha256':hashlib.sha256(name.encode()).hexdigest()} for name in self.observed_paths+('CleanSend','PlugIns/CleanSendShare.appex/CleanSendShare')}
+        self.expected['.']={'mode':'0755','directory':True}
+        self.expected['Frameworks']={'mode':'0755','directory':True}
+        self.actual=json.loads(json.dumps(self.expected))
+        for name in self.observed_paths:self.actual[name]['mode']='0644'
+    def save(self,name,files,expected,*,initial=False):
+        return self.m.persist_installed_payload(self.run,self.resources,'/fixture/app',files,expected,self.root/name,initial_install=initial)
+    def test_complete_observed_transition_keeps_raw_result_and_exact_later_baseline(self):
+        before=self.save('before.json',self.actual,self.expected,initial=True)
+        self.assertFalse(before['exact_payload']);self.assertTrue(before['accepted_payload'])
+        self.assertEqual(len(before['accepted_install_transitions']),14)
+        self.assertEqual({row['path'] for row in before['accepted_install_transitions']},set(self.observed_paths))
+        self.assertEqual(before['files'],self.actual)
+        for name in ('during.json','after.json'):
+            result=self.save(name,self.actual,before['files'])
+            self.assertTrue(result['exact_payload']);self.assertEqual(result['accepted_install_transitions'],[])
+        self.assertTrue(all(self.expected[name]['mode']=='0755' for name in self.observed_paths))
+    def test_unknown_content_type_path_or_mode_remains_fatal_and_is_recorded(self):
+        first=self.observed_paths[0]
+        variants={
+            'changed-hash':lambda data:data[first].update(sha256='0'*64),
+            'wrong-mode':lambda data:data[first].update(mode='0600'),
+            'directory':lambda data:data[first].update(directory=True),
+            'unknown-field':lambda data:data[first].update(extra=True),
+            'added':lambda data:data.update(extra={'mode':'0644','sha256':'0'*64}),
+            'missing':lambda data:data.pop(first),
+            'main-executable':lambda data:data['CleanSend'].update(mode='0644'),
+            'extension-executable':lambda data:data['PlugIns/CleanSendShare.appex/CleanSendShare'].update(mode='0644'),
+            'directory-mode':lambda data:data['Frameworks'].update(mode='0700'),
+        }
+        for name,mutate in variants.items():
+            with self.subTest(name=name):
+                data=json.loads(json.dumps(self.actual));mutate(data)
+                with self.assertRaisesRegex(AssertionError,'bounded inventory saved'):
+                    self.save(name+'.json',data,self.expected,initial=True)
+                saved=json.loads((self.root/(name+'.json')).read_bytes())
+                self.assertFalse(saved['accepted_payload']);self.assertEqual(saved['accepted_install_transitions'],[])
+                self.assertEqual(saved['files'],data)
+    def test_partial_transition_is_not_general_mode_normalization(self):
+        partial=json.loads(json.dumps(self.actual));partial[self.observed_paths[0]]['mode']='0755'
+        with self.assertRaises(AssertionError):self.save('partial.json',partial,self.expected,initial=True)
+        exact=self.save('unchanged.json',self.expected,self.expected,initial=True)
+        self.assertTrue(exact['exact_payload']);self.assertEqual(exact['accepted_install_transitions'],[])
+    def test_later_mode_or_hash_change_cannot_reuse_install_exception(self):
+        for index,change in enumerate(({'mode':'0755'},{'sha256':'0'*64})):
+            data=json.loads(json.dumps(self.actual));data[self.observed_paths[0]].update(change)
+            with self.assertRaises(AssertionError):self.save(str(index)+'.json',data,self.actual)
+        with self.assertRaises(AssertionError):self.save('not-initial.json',self.actual,self.expected)
+
 if __name__=='__main__':unittest.main()

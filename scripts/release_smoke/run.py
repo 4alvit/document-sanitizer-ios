@@ -112,6 +112,14 @@ def failure_detail(error):
  return {'type':type(error).__name__,'frames':frames[-4:]}
 
 
+def save_installed_runner(path,value,check):
+ check();raw=(json.dumps(value,indent=2)+'\n').encode();check();assert len(raw)<=1024*1024
+ with path.open('xb') as stream:
+  check();assert stream.write(raw)==len(raw);check()
+  stream.flush();check();os.fsync(stream.fileno());check()
+ check()
+
+
 def worker(start,grant):
  b,e,l,c=load('window_budget'),load('evidence'),load('bounded_lifecycle'),load('prepare_config')
  l.OUT=SCOPE;l.ROOT=HERE;l.CONFIGURATION='Release'
@@ -139,8 +147,10 @@ def worker(start,grant):
   l.save(SCOPE/name,{'path':str(path),'files':value,'exact_payload':value==expected});assert value==expected
   frozen=json.loads(BINDING.read_bytes())
   actual_runner=container('app',name+'-runner-path.txt',frozen['runner_Info']['CFBundleIdentifier'])
-  runner_receipt=e.verify_installed_runner(actual_runner,frozen['runner_entries'],b,resources.check)
-  l.save(SCOPE/(name+'.installed-runner.json'),runner_receipt)
+  phase=run.end
+  def check_runner():resources.check(phase)
+  e.verify_installed_runner(actual_runner,frozen['runner_entries'],b,check_runner,
+   lambda value:save_installed_runner(SCOPE/(name+'.installed-runner.json'),value,check_runner))
   return path
  try:
   assert CONTEXT['head']==HEAD and CONTEXT['tree'] and CONTEXT['checkout']

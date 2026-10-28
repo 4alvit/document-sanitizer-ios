@@ -14,6 +14,24 @@ CASE_NAMES=('testPurchaseAndNewStoreRestoreFromVerifiedHistory','testRefundRevok
 CASES={'ProStoreTests/'+name for name in CASE_NAMES}
 RUNTIME='com.apple.CoreSimulator.SimRuntime.iOS-18-5'
 DEVICE='com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro'
+# The complete mode-only transition set observed on the owned iOS18.5 Debug test host.
+# No other path, mode, type or content change is admitted across installation.
+INSTALL_MODE_PATHS=frozenset((
+ 'CleanSend.debug.dylib',
+ 'Frameworks/Testing.framework/Testing',
+ 'Frameworks/XCTAutomationSupport.framework/XCTAutomationSupport',
+ 'Frameworks/XCTest.framework/XCTest',
+ 'Frameworks/XCTestCore.framework/XCTestCore',
+ 'Frameworks/XCTestSupport.framework/XCTestSupport',
+ 'Frameworks/XCUIAutomation.framework/XCUIAutomation',
+ 'Frameworks/XCUnit.framework/XCUnit',
+ 'Frameworks/libXCTestBundleInject.dylib',
+ 'Frameworks/libXCTestSwiftSupport.dylib',
+ 'PlugIns/CleanSendShare.appex/CleanSendShare.debug.dylib',
+ 'PlugIns/CleanSendShare.appex/__preview.dylib',
+ 'PlugIns/CleanSendTests.xctest/CleanSendTests',
+ '__preview.dylib',
+))
 
 def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def version(value):return tuple(([int(x) for x in value.split('.')]+[0,0])[:3])
@@ -183,7 +201,7 @@ def phase_payload_inventory(run,resources,evidence,budget,path):
  check();result=evidence.payload_inventory(path,budget,check);check()
  return result
 
-def persist_installed_payload(run,resources,path,files,expected,receipt_path):
+def persist_installed_payload(run,resources,path,files,expected,receipt_path,*,initial_install=False):
  differences=[]
  for name in sorted(set(files)|set(expected)):
   actual,wanted=files.get(name),expected.get(name)
@@ -197,12 +215,23 @@ def persist_installed_payload(run,resources,path,files,expected,receipt_path):
    if set(actual)!=set(wanted):fields.append('entry_fields')
   differences.append({'path':name,'change':kind,'fields':fields,'expected':wanted,'actual':actual})
  exact=files==expected
+ # This policy is used only between compiled bytes and the first installed snapshot.
+ # Later observations compare every field against that frozen installed baseline.
+ accepted_transitions=(initial_install and {row['path'] for row in differences}==INSTALL_MODE_PATHS
+  and all(row['change']=='changed' and row['fields']==['mode']
+   and set(row['expected'])==set(row['actual'])=={'mode','sha256'}
+   and row['expected']['mode']=='0755' and row['actual']['mode']=='0644'
+   and re.fullmatch('[0-9a-f]{64}',row['expected']['sha256'])
+   and row['expected']['sha256']==row['actual']['sha256'] for row in differences))
  receipt={'path':str(path),'exact_payload':exact,'files':files,'differences':differences,
-          'expected_entries':len(expected),'actual_entries':len(files)}
+          'expected_entries':len(expected),'actual_entries':len(files),
+          'comparison_basis':'compiled_host' if initial_install else 'exact_expected_inventory',
+          'accepted_install_transitions':differences if accepted_transitions else [],
+          'accepted_payload':bool(exact or accepted_transitions)}
  resources.check(run.end)
  write_small(receipt_path,receipt,run.start,deadline=run.start+run.end)
  resources.check(run.end)
- assert exact,'installed payload differs from compiled host; bounded inventory saved'
+ assert exact or accepted_transitions,'installed payload differs from admitted inventory; bounded inventory saved'
  return receipt
 
 def native_test_end(run,now):
@@ -214,7 +243,7 @@ def worker(start,context):
  l.OUT=SCOPE;l.ROOT=ROOT;l.CONFIGURATION='Debug'
  run=l.Run();run.start=start
  run.meta.update(owner_worker_pid=os.getpid(),head=context['head'],binary_kind='same-host existing Debug application and hosted unit-test products',build_configuration='Debug',build_scheme='CleanSend',test_plan='CleanSend',native_storekit_tests=0,native_storekit_selected_cases=sorted(CASES),job_admission=context['job_admission'],context_sha256=sha(SCOPE/'context.json'))
- resources=Resources(start);uid=None;failures=[];sources={};expected=None;host=ROOT/'.derivedData/Build/Products/Debug-iphonesimulator/CleanSend.app';during=False
+ resources=Resources(start);uid=None;failures=[];sources={};expected=None;installed_baseline=None;host=ROOT/'.derivedData/Build/Products/Debug-iphonesimulator/CleanSend.app';during=False
  def interrupted(*_):
   if run.meta.get('cleanup_phase'):return
   raise InterruptedError('SIGTERM')
@@ -232,12 +261,15 @@ def worker(start,context):
    assert file.stat().st_size<=8*2**20 and total<=16*2**20
    result[name]=sha(file);resources.check(phase)
   return result
- def installed(name):
+ def installed(name,*,initial_install=False):
+  nonlocal installed_baseline
+  assert (installed_baseline is None)==initial_install,'installed baseline must be captured exactly once'
   value=output(['xcrun','simctl','get_app_container',uid,APP_ID,'app'],name+'-path.txt')
   path=Path(value);assert path.is_absolute() and str(path)==str(path.resolve()) and path.is_relative_to(resources.device/'data')
   resources.check(run.end)
   files=phase_payload_inventory(run,resources,e,b,path)
-  persist_installed_payload(run,resources,path,files,expected,SCOPE/name)
+  persist_installed_payload(run,resources,path,files,expected if initial_install else installed_baseline,SCOPE/name,initial_install=initial_install)
+  if initial_install:installed_baseline={key:dict(row) for key,row in files.items()}
   return path
  try:
   names=output(['git','ls-files'],'tracked-files.txt').splitlines();assert 0<len(names)<=1000
@@ -270,7 +302,7 @@ def worker(start,context):
   run.meta['owned_uuid']=uid;resources.device=Path.home()/'Library/Developer/CoreSimulator/Devices'/uid;run.persist()
   command(['xcrun','simctl','boot',uid],'boot.log',20);command(['xcrun','simctl','bootstatus',uid,'-b'],'bootstatus.log',90)
   install_once(run,resources,uid,host)
-  with work_phase(run,resources,INSTALLED_BEFORE_END):installed('installed-before.json')
+  with work_phase(run,resources,INSTALLED_BEFORE_END):installed('installed-before.json',initial_install=True)
   assert run.remaining()>=TEST_ADMISSION,'full300s XCTest and final verification admission unavailable'
   argv=test_arguments(uid,SCOPE/'result.xcresult');item={'args':argv,'started_at':l.now(),'timeout_seconds':300};run.meta['commands'].append(item);run.persist()
   proc=None;tail=b'';log_read=0;end=native_test_end(run,time.monotonic());previous_end=run.end;run.end=min(previous_end,end-start)
