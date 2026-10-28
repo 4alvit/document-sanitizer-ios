@@ -33,7 +33,8 @@ TARGET = 'CleanSendUITests'
 CASE = 'PrivacySupportUITests/testRussianOfflineInformationAtSystemAX5OnLandscapeIPad'
 AX5 = 'accessibility-extra-extra-extra-large'
 # Cold hosted AX5 requests can exhaust 30s after bootstatus succeeds.
-# Both finite 60s caps must fit before the unchanged runtime/cleanup reservation.
+# Each finite 60s cap is clipped to the original work deadline while preserving
+# the existing 215s XCTest admission reserve and Run.command's 4s stop reserve.
 AX5_SET_LIMIT, AX5_READ_LIMIT = 60, 60
 # Runner startup and selected-case execution share this finite outer cap.
 # Run.command still clips this maximum to remaining work minus its 4s reserve.
@@ -543,6 +544,19 @@ def collect(run):
     assert nodes[0]['result'] == 'Passed'
 
 
+def configure_system_ax5(run, uid):
+    # The phase end is absolute relative to the existing run.start. The second
+    # command recalculates remaining time after the first; no budget is renewed.
+    previous_end = run.end
+    assert previous_end == WORK_END
+    run.end = WORK_END - 215
+    try:
+        run.command(['xcrun', 'simctl', 'ui', uid, 'content_size', AX5], 'set-ax5.log', AX5_SET_LIMIT)
+        return run.output(['xcrun', 'simctl', 'ui', uid, 'content_size'], 'ax5-readback.txt', AX5_READ_LIMIT)
+    finally:
+        run.end = previous_end
+
+
 def worker():
     identity = hosted_only()
     # The supervisor creates a fresh attempt scope. Never run a second worker in it.
@@ -573,12 +587,7 @@ def worker():
         run.persist()
         run.command(['xcrun', 'simctl', 'boot', uid], 'boot.log', 20)
         run.command(['xcrun', 'simctl', 'bootstatus', uid, '-b'], 'bootstatus.log', 90)
-        # Admit both AX5 commands, their 4s reserves and the existing minimum test budget.
-        # Extra startup headroom is available only within the unchanged work deadline.
-        assert run.remaining() >= AX5_SET_LIMIT + AX5_READ_LIMIT + 2 * 4 + 215, \
-            'No full AX5 setup and runtime/cleanup budget left'
-        run.command(['xcrun', 'simctl', 'ui', uid, 'content_size', AX5], 'set-ax5.log', AX5_SET_LIMIT)
-        readback = run.output(['xcrun', 'simctl', 'ui', uid, 'content_size'], 'ax5-readback.txt', AX5_READ_LIMIT)
+        readback = configure_system_ax5(run, uid)
         assert readback == AX5
         run.meta['actual_system_content_size'] = readback
         run.persist()

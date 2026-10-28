@@ -728,12 +728,54 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertEqual(meta['actual_system_content_size'], self.f.module.AX5)
         self.f.assert_cleanup(meta)
 
-    def test_less_than_ax5_admission_denies_both_commands_and_test(self):
-        self.f.backend.bootstatus_elapsed = 217.001
+    def test_no_ax5_allowance_beyond_reserve_denies_both_commands_and_test(self):
+        self.f.backend.bootstatus_elapsed = 341.0  # 215s test reserve plus4s stop; no positive command budget.
         rc, meta = self.f.run()
         self.assertEqual(rc, 1)
-        self.assert_failed(meta, 'No full AX5 setup and runtime/cleanup budget')
+        self.assert_failed(meta, 'No phase budget before set-ax5.log')
         self.assertFalse(any(p.step in ('set_ax5', 'readback', 'test') for p in self.f.backend.processes))
+        self.f.assert_cleanup(meta)
+
+    def test_cold_startup_admits_short_commands_rejected_by_old_sum(self):
+        self.f.backend.bootstatus_elapsed = 224.0
+        self.assertLess(560 - 224, 60 + 60 + 8 + 215)
+        self.f.backend.set_ax5_seconds = 5.0
+        self.f.backend.readback_seconds = 5.0
+        self.f.backend.readback_elapsed = None
+        rc, meta = self.f.run()
+        self.assertEqual(rc, 0)
+        commands = [p for p in self.f.backend.processes if p.step in ('set_ax5', 'readback', 'test')]
+        self.assertEqual([p.wait_calls for p in commands], [[60], [60], [300]])
+        self.assertEqual(meta['actual_system_content_size'], self.f.module.AX5)
+        self.f.assert_cleanup(meta)
+
+    def test_ax5_caps_clip_to_original_deadline_without_renewal(self):
+        self.f.backend.bootstatus_elapsed = 300.0
+        self.f.backend.set_ax5_seconds = 20.0
+        self.f.backend.readback_seconds = 10.0
+        self.f.backend.readback_elapsed = None
+        rc, meta = self.f.run()
+        self.assertEqual(rc, 0)
+        commands = [p for p in self.f.backend.processes if p.step in ('set_ax5', 'readback', 'test')]
+        self.assertEqual([p.wait_calls for p in commands], [[41], [21], [226]])
+        self.assertEqual(meta['phase_deadlines_seconds']['work'], 560)
+        self.assertEqual(meta['phase_deadlines_seconds']['absence'], 660)
+        self.assertEqual(meta['total_seconds'], 780)
+        self.f.assert_cleanup(meta)
+
+    def test_clipped_ax5_timeout_preserves_stop_and_device_cleanup(self):
+        self.f.backend.bootstatus_elapsed = 300.0
+        self.f.backend.set_ax5_seconds = 42.0
+        self.f.backend.readback_elapsed = None
+        rc, meta = self.f.run()
+        self.assertEqual(rc, 1)
+        self.assert_failed(meta, 'TimeoutExpired')
+        setters = [p for p in self.f.backend.processes if p.step == 'set_ax5']
+        self.assertEqual(len(setters), 1)
+        self.assertEqual(setters[0].wait_calls, [41])
+        record = next(c for c in meta['commands'] if c.get('owned_process_group') == setters[0].pid)
+        self.assertTrue(record['owned_group_absent'])
+        self.assertFalse(any(p.step in ('readback', 'test') for p in self.f.backend.processes))
         self.f.assert_cleanup(meta)
 
     def test_ax5_setter_over_60_seconds_stops_without_readback_or_retry(self):

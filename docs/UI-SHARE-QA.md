@@ -128,3 +128,16 @@ The probe neither tapped Cancel nor simulated a long operation. Its custom host
 and layer renderer do not reproduce every device safe area or material effect.
 Treat those PNGs as bounded layout evidence, not as an end-to-end cancellation
 or responsiveness test.
+
+The privacy driver's AX5 setter and readback each retain a 60-second maximum.
+Each command clips its actual allowance to the original work deadline, keeping
+215 seconds for the unchanged XCTest admission check and four seconds for that
+command's stop. Time used by the setter reduces the readback allowance; it does
+not start a new budget. Exact system-size readback, the selected case limit,
+the 300-second outer test cap, and the 560/660/780-second work/cleanup/whole
+deadlines remain unchanged. Passing admission does not guarantee test completion.
+
+The verification pipeline builds the committed Xcode project, matching Release
+packaging. Project regeneration is an authoring action performed before commit,
+not a CI build step. This keeps same-host unit-test products bound to the checked-in
+project and preserves the native gate's strict clean-source and hash checks.
