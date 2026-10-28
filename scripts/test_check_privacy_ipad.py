@@ -557,19 +557,20 @@ class BaselineWorkerTests(unittest.TestCase):
         self.f.assert_cleanup(meta)
 
     def test_exact_ax5_admission_allows_full_commands_and_test(self):
-        self.f.backend.bootstatus_elapsed = 292.0  # 268s remain in WORK_END.
+        self.f.backend.bootstatus_elapsed = 277.0  # 283s remain in WORK_END.
         self.f.backend.set_ax5_seconds = 30.0
-        self.f.backend.readback_elapsed = 337.0  # Setter30 + readback15.
+        self.f.backend.readback_elapsed = 337.0  # Setter30 + readback30.
         rc, meta = self.f.run()
         self.assertEqual(rc, 0)
         commands = [p for p in self.f.backend.processes if p.step in ('set_ax5', 'readback', 'test')]
         self.assertEqual([p.step for p in commands], ['set_ax5', 'readback', 'test'])
-        self.assertEqual([p.wait_calls for p in commands], [[30], [15], [210]])
+        self.assertEqual([p.wait_calls for p in commands], [[30], [30], [210]])
+        self.assertIn('-only-testing:CleanSendUITests/' + CASE, commands[-1].args)
         self.assertEqual(meta['actual_system_content_size'], self.f.module.AX5)
         self.f.assert_cleanup(meta)
 
     def test_less_than_ax5_admission_denies_both_commands_and_test(self):
-        self.f.backend.bootstatus_elapsed = 292.001
+        self.f.backend.bootstatus_elapsed = 277.001
         rc, meta = self.f.run()
         self.assertEqual(rc, 1)
         self.assert_failed(meta, 'No full AX5 setup and runtime/cleanup budget')
@@ -597,7 +598,7 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assert_failed(meta, 'TimeoutExpired')
         readbacks = [p for p in self.f.backend.processes if p.step == 'readback']
         self.assertEqual(len(readbacks), 1)
-        self.assertEqual(readbacks[0].wait_calls, [15])
+        self.assertEqual(readbacks[0].wait_calls, [30])
         self.assertEqual(self.f.test_processes(), [])
         self.assertNotIn('actual_system_content_size', meta)
         self.f.assert_cleanup(meta)
