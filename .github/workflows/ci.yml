@@ -5,13 +5,15 @@ on:
   pull_request:
 permissions:
   contents: read
+env:
+  DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   verify:
     name: macOS core, independent export corpus, iOS build
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 30
     permissions:
       contents: read
@@ -22,6 +24,11 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 2
+      - name: Require reviewed Intel toolchain profile
+        timeout-minutes: 1
+        run: |
+          test "$(uname -m)" = x86_64
+          test "$(xcodebuild -version)" = $'Xcode 16.4\nBuild version 16F6'
       - name: Install build and independent verification tools
         run: |
           brew install xcodegen poppler
@@ -74,12 +81,17 @@ jobs:
   privacy-ipad:
     name: Russian iPad privacy at system AX5
     if: github.event_name == 'pull_request'
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 2
+      - name: Require reviewed Intel toolchain profile
+        timeout-minutes: 1
+        run: |
+          test "$(uname -m)" = x86_64
+          test "$(xcodebuild -version)" = $'Xcode 16.4\nBuild version 16F6'
       - name: Run one bounded Release iPad privacy scenario
         timeout-minutes: 15
         env:
@@ -100,7 +112,7 @@ jobs:
     name: Exact packaged Release share smoke
     needs: [verify, privacy-ipad]
     if: ${{ always() && github.event_name == 'pull_request' && needs.verify.outputs.release_assets_ready == 'true' && needs['privacy-ipad'].result == 'success' }}
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 25
     permissions:
       contents: read
@@ -109,6 +121,11 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 2
+      - name: Require reviewed Intel toolchain profile
+        timeout-minutes: 1
+        run: |
+          test "$(uname -m)" = x86_64
+          test "$(xcodebuild -version)" = $'Xcode 16.4\nBuild version 16F6'
       - name: Bind exact same-run package and Release UI runner
         id: prepare
         timeout-minutes: 6

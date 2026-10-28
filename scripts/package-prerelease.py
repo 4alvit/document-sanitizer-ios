@@ -249,6 +249,7 @@ def main():
         'created_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
         'xcode': command('xcodebuild', '-version', capture=True).strip(),
         'platform': 'iPhoneSimulator', 'configuration': 'Release',
+        'host_architecture': os.uname().machine,
         'app_store_release': False, 'signing': 'Separate code-signing-disabled and local ad-hoc variants; iOS Simulator only',
         'artifacts': {
             binary.name: {'signing': 'Disabled', 'app_group': 'Unavailable'},

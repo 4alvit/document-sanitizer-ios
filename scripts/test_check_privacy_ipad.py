@@ -272,6 +272,7 @@ class Fixture:
         self.stack.enter_context(mock.patch.object(signal, 'signal', self.backend.signal))
         self.stack.enter_context(mock.patch.object(self.module.time, 'monotonic', self.clock.monotonic))
         self.stack.enter_context(mock.patch.object(self.module.time, 'sleep', self.clock.sleep))
+        self.stack.enter_context(mock.patch.object(os, 'uname', return_value=SimpleNamespace(machine='x86_64')))
         self.stack.enter_context(mock.patch.dict(os.environ, {'GITHUB_ACTIONS': 'true', 'RUNNER_OS': 'macOS',
             'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_RUN_ATTEMPT': '1', 'EXPECTED_HEAD_SHA': 'head',
             'GITHUB_SHA': 'checkout', 'GITHUB_RUN_ID': '123456789'}))
@@ -587,6 +588,12 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertEqual(len(self.f.test_processes()), 1)
         self.assertEqual(self.f.test_processes()[0].wait_calls, [211])
         self.f.assert_cleanup(meta)
+
+    def test_wrong_host_profile_rejected_before_any_process(self):
+        with mock.patch.object(os, 'uname', return_value=SimpleNamespace(machine='arm64')):
+            with self.assertRaisesRegex(AssertionError, 'Intel host profile'):
+                self.f.module.hosted_paths()
+        self.assertEqual(self.f.backend.calls, [])
 
     def test_noncanonical_run_or_attempt_rejected_before_any_process(self):
         for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'):

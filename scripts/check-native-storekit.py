@@ -51,7 +51,7 @@ def admit_job(data,run,attempt,head,now,native_remaining):
  assert len(jobs)==1
  job=jobs[0]
  assert job['run_id']==int(run) and job['run_attempt']==int(attempt) and job['head_sha']==head
- assert job['status']=='in_progress' and job['runner_id'] and job['labels']==['macos-15']
+ assert job['status']=='in_progress' and job['runner_id'] and job['labels']==['macos-15-intel']
  started=dt.datetime.fromisoformat(job['started_at'].replace('Z','+00:00'))
  elapsed=(now-started).total_seconds();assert elapsed>=0
  remaining=1800-elapsed
@@ -101,6 +101,7 @@ def write_small(path,value,start,*,deadline=None):
 def prepare_context(start):
  global SCOPE,OWNED_ROOT
  assert __debug__ and os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_OS')=='macOS'
+ assert os.uname().machine=='x86_64','reviewed Intel host profile required'
  assert os.environ.get('GITHUB_EVENT_NAME')=='pull_request' and os.environ['GITHUB_REPOSITORY']==REPO
  run,attempt,head=os.environ['GITHUB_RUN_ID'],os.environ['GITHUB_RUN_ATTEMPT'],os.environ['EXPECTED_HEAD_SHA']
  assert re.fullmatch('[1-9][0-9]*',run) and re.fullmatch('[1-9][0-9]*',attempt) and re.fullmatch('[0-9a-f]{40}',head)
@@ -124,7 +125,7 @@ def prepare_context(start):
   assert time.monotonic()<start+30
   data=json.loads(raw);job=admit_job(data,run,attempt,head,dt.datetime.now(dt.timezone.utc),start+780-time.monotonic())
   write_small(SCOPE/'job-metadata.json',data,start)
-  context={'repository':REPO,'run':run,'attempt':attempt,'head':head,'checkout':os.environ['GITHUB_SHA'],'scope':str(SCOPE),'seconds':780,'start_monotonic':start,'job_admission':job,'case_identities':sorted(CASES),'case_count':8,'outer_seconds':300,'case_seconds':180,'runtime':RUNTIME,'device_type':DEVICE,'no_real_account_sign_in':True,'retry':False}
+  context={'host_architecture':os.uname().machine,'repository':REPO,'run':run,'attempt':attempt,'head':head,'checkout':os.environ['GITHUB_SHA'],'scope':str(SCOPE),'seconds':780,'start_monotonic':start,'job_admission':job,'case_identities':sorted(CASES),'case_count':8,'outer_seconds':300,'case_seconds':180,'runtime':RUNTIME,'device_type':DEVICE,'no_real_account_sign_in':True,'retry':False}
   write_small(SCOPE/'context.json',context,start);report.update(status='admitted',job_admission=job,context_sha256=sha(SCOPE/'context.json'))
  except BaseException as error:failure=error;report.update(status='failed',error=safe_failure(error))
  finally:
@@ -138,6 +139,7 @@ def validate_context(path,start):
  assert __debug__ and 0<=time.monotonic()-start<780
  raw=path.read_bytes();assert len(raw)<=65536 and hashlib.sha256(raw).hexdigest()==os.environ['NATIVE_STOREKIT_CONTEXT_SHA']
  context=json.loads(raw);assert context['repository']==REPO and context['start_monotonic']==start
+ assert context['host_architecture']==os.uname().machine=='x86_64'
  assert context['case_identities']==sorted(CASES) and context['case_count']==8 and context['outer_seconds']==300 and context['case_seconds']==180 and context['seconds']==780
  assert context['runtime']==RUNTIME and context['device_type']==DEVICE and context['retry'] is False
  assert context['head']==os.environ['EXPECTED_HEAD_SHA'] and context['run']==os.environ['GITHUB_RUN_ID'] and context['attempt']==os.environ['GITHUB_RUN_ATTEMPT'] and context['checkout']==os.environ['GITHUB_SHA']

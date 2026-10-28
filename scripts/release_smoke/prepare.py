@@ -64,6 +64,7 @@ def failure_detail(error):
 def main():
  if not __debug__:raise SystemExit('Assertions must be enabled')
  assert os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_OS')=='macOS'
+ assert os.uname().machine=='x86_64','reviewed Intel host profile required'
  assert os.environ.get('GITHUB_EVENT_NAME')=='pull_request' and os.environ['GITHUB_REPOSITORY']==REPO
  run,attempt,head=os.environ['GITHUB_RUN_ID'],os.environ['GITHUB_RUN_ATTEMPT'],os.environ['EXPECTED_HEAD_SHA']
  assert re.fullmatch('[1-9][0-9]*',run) and re.fullmatch('[1-9][0-9]*',attempt) and re.fullmatch('[0-9a-f]{40}',head)
@@ -125,6 +126,7 @@ def main():
   report['stage']='producer_and_source_provenance'
   privacy=doc('privacy-inputs/source-provenance.json');meta=doc('privacy-inputs/metadata.json')
   assert privacy['published_head']==head and privacy['run_id']==run and privacy['run_attempt']==attempt
+  assert privacy['host_architecture']==os.uname().machine=='x86_64','privacy producer profile mismatch'
   assert privacy['build_configuration']=='Release' and privacy['sdk']=='18.5' and privacy['xcode']=='Xcode 16.4\nBuild version 16F6'
   assert privacy['equal_trees'] and privacy['actual_tree']==privacy['head_tree']
   assert meta['source_and_built_payloads_unchanged'] and meta['device_removed'] and meta['cleanup']=={'shutdown':0,'delete':0}
@@ -155,6 +157,7 @@ def main():
      hasher.update(block)
    assert hasher.hexdigest()==digest
   preview=doc('release-assets/preview-build.json');provenance=preview['provenance']
+  assert preview['host_architecture']==privacy['host_architecture'] and preview['xcode']==privacy['xcode'],'Release producer profile mismatch'
   assert preview['source_commit']==checkout and preview['source_tree']==tree and preview['configuration']=='Release' and preview['platform']=='iPhoneSimulator' and preview['app_store_release'] is False
   assert provenance['published_head']==head and provenance['published_head_tree']==tree and provenance['checkout_tree_matches_published_head'] is True
   assert provenance['github']['run_id']==run and provenance['github']['run_attempt']==attempt and provenance['github']['repository']==REPO
@@ -173,6 +176,7 @@ def main():
     binary_rows=index(archive,w,32*2**20);assert all(r.file_size<=8*2**20 for r in binary_rows.values())
    w.check();actual=scanner.scan_package(base/'release-assets'/name);w.check()
    assert actual['ok'] and actual==scans[variant+'_zip'] and actual['binaries']==scans[variant+'_app']['binaries'],'live binary scan mismatch'
+   assert all(any(s['architecture']=='x86_64' for s in binary['slices']) for binary in actual['binaries']),'Intel simulator slice required'
   report['stage']='runner_reconstruction'
   runner_folder='runner/CleanSendUITests-Runner.app';w.reserve([('runner','directory',0)]);w.mkdir('runner')
   runner_modes=modes['runner'];assert set(before['runner']['files'])=={n for n,v in runner_modes.items() if not v['directory']}
@@ -200,13 +204,14 @@ def main():
   args=build_commands[0]['args']
   assert args[args.index('-scheme')+1]=='CleanSendPrivacyRelease' and args[args.index('-configuration')+1]=='Release'
   assert 'ENABLE_TESTABILITY=NO' in args
-  producer={'head':head,'tree':tree,'checkout':checkout,'run':run,'attempt':attempt,'configuration':privacy['build_configuration'],
+  assert 'ARCHS=x86_64' in args and 'ONLY_ACTIVE_ARCH=YES' in args,'UI runner producer architecture mismatch'
+  producer={'host_architecture':privacy['host_architecture'],'head':head,'tree':tree,'checkout':checkout,'run':run,'attempt':attempt,'configuration':privacy['build_configuration'],
    'xcode':privacy['xcode'],'sdk':privacy['sdk'],'source_provenance_sha256':hashlib.sha256(raw('privacy-inputs/source-provenance.json')).hexdigest(),
    'build_for_testing':{k:build_commands[0][k]for k in ('args','returncode','owned_group_absent')}}
   binding={'producer':producer,'runner':str(runner),'runner_entries':entries,'runner_source_commit':checkout,'selected_test_source_path':str(ROOT/'Tests/UITests/ShareExtensionEntryTests.swift'),'test_source_sha256':privacy['source_files']['Tests/UITests/ShareExtensionEntryTests.swift'],'runner_Info':{k:plistlib.loads((runner/'Info.plist').read_bytes()).get(k) for k in ('CFBundleIdentifier','MinimumOSVersion','DTXcodeBuild')},'original_runner':before['runner']['path'],'original_AUT':before['AUT']['path'],'template_sha256':hashlib.sha256(raw('privacy-inputs/generated-original.xctestrun')).hexdigest()}
   saved_binding=save('runner-binding.json',binding)
   report['stage']='native_context'
-  context={'repository':REPO,'run':run,'attempt':attempt,'head':head,'tree':tree,'checkout':checkout,'base':str(base),'scope':str(base/'native'),'assets':str(base/'release-assets'),'runner_binding':str(base/'runner-binding.json'),'runner_binding_sha256':saved_binding['sha256'],'runner_template':str(base/'privacy-inputs/generated-original.xctestrun'),'adhoc_zip_sha256':checksums['RedactLeaf-adhoc-simulator.zip'],'adhoc_zip_bytes':(base/'release-assets/RedactLeaf-adhoc-simulator.zip').stat().st_size,'payload_manifest_sha256':checksums['payload-sha256.json'],'runtime_id':meta['runtime']['identifier'],'device_type':meta['device_type']['identifier'],'runtime_version':'18.5','xcode_build':'16F6','seconds':780,'owned_cap_bytes':2*2**30,'free_floor_bytes':12*2**30,'get_count':0,'native_worker_count':1,'retry_authorized':False,'pipeline_deadline':start+1080,'expires_unix':time.time()+300,'source_files':privacy['source_files']}
+  context={'host_architecture':os.uname().machine,'repository':REPO,'run':run,'attempt':attempt,'head':head,'tree':tree,'checkout':checkout,'base':str(base),'scope':str(base/'native'),'assets':str(base/'release-assets'),'runner_binding':str(base/'runner-binding.json'),'runner_binding_sha256':saved_binding['sha256'],'runner_template':str(base/'privacy-inputs/generated-original.xctestrun'),'adhoc_zip_sha256':checksums['RedactLeaf-adhoc-simulator.zip'],'adhoc_zip_bytes':(base/'release-assets/RedactLeaf-adhoc-simulator.zip').stat().st_size,'payload_manifest_sha256':checksums['payload-sha256.json'],'runtime_id':meta['runtime']['identifier'],'device_type':meta['device_type']['identifier'],'runtime_version':'18.5','xcode_build':'16F6','seconds':780,'owned_cap_bytes':2*2**30,'free_floor_bytes':12*2**30,'get_count':0,'native_worker_count':1,'retry_authorized':False,'pipeline_deadline':start+1080,'expires_unix':time.time()+300,'source_files':privacy['source_files']}
   assert context['runtime_id']=='com.apple.CoreSimulator.SimRuntime.iOS-18-5'
   assert context['device_type']=='com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4-16GB'
   assert time.monotonic()<start+300 and shutil.disk_usage(base).free>=14*2**30

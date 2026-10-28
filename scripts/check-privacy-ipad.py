@@ -82,6 +82,7 @@ def payload_modes(path):
 def hosted_only():
     assert os.environ.get('GITHUB_ACTIONS') == 'true', 'This driver must not run locally'
     assert os.environ.get('RUNNER_OS') == 'macOS'
+    assert os.uname().machine == 'x86_64', 'reviewed Intel host profile required'
     assert os.environ.get('GITHUB_EVENT_NAME') == 'pull_request'
     identity = {'run_id': os.environ.get('GITHUB_RUN_ID', ''),
                 'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT', '')}
@@ -423,6 +424,7 @@ def provenance(run):
     info = {'published_head': head, 'actual_checkout': checkout, 'actual_tree': tree,
             'head_tree': head_tree, 'equal_trees': True, 'source_files': sources,
             'build_configuration': CONFIGURATION, 'build_scheme': SCHEME, 'test_plan': TEST_PLAN,
+            'host_architecture': os.uname().machine,
             'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
             'xcode': run.output(['xcodebuild', '-version'], 'xcode-version.txt'),
             'sdk': run.output(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], 'sdk-version.txt'),

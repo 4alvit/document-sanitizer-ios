@@ -24,8 +24,10 @@ def validate_grant(path):
  global CONTEXT,SCOPE,OWNED_ROOT,ASSETS,ZIP,BUNDLE,BINDING,TEMPLATE,ZIP_SHA,PAYLOAD_SHA,HEAD
  if not __debug__:raise SystemExit('Python assertions must be enabled')
  assert os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('GITHUB_EVENT_NAME')=='pull_request'
+ assert os.uname().machine=='x86_64','reviewed Intel host profile required'
  raw=path.read_bytes();assert len(raw)<=1024*1024 and hashlib.sha256(raw).hexdigest()==os.environ['RELEASE_SMOKE_CONTEXT_SHA']
  grant=json.loads(raw)
+ assert grant['host_architecture']==os.uname().machine=='x86_64'
  assert grant['repository']==os.environ['GITHUB_REPOSITORY']=='4alvit/document-sanitizer-ios'
  assert grant['head']==os.environ['EXPECTED_HEAD_SHA'] and grant['run']==os.environ['GITHUB_RUN_ID'] and grant['attempt']==os.environ['GITHUB_RUN_ATTEMPT'] and grant['checkout']==os.environ['GITHUB_SHA']
  expected=Path(os.environ['RUNNER_TEMP'])/f"redact-package-smoke-{grant['run']}-attempt-{grant['attempt']}"
