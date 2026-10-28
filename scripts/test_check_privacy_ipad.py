@@ -524,6 +524,52 @@ class BaselineWorkerTests(unittest.TestCase):
                 self.assertTrue(all(t['status'] == 'NOT_READ_RELATIVE_OR_EMPTY_PATH'
                                     for t in context['tools'].values()))
 
+    def test_selected_ax5_config_240_preserves_original_and_excludes_other_cases(self):
+        generated = self.f.dd / 'Build/Products/synthetic.xctestrun'
+        data = plistlib.loads(generated.read_bytes())
+        targets = data['TestConfigurations'][0]['TestTargets']
+        targets[0].update(MaximumTestExecutionTimeAllowance=180,
+                          OnlyTestIdentifiers=['OrdinaryTests/testUnrelated'])
+        targets[1].update(TestTimeoutsEnabled=True, DefaultTestExecutionTimeAllowance=120,
+                          MaximumTestExecutionTimeAllowance=180,
+                          OnlyTestIdentifiers=[CASE, 'PrivacySupportUITests/testEnglishOfflineInformationFromWorkspaceAndProPreservesDocument'])
+        original = plistlib.dumps(data)
+        generated.write_bytes(original)
+        rc, meta = self.f.run()
+        self.assertEqual(rc, 0)
+        selected = plistlib.loads((self.f.out / 'selected.xctestrun').read_bytes())
+        chosen = selected['TestConfigurations'][0]['TestTargets']
+        self.assertEqual(len(chosen), 1)
+        self.assertEqual(chosen[0]['BlueprintName'], 'CleanSendUITests')
+        self.assertEqual(chosen[0]['OnlyTestIdentifiers'], [CASE])
+        self.assertEqual(chosen[0]['SkipTestIdentifiers'], [])
+        self.assertTrue(chosen[0]['TestTimeoutsEnabled'])
+        self.assertEqual(chosen[0]['DefaultTestExecutionTimeAllowance'], 120)
+        self.assertEqual(chosen[0]['MaximumTestExecutionTimeAllowance'], 240)
+        self.assertEqual(generated.read_bytes(), original)
+        self.assertEqual((self.f.out / 'generated-original.xctestrun').read_bytes(), original)
+        self.assertEqual(plistlib.loads(generated.read_bytes()), data)
+        changes = json.loads((self.f.out / 'config-diff.json').read_text())['target_changes']
+        self.assertEqual(changes['MaximumTestExecutionTimeAllowance'], {'before': 180, 'after': 240})
+        self.assertEqual(len(self.f.test_processes()), 1)
+        self.assertEqual(self.f.test_processes()[0].wait_calls, [211])
+        self.assertFalse(meta['retry'])
+        self.f.assert_cleanup(meta)
+
+    def test_selected_ax5_config_rejects_ambiguous_ui_target_before_device_or_test(self):
+        generated = self.f.dd / 'Build/Products/synthetic.xctestrun'
+        data = plistlib.loads(generated.read_bytes())
+        targets = data['TestConfigurations'][0]['TestTargets']
+        targets.append(dict(targets[1]))
+        original = plistlib.dumps(data)
+        generated.write_bytes(original)
+        rc, meta = self.f.run()
+        self.assertEqual(rc, 1)
+        self.assert_failed(meta, 'AssertionError')
+        self.assertFalse(any(p.step in ('create', 'test') for p in self.f.backend.processes))
+        self.assertFalse((self.f.out / 'selected.xctestrun').exists())
+        self.assertEqual(generated.read_bytes(), original)
+
     def test_manual_attempt_identity_paths_and_worker_receipts(self):
         with mock.patch.dict(os.environ, {'GITHUB_RUN_ID': '40631521600', 'GITHUB_RUN_ATTEMPT': '2'}):
             self.assertEqual(self.f.module.hosted_only(), {'run_id': '40631521600', 'run_attempt': '2'})

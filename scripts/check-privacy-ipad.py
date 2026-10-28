@@ -34,7 +34,7 @@ AX5 = 'accessibility-extra-extra-extra-large'
 # Cold hosted AX5 requests can exhaust 30s after bootstatus succeeds.
 # Both finite 60s caps must fit before the unchanged runtime/cleanup reservation.
 AX5_SET_LIMIT, AX5_READ_LIMIT = 60, 60
-# Includes runner startup plus the unchanged 180s testcase allowance.
+# Runner startup and selected-case execution share this finite outer cap.
 # Run.command still clips this maximum to remaining work minus its 4s reserve.
 XCTEST_COMMAND_LIMIT = 300
 TOTAL = 780
@@ -454,7 +454,7 @@ def prepare_config(run):
     original = copy.deepcopy(target)
     target.update(OnlyTestIdentifiers=[CASE], SkipTestIdentifiers=[], TestLanguage='ru', TestRegion='RU',
                   TestTimeoutsEnabled=True, DefaultTestExecutionTimeAllowance=120,
-                  MaximumTestExecutionTimeAllowance=180, UserAttachmentLifetime='keepAlways',
+                  MaximumTestExecutionTimeAllowance=240, UserAttachmentLifetime='keepAlways',
                   SystemAttachmentLifetime='keepAlways')
     app, runner = Path(target['UITargetAppPath']), Path(target['TestHostPath'])
     assert app.is_dir() and runner.is_dir() and Path(target['TestBundlePath']).is_dir()

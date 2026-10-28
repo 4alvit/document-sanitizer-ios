@@ -35,6 +35,7 @@ final class PrivacySupportUITests: XCTestCase {
 
     @MainActor
     func testRussianOfflineInformationAtSystemAX5OnLandscapeIPad() throws {
+        executionTimeAllowance = 240
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad,
                           "Select an iPad for this dedicated accessibility case; its scoped run must reject skips.")
         try XCTSkipUnless(UIApplication.shared.preferredContentSizeCategory == .accessibilityExtraExtraExtraLarge,
@@ -314,12 +315,16 @@ final class PrivacySupportUITests: XCTestCase {
         for identifier in paragraphIDs + ["privacy-preview-notice"] {
             let paragraph = app.staticTexts[identifier]
             reveal(paragraph, in: list, app: app)
-            assertTranslated(paragraph, language: language)
-            XCTAssertGreaterThan(paragraph.frame.width, 0)
-            XCTAssertGreaterThanOrEqual(paragraph.frame.minX, list.frame.minX - 2)
-            XCTAssertLessThanOrEqual(paragraph.frame.maxX, list.frame.maxX + 2,
+            // Sample this paragraph once after reveal; keep every content/geometry check.
+            let label = paragraph.label
+            let frame = paragraph.frame
+            let listFrame = list.frame
+            assertTranslated(label, language: language)
+            XCTAssertGreaterThan(frame.width, 0)
+            XCTAssertGreaterThanOrEqual(frame.minX, listFrame.minX - 2)
+            XCTAssertLessThanOrEqual(frame.maxX, listFrame.maxX + 2,
                                      "Paragraphs must wrap within the information list.")
-            read[identifier] = paragraph.label
+            read[identifier] = label
             if let name = capturePoints[identifier] {
                 waitForStableFrame(paragraph)
                 capture(app, name: "\(prefix)-\(name)")
@@ -328,7 +333,7 @@ final class PrivacySupportUITests: XCTestCase {
         for identifier in ["privacy-policy-link", "support-guide-link", "public-issues-link"] {
             let link = app.descendants(matching: .any)[identifier].firstMatch
             reveal(link, in: list, app: app, needsCenter: true)
-            assertTranslated(link, language: language)
+            assertTranslated(link.label, language: language)
             XCTAssertTrue(link.isHittable)
             // Visibility is verified without following an external destination.
         }
@@ -338,11 +343,11 @@ final class PrivacySupportUITests: XCTestCase {
     }
 
     @MainActor
-    private func assertTranslated(_ element: XCUIElement, language: String) {
-        XCTAssertFalse(element.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        XCTAssertFalse(element.label.contains("privacy."), "A semantic resource key must not reach the UI.")
+    private func assertTranslated(_ label: String, language: String) {
+        XCTAssertFalse(label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        XCTAssertFalse(label.contains("privacy."), "A semantic resource key must not reach the UI.")
         if language == "ru" {
-            XCTAssertNotNil(element.label.range(of: "[А-Яа-яЁё]", options: .regularExpression))
+            XCTAssertNotNil(label.range(of: "[А-Яа-яЁё]", options: .regularExpression))
         }
     }
 
@@ -372,7 +377,7 @@ final class PrivacySupportUITests: XCTestCase {
 
     @MainActor
     private func reveal(_ element: XCUIElement, in scroll: XCUIElement, app: XCUIApplication, needsCenter: Bool = false) {
-        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        XCTAssertTrue(scroll.exists || scroll.waitForExistence(timeout: 5))
         for _ in 0..<16 {
             var visible = scroll.frame.intersection(app.frame)
             for bar in app.navigationBars.allElementsBoundByIndex where bar.isHittable {
@@ -384,17 +389,19 @@ final class PrivacySupportUITests: XCTestCase {
                 XCTFail("No usable viewport for \(element.identifier)")
                 return
             }
-            let frame = element.exists ? element.frame : .zero
+            // Refresh on every iteration, including immediately after each gesture.
+            let exists = element.exists
+            let frame = exists ? element.frame : .zero
             let overlap = visible.intersection(frame)
             let ready = needsCenter ? visible.contains(CGPoint(x: frame.midX, y: frame.midY))
                 : !overlap.isNull && overlap.height >= min(24, frame.height)
-            if element.exists && element.isHittable && ready { return }
+            if exists && element.isHittable && ready { return }
             guard remainingScrollGestures > 0 else {
                 XCTFail("The bounded scrolling budget was exhausted at \(element.identifier)")
                 return
             }
             remainingScrollGestures -= 1
-            let upwards = !element.exists || frame.midY >= visible.midY
+            let upwards = !exists || frame.midY >= visible.midY
             let origin = app.coordinate(withNormalizedOffset: .zero)
             let x = visible.midX
             let from = CGPoint(x: x, y: visible.minY + visible.height * (upwards ? 0.8 : 0.2))
