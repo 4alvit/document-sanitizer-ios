@@ -30,8 +30,9 @@ TEST_PLAN = SCHEME
 TARGET = 'CleanSendUITests'
 CASE = 'PrivacySupportUITests/testRussianOfflineInformationAtSystemAX5OnLandscapeIPad'
 AX5 = 'accessibility-extra-extra-extra-large'
-# Readback is a separate simctl request and receives the same setup allowance.
-AX5_SET_LIMIT, AX5_READ_LIMIT = 30, 30
+# Cold hosted AX5 requests can exhaust 30s after bootstatus succeeds.
+# Both finite 60s caps must fit before the unchanged runtime/cleanup reservation.
+AX5_SET_LIMIT, AX5_READ_LIMIT = 60, 60
 TOTAL = 780
 WORK_END = 560
 RECOVERY_END, SHUTDOWN_END, DELETE_END, CLEANUP_END = 582, 619, 638, 660
