@@ -238,7 +238,7 @@ class NativeStartupBudgetTests(unittest.TestCase):
         def late_stat(path):
             self.clock[0]=326
             return SimpleNamespace(st_blocks=0,st_mode=0o040700)
-        with mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=32*2**30)),mock.patch.object(os,'walk',return_value=[('/fixture',[],[])]),mock.patch.object(Path,'lstat',late_stat):
+        with mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=32*2**30)),mock.patch.object(os,'walk',return_value=[('/fixture',[],[])]),mock.patch.object(os,'lstat',side_effect=late_stat):
             with self.assertRaisesRegex(AssertionError,'owned stat deadline'):resources.check(226)
     def test_test_budget_retains300_body4_stop30_final_and_rejects_late_admission(self):
         self.clock[0]=326
@@ -357,5 +357,115 @@ class InitialInstallModeTests(unittest.TestCase):
             data=json.loads(json.dumps(self.actual));data[self.observed_paths[0]].update(change)
             with self.assertRaises(AssertionError):self.save(str(index)+'.json',data,self.actual)
         with self.assertRaises(AssertionError):self.save('not-initial.json',self.actual,self.expected)
+
+class NativeResourceScanTests(unittest.TestCase):
+    def setUp(self):
+        self.m=load('native_resource_scan',DRIVER);self.clock=[101.0]
+        self.m.SCOPE=self.m.OWNED_ROOT=Path('/fixture/private-owned-root')
+        patches=(mock.patch.object(time,'monotonic',new=lambda:self.clock[0]),
+                 mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=32*2**30)),
+                 mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native/network forbidden')),
+                 mock.patch.object(os,'killpg',side_effect=AssertionError('signals forbidden')))
+        for patch in patches:patch.start();self.addCleanup(patch.stop)
+    @staticmethod
+    def info(blocks,mode=0o100600):return SimpleNamespace(st_blocks=blocks,st_mode=mode)
+    def test_complete_two_root_scan_keeps_both_directory_stats_and_all_allocations(self):
+        owned=str(self.m.OWNED_ROOT);device='/fixture/device';device_dirs=['data','link']
+        rows={owned:[(owned,['Products'],['receipt.json']),(owned+'/Products',[],['app'])],
+              device:[(device,device_dirs,[]),(device+'/data',[],['state'])]}
+        values={owned:self.info(4,0o040700),owned+'/Products':self.info(2,0o040700),
+                owned+'/receipt.json':self.info(1),owned+'/Products/app':self.info(5),
+                device:self.info(3,0o040700),device+'/data':self.info(4,0o040700),
+                device+'/link':self.info(1,0o120777),device+'/data/state':self.info(7)}
+        resources=self.m.Resources(100);resources.device=Path(device)
+        with mock.patch.object(Path,'exists',return_value=True),mock.patch.object(os,'walk',side_effect=lambda root,**kw:rows[str(root)]) as walk,mock.patch.object(os,'lstat',side_effect=lambda path:values[path]) as stat_call:
+            resources.check(196)
+        self.assertEqual(resources.maximum,33*512)
+        names=[call.args[0] for call in stat_call.call_args_list]
+        self.assertEqual(len(names),10)  # R + 2D + F = 2 + 4 + 4; no stats omitted.
+        self.assertEqual(names.count(owned+'/Products'),2);self.assertEqual(names.count(device+'/data'),2)
+        self.assertEqual(names.count(device+'/link'),1);self.assertNotIn('link',device_dirs)
+        self.assertEqual([call.kwargs for call in walk.call_args_list],[{'followlinks':False}]*2)
+        self.assertIsNone(resources.first_failure)
+    def test_changed_or_replaced_directory_is_reobserved_at_traversal(self):
+        root=str(self.m.OWNED_ROOT);seen=[]
+        def observe(path):
+            seen.append(path)
+            if path==root:return self.info(1,0o040700)
+            if path==root+'/child':return self.info(2 if seen.count(path)==1 else 20,0o040700)
+            return self.info(3)
+        resources=self.m.Resources(100)
+        with mock.patch.object(os,'walk',return_value=[(root,['child'],[]),(root+'/child',[],['file'])]),mock.patch.object(os,'lstat',side_effect=observe):resources.check(196)
+        self.assertEqual(resources.maximum,(1+2+20+3)*512)
+        self.assertEqual(seen.count(root+'/child'),2)
+    def test_real_walk_does_not_follow_directory_replaced_by_symlink(self):
+        with tempfile.TemporaryDirectory(prefix='native-scan-links-') as temporary:
+            root=Path(temporary)/'owned';outside=Path(temporary)/'outside'
+            root.mkdir();outside.mkdir();child=root/'child';child.mkdir()
+            (child/'old').write_bytes(b'old');(outside/'never-read').write_bytes(b'outside')
+            self.m.OWNED_ROOT=root;resources=self.m.Resources(100)
+            original_walk=os.walk;original_stat=os.lstat;visited=[];stats=[]
+            def changing_walk(*args,**kwargs):
+                self.assertFalse(kwargs['followlinks'])
+                for row in original_walk(*args,**kwargs):
+                    visited.append(row[0]);yield row
+                    if row[0]==str(root):
+                        child.rename(outside/'previous');child.symlink_to(outside,target_is_directory=True)
+            def observe(path,*args,**kwargs):stats.append(os.fspath(path));return original_stat(path,*args,**kwargs)
+            with mock.patch.object(os,'walk',side_effect=changing_walk),mock.patch.object(os,'lstat',side_effect=observe):resources.check(196)
+            self.assertEqual(visited,[str(root)])
+            self.assertFalse(any(name.startswith(str(outside)) for name in stats))
+            self.assertIsNone(resources.first_failure)
+    def test_each_worker_and_supervisor_sample_is_fresh_and_independent(self):
+        root=str(self.m.OWNED_ROOT);blocks=[1];worker=self.m.Resources(100);supervisor=self.m.Resources(100)
+        with mock.patch.object(os,'walk',side_effect=lambda *a,**k:iter([(root,[],[])])),mock.patch.object(os,'lstat',side_effect=lambda path:self.info(blocks[0],0o040700)) as observed:
+            worker.check(196);supervisor.check(772)
+            self.assertEqual(observed.call_count,2)
+            blocks[0]=7;self.clock[0]+=2;worker.check(196)
+            self.assertEqual(worker.maximum,7*512);self.assertEqual(supervisor.maximum,512)
+            supervisor.check(772);self.assertEqual(observed.call_count,4);self.assertEqual(supervisor.maximum,7*512)
+    def test_first_deadline_failure_has_bounded_counters_and_is_not_overwritten(self):
+        root=str(self.m.OWNED_ROOT);resources=self.m.Resources(100)
+        def observe(path):
+            if path!=root:self.clock[0]=296
+            return self.info(1)
+        with mock.patch.object(os,'walk',return_value=[(root,[],['secret-token'])]),mock.patch.object(os,'lstat',side_effect=observe),mock.patch.object(Path,'open',side_effect=AssertionError('failure I/O forbidden')):
+            with self.assertRaisesRegex(AssertionError,'owned stat deadline'):resources.check(196)
+        failure=dict(resources.first_failure)
+        self.assertEqual(failure['operation'],'stat_deadline');self.assertEqual(failure['root'],'owned')
+        self.assertEqual(failure['successful_lstat_count'],2);self.assertEqual(failure['lstat_calls'],2)
+        self.assertEqual(failure['charged_allocated_bytes'],512);self.assertFalse(failure['complete_scan'])
+        self.assertEqual(failure['deadline_monotonic'],296);self.assertEqual(failure['elapsed_seconds'],196)
+        self.assertEqual(failure['roots']['owned']['lstat_calls'],2);self.assertFalse(failure['roots']['owned']['complete'])
+        self.assertLess(len(json.dumps(failure)),2048);self.assertNotIn('secret',json.dumps(failure));self.assertNotIn('/fixture',json.dumps(failure))
+        self.clock[0]=101
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',side_effect=PermissionError('credential must not enter evidence')):
+            with self.assertRaises(PermissionError):resources.check(772)
+        self.assertEqual(resources.first_failure,failure)
+    def test_complete_scan_over_cap_remains_fatal(self):
+        root=str(self.m.OWNED_ROOT);resources=self.m.Resources(100)
+        with mock.patch.object(self.m,'CAP',512),mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',return_value=self.info(2)):
+            with self.assertRaisesRegex(AssertionError,'owned allocation cap'):resources.check(196)
+        failure=resources.first_failure
+        self.assertTrue(failure['complete_scan']);self.assertEqual(failure['charged_allocated_bytes'],1024)
+        self.assertEqual(failure['operation'],'allocation_cap')
+    def test_original100000_entry_ceiling_stops_the_complete_scan(self):
+        root=str(self.m.OWNED_ROOT);resources=self.m.Resources(100)
+        with mock.patch.object(os,'walk',return_value=[(root,[],['file']*100000)]),mock.patch.object(os,'lstat',new=lambda path:self.info(1)):
+            with self.assertRaisesRegex(AssertionError,'owned inventory entry cap'):resources.check(196)
+        failure=resources.first_failure
+        self.assertEqual(failure['successful_lstat_count'],100001);self.assertEqual(failure['lstat_calls'],100001)
+        self.assertEqual(failure['charged_allocated_bytes'],100000*512);self.assertEqual(failure['operation'],'entry_cap')
+    def test_diagnostic_failure_does_not_mask_primary_exception(self):
+        root=str(self.m.OWNED_ROOT);resources=self.m.Resources(100);primary=PermissionError('private text')
+        def fail(path):
+            self.clock[0]=None
+            raise primary
+        def clock():
+            if self.clock[0] is None:raise RuntimeError('diagnostic clock failure')
+            return self.clock[0]
+        with mock.patch.object(time,'monotonic',side_effect=clock),mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',side_effect=fail):
+            with self.assertRaises(PermissionError) as caught:resources.check(196)
+        self.assertIs(caught.exception,primary);self.assertIsNone(resources.first_failure)
 
 if __name__=='__main__':unittest.main()
