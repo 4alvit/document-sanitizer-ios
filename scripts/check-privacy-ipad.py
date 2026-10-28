@@ -34,6 +34,9 @@ AX5 = 'accessibility-extra-extra-extra-large'
 # Cold hosted AX5 requests can exhaust 30s after bootstatus succeeds.
 # Both finite 60s caps must fit before the unchanged runtime/cleanup reservation.
 AX5_SET_LIMIT, AX5_READ_LIMIT = 60, 60
+# Includes runner startup plus the unchanged 180s testcase allowance.
+# Run.command still clips this maximum to remaining work minus its 4s reserve.
+XCTEST_COMMAND_LIMIT = 300
 TOTAL = 780
 WORK_END = 560
 RECOVERY_END, SHUTDOWN_END, DELETE_END, CLEANUP_END = 582, 619, 638, 660
@@ -557,8 +560,8 @@ def worker():
         run.persist()
         run.command(['xcrun', 'simctl', 'boot', uid], 'boot.log', 20)
         run.command(['xcrun', 'simctl', 'bootstatus', uid, '-b'], 'bootstatus.log', 90)
-        # Admit both AX5 commands, their existing 4s reserves and the full test budget.
-        # This is admission headroom; the post-readback check still rejects late work.
+        # Admit both AX5 commands, their 4s reserves and the existing minimum test budget.
+        # Extra startup headroom is available only within the unchanged work deadline.
         assert run.remaining() >= AX5_SET_LIMIT + AX5_READ_LIMIT + 2 * 4 + 215, \
             'No full AX5 setup and runtime/cleanup budget left'
         run.command(['xcrun', 'simctl', 'ui', uid, 'content_size', AX5], 'set-ax5.log', AX5_SET_LIMIT)
@@ -566,13 +569,13 @@ def worker():
         assert readback == AX5
         run.meta['actual_system_content_size'] = readback
         run.persist()
-        assert run.remaining() >= 215, 'No full runtime/cleanup budget left; do not start XCTest'
+        assert run.remaining() >= 215, 'No minimum runtime/cleanup budget left; do not start XCTest'
         run.meta['xcodebuild_returncode'] = run.command(
             ['xcodebuild', 'test-without-building', '-xctestrun', config,
              '-destination', 'platform=iOS Simulator,id=' + uid, '-parallel-testing-enabled', 'NO',
              '-maximum-concurrent-test-simulator-destinations', '1', '-collect-test-diagnostics', 'never',
              '-resultBundlePath', OUT / 'result.xcresult', '-only-testing:' + TARGET + '/' + CASE],
-            'test.log', 210, required=False)
+            'test.log', XCTEST_COMMAND_LIMIT, required=False)
     except BaseException as error:
         failed.append(repr(error))
     finally:
