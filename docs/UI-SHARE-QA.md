@@ -89,6 +89,31 @@ that XCTest did not replace the application. Preserve actual group-container
 creation, queue-copy hashes, cleanup and screenshots as independent runtime
 evidence. A passing signature check alone does not prove these behaviors.
 
+## Same-run packaged Release smoke in CI
+
+The `package-smoke` job waits for both existing verification and privacy jobs.
+It binds exactly their current run/attempt/head artifacts, preserves checksums
+and source provenance, and uses the Release UI runner already built by the
+privacy job. It does not rebuild or re-sign the packaged app. The one selected
+case exports the synthetic PDF through the actual Share Extension, saves it,
+imports its queued copy, and records matching export/queue hashes and cleanup.
+
+This hosted profile is an iPad Pro 13-inch M4 (16 GB), portrait, iOS 18.5,
+Xcode 16.4, with the actual system AX5 size. Fresh inventory must confirm that
+exact installed runtime/device/toolchain before creating the private simulator.
+Installed app and runner payloads are compared before, during and after the case.
+No native StoreKit test, purchase, App Store release or physical-device result is
+implied by this development Simulator check.
+
+The new job has a 25-minute ceiling and runs after the two existing jobs, so
+peak macOS parallelism remains two. Its own bounds are 180 seconds for two
+artifact transfers without retry, 120 additional seconds for validation and
+selective extraction, and 780 seconds for the private native session including
+cleanup. The case retains 240 seconds inside a 300-second XCTest command limit;
+work ends at 560 seconds, device cleanup at 660, and the complete native session
+at 780. Missing exact inputs, unsupported runtime, insufficient capacity or
+unconfirmed process cleanup fail the job; there is no automatic alternate route.
+
 ## Busy-state layout evidence
 
 The archived `BusyLayoutTests` diagnostic captured real view components at the

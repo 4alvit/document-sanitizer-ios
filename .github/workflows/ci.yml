@@ -81,3 +81,44 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+  package-smoke:
+    name: Exact packaged Release share smoke
+    needs: [verify, privacy-ipad]
+    if: github.event_name == 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 2
+      - name: Bind exact same-run package and Release UI runner
+        id: prepare
+        timeout-minutes: 6
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B scripts/release_smoke/prepare.py
+      - name: Run one bounded exact-package Share Extension case
+        timeout-minutes: 14
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RELEASE_SMOKE_CONTEXT_SHA: ${{ steps.prepare.outputs.context_sha256 }}
+          RELEASE_SMOKE_CONTEXT: ${{ steps.prepare.outputs.context }}
+        run: python3 -B scripts/release_smoke/run.py "$RELEASE_SMOKE_CONTEXT"
+      - name: Preserve exact-package smoke evidence
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: package-smoke-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/redact-package-smoke-${{ github.run_id }}-attempt-${{ github.run_attempt }}/preparation.json
+            ${{ runner.temp }}/redact-package-smoke-${{ github.run_id }}-attempt-${{ github.run_attempt }}/artifact-list.json
+            ${{ runner.temp }}/redact-package-smoke-${{ github.run_id }}-attempt-${{ github.run_attempt }}/context.json
+            ${{ runner.temp }}/redact-package-smoke-${{ github.run_id }}-attempt-${{ github.run_attempt }}/runner-binding.json
+            ${{ runner.temp }}/redact-package-smoke-${{ github.run_id }}-attempt-${{ github.run_attempt }}/native/
+          include-hidden-files: true
+          if-no-files-found: error

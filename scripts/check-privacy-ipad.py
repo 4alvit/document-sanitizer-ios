@@ -15,6 +15,7 @@ import plistlib
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -65,6 +66,16 @@ def sha(path):
 
 def inventory(path):
     return {str(p.relative_to(path)): sha(p) for p in sorted(path.rglob('*')) if p.is_file()}
+
+
+def payload_modes(path):
+    result = {}
+    for node in [path, *sorted(path.rglob('*'))]:
+        mode = node.lstat().st_mode
+        assert not stat.S_ISLNK(mode) and (stat.S_ISREG(mode) or stat.S_ISDIR(mode))
+        result[str(node.relative_to(path))] = {'mode': f'{stat.S_IMODE(mode):04o}',
+                                               'directory': stat.S_ISDIR(mode)}
+    return result
 
 
 def hosted_only():
@@ -484,6 +495,8 @@ def prepare_config(run):
     payloads = {'AUT': {'path': str(app), 'files': inventory(app)},
                 'runner': {'path': str(runner), 'files': inventory(runner)}}
     save(OUT / 'payload-before.json', payloads)
+    save(OUT / 'payload-node-modes-before.json', {label: payload_modes(Path(value['path']))
+                                               for label, value in payloads.items()})
     run.command(['codesign', '--verify', '--strict', '--all-architectures', app], 'aut-signature.log')
     run.command(['codesign', '--verify', '--strict', '--all-architectures', runner], 'runner-signature.log')
     # Preserve the actual new binaries, not just their paths in an ephemeral runner.
@@ -623,6 +636,9 @@ def worker():
                          for label, value in payloads.items()}
                 save(OUT / 'payload-after.json', after)
                 assert after == payloads
+                modes = {label: payload_modes(Path(value['path'])) for label, value in payloads.items()}
+                save(OUT / 'payload-node-modes-after.json', modes)
+                assert modes == json.loads((OUT / 'payload-node-modes-before.json').read_text())
             run.meta['source_and_built_payloads_unchanged'] = sources is not None and payloads is not None
         except BaseException as error:
             failed.append('Integrity: ' + repr(error))
