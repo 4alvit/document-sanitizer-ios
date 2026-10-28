@@ -10,7 +10,7 @@ MODULES=ROOT/'scripts/release_smoke'
 def load(name,path):
     spec=importlib.util.spec_from_file_location(name,path);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 
-def jobs(now,elapsed=600):
+def jobs(now,elapsed=300):
     return {'total_count':1,'jobs':[{'id':7,'name':'Native StoreKit eight-case acceptance','run_id':123,'run_attempt':1,'head_sha':'a'*40,'status':'in_progress','runner_id':55,'runner_name':'fixture','labels':['macos-15-intel'],'started_at':(now-dt.timedelta(seconds=elapsed)).isoformat()}]}
 
 class NativeStoreKitBindingTests(unittest.TestCase):
@@ -32,33 +32,34 @@ class NativeStoreKitBindingTests(unittest.TestCase):
         data['nodes'][0]=data['nodes'][1]
         with self.assertRaises(AssertionError):self.m.accepted_cases(data)
     def test_job_time_reserves_original_native_cleanup_and_upload(self):
-        accepted=self.m.admit_job(jobs(self.now,840),'123','1','a'*40,self.now,780)
-        self.assertEqual(accepted['remaining_job_seconds'],960)
-        with self.assertRaises(AssertionError):self.m.admit_job(jobs(self.now,841),'123','1','a'*40,self.now,780)
-        with self.assertRaises(AssertionError):self.m.admit_job(jobs(self.now,-1),'123','1','a'*40,self.now,780)
+        accepted=self.m.admit_job(jobs(self.now,420),'123','1','a'*40,self.now,1200)
+        self.assertEqual(accepted['remaining_job_seconds'],1380)
+        with self.assertRaises(AssertionError):self.m.admit_job(jobs(self.now,421),'123','1','a'*40,self.now,1200)
+        with self.assertRaises(AssertionError):self.m.admit_job(jobs(self.now,-1),'123','1','a'*40,self.now,1200)
     def test_dedicated_job_identity_in_four_job_run(self):
         data=jobs(self.now)
         for index,name in enumerate(('macOS core, independent export corpus, iOS build','Russian iPad privacy at system AX5','Exact packaged Release share smoke'),8):
             data['jobs'].append(dict(data['jobs'][0],id=index,name=name,status='completed'))
         data['total_count']=4
-        self.assertEqual(self.m.admit_job(data,'123','1','a'*40,self.now,780)['job_id'],7)
+        self.assertEqual(self.m.admit_job(data,'123','1','a'*40,self.now,1200)['job_id'],7)
         # A legacy Main row, even with valid identity/time, cannot own native work.
         wrong=json.loads(json.dumps(data));wrong['jobs'][0]['name']='legacy-main'
-        with self.assertRaises(AssertionError):self.m.admit_job(wrong,'123','1','a'*40,self.now,780)
+        with self.assertRaises(AssertionError):self.m.admit_job(wrong,'123','1','a'*40,self.now,1200)
         duplicate=json.loads(json.dumps(data));duplicate['jobs'][1]['name']=duplicate['jobs'][0]['name']
-        with self.assertRaises(AssertionError):self.m.admit_job(duplicate,'123','1','a'*40,self.now,780)
+        with self.assertRaises(AssertionError):self.m.admit_job(duplicate,'123','1','a'*40,self.now,1200)
         data['jobs'].append(dict(data['jobs'][1],id=12,name='unexpected fifth job'));data['total_count']=5
-        with self.assertRaises(AssertionError):self.m.admit_job(data,'123','1','a'*40,self.now,780)
+        with self.assertRaises(AssertionError):self.m.admit_job(data,'123','1','a'*40,self.now,1200)
     def test_dedicated_build_budget_does_not_renew_native_allowance(self):
-        # At the full9m build allowance plus1m profile, original native780 and
-        # its180s job reserve fit; later actual job elapsed still governs.
-        result=self.m.admit_job(jobs(self.now,600),'123','1','a'*40,self.now,780)
-        self.assertEqual(result['remaining_job_seconds']-result['required_remaining_seconds'],240)
-        with self.assertRaises(AssertionError):self.m.admit_job(jobs(self.now,841),'123','1','a'*40,self.now,780)
+        # The actual current139s preparation fits; a full9m build plus profile
+        # cannot borrow the original30min job's180s cleanup/upload reserve.
+        result=self.m.admit_job(jobs(self.now,139),'123','1','a'*40,self.now,1200)
+        self.assertEqual(result['remaining_job_seconds']-result['required_remaining_seconds'],281)
+        with self.assertRaises(AssertionError):self.m.admit_job(jobs(self.now,600),'123','1','a'*40,self.now,1200)
+        with self.assertRaises(AssertionError):self.m.admit_job(jobs(self.now,421),'123','1','a'*40,self.now,1200)
     def test_wrong_head_attempt_runner_and_plan_fail_closed(self):
         for key,value in (('head_sha','b'*40),('run_attempt',2),('labels',['macos-14']),('labels',['macos-15']),('labels',['macos-15-large'])):
             data=jobs(self.now);data['jobs'][0][key]=value
-            with self.assertRaises(AssertionError):self.m.admit_job(data,'123','1','a'*40,self.now,780)
+            with self.assertRaises(AssertionError):self.m.admit_job(data,'123','1','a'*40,self.now,1200)
         plan=json.loads((ROOT/'CleanSend.xctestplan').read_bytes());plan['defaultOptions']['maximumTestExecutionTimeAllowance']=240
         with self.assertRaises(AssertionError):self.m.validate_test_plan(plan)
     def test_wrong_host_rejected_before_metadata_or_scope_creation(self):
@@ -123,7 +124,7 @@ class NativeStoreKitBindingTests(unittest.TestCase):
 class NativeStartupBudgetTests(unittest.TestCase):
     def setUp(self):
         self.m=load('native_budget_driver',DRIVER)
-        self.l=load('native_budget_lifecycle',MODULES/'lifecycle.py')
+        self.l=self.m.load('lifecycle')
         self.clock=[183.0];self.start=100.0
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.l.OUT=Path(self.temp.name).resolve();self.l.ROOT=self.l.OUT
@@ -147,13 +148,47 @@ class NativeStartupBudgetTests(unittest.TestCase):
             self.assertEqual(self.m.install_once(self.run,self.resources,'owned','/fixture/app'),0)
         self.assertEqual(popen.call_count,2)
         self.assertEqual([args[2] for args,_ in waits],['bootstatus','install'])
-        self.assertEqual([limit for _,limit in waits],[109,39])
+        self.assertEqual([limit for _,limit in waits],[289,219])
         self.assertEqual(self.m.COLD_BOOT_LIMIT,300)
-        self.assertEqual(self.phases,[196,196,196,196])
-        self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
+        self.assertEqual(self.phases,[376,376,376,376])
+        self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
+
+    def test_cold_readiness_install_and_repeated_full_checks_share_original376(self):
+        self.clock[0]=116;costs=iter((1,60,0,60));checks=[];waits=[]
+        def check(phase):
+            checks.append(phase);self.clock[0]+=next(costs)
+            self.assertLess(self.clock[0],self.start+phase)
+        def spawn(args,**kwargs):
+            proc=SimpleNamespace(pid=77+len(waits),returncode=None)
+            def wait(timeout):
+                waits.append((args[2],timeout));self.clock[0]+=145 if args[2]=='bootstatus' else 61;proc.returncode=0
+            proc.wait=wait;return proc
+        with mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(self.l,'stop_group',side_effect=lambda proc,row:row.update(owned_group_absent=True)):
+            self.m.wait_ready_once(self.run,SimpleNamespace(check=check),'owned')
+            self.m.install_once(self.run,SimpleNamespace(check=check),'owned','/fixture/app')
+        self.assertEqual(checks,[376]*4);self.assertEqual(self.clock[0]-self.start,343)
+        self.assertEqual(waits,[('bootstatus',300),('install',150)])
+        self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
+    def test_late_native_persistence_cannot_use_stale_startup_allowance(self):
+        self.run.persist=lambda:self.clock.__setitem__(0,472)
+        with mock.patch.object(subprocess,'Popen') as spawn:
+            with self.assertRaises(TimeoutError):self.m.install_once(self.run,self.resources,'owned','/fixture/app')
+        spawn.assert_not_called();self.assertEqual(self.run.start,100)
+    def test_owned_cleanup_maxima_stay_inside_original100_reserve(self):
+        self.clock[0]=self.start+980;calls=[]
+        def spawn(args,**kwargs):
+            proc=SimpleNamespace(pid=77+len(calls),returncode=None)
+            def wait(timeout):calls.append((args[2],args[3],timeout));self.clock[0]+=timeout;proc.returncode=0
+            proc.wait=wait;return proc
+        with mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(self.l,'stop_group',side_effect=lambda p,row:row.update(owned_group_absent=True)):
+            for name,limit,end in [('shutdown',45,1039),('delete',25,1058),('list',15,1080)]:
+                self.run.end=end;self.run.command(['xcrun','simctl',name,'owned'],name+'.log',limit)
+        self.assertEqual(calls,[('shutdown','owned',45),('delete','owned',25),('list','owned',15)])
+        self.assertLess(self.clock[0],self.start+1080)
+        self.assertEqual(self.run.start,100)
 
     def test_readiness_timeout_uses_actual_owned_group_stop_and_preserves_cleanup(self):
-        self.clock[0]=114;present=[True];signals=[]
+        self.clock[0]=294;present=[True];signals=[]
         proc=SimpleNamespace(pid=77,returncode=None)
         proc.poll=lambda:proc.returncode
         def wait(timeout):
@@ -170,18 +205,18 @@ class NativeStartupBudgetTests(unittest.TestCase):
         self.assertEqual(proc.returncode,-15);self.assertFalse(present[0])
         record=self.run.meta['commands'][0]
         self.assertTrue(record['owned_group_absent']);self.assertEqual(record['returncode'],-15)
-        self.assertEqual(self.clock[0],292);self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
-        self.assertEqual(self.l.CLEANUP_END,660);self.assertEqual(self.l.TOTAL,780)
+        self.assertEqual(self.clock[0],472);self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
+        self.assertEqual(self.l.CLEANUP_END,1080);self.assertEqual(self.l.TOTAL,1200)
         # Exhausted startup cannot launch installation even though work remains.
         with mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')) as late:
             with self.assertRaises(TimeoutError):self.m.install_once(self.run,self.resources,'owned','/fixture/app')
         late.assert_not_called()
 
     def test_late_readiness_does_not_spawn_or_extend_an_earlier_phase(self):
-        self.clock[0]=292
+        self.clock[0]=472
         with mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')) as spawn:
             with self.assertRaises(TimeoutError):self.m.wait_ready_once(self.run,self.resources,'owned')
-        spawn.assert_not_called();self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
+        spawn.assert_not_called();self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
         self.run.end=150;self.clock[0]=246
         with mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')) as spawn:
             with self.assertRaises(TimeoutError):self.m.wait_ready_once(self.run,self.resources,'owned')
@@ -192,74 +227,106 @@ class NativeStartupBudgetTests(unittest.TestCase):
         with mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')) as spawn:
             with self.assertRaisesRegex(AssertionError,'Prior owned child group unresolved'):
                 self.m.wait_ready_once(self.run,self.resources,'owned')
-        spawn.assert_not_called();self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
+        spawn.assert_not_called();self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
 
     def test_actual_install_command_uses_remaining_original_phase_once(self):
         proc=SimpleNamespace(pid=77,returncode=None)
         def wait(timeout):
-            self.assertEqual(timeout,109);self.clock[0]+=10;proc.returncode=0
+            self.assertEqual(timeout,289);self.clock[0]+=10;proc.returncode=0
         proc.wait=wait
         with mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(self.l,'stop_group',side_effect=lambda p,row:row.update(owned_group_absent=True)):
             self.assertEqual(self.m.install_once(self.run,self.resources,'owned','/fixture/app'),0)
-        self.assertEqual(spawn.call_count,1);self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
-        self.assertEqual(self.run.meta['commands'][0]['timeout_seconds'],109)
-        self.assertEqual(self.phases,[196,196])
+        self.assertEqual(spawn.call_count,1);self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
+        self.assertEqual(self.run.meta['commands'][0]['timeout_seconds'],289)
+        self.assertEqual(self.phases,[376,376])
     def test_install_timeout_preserves_closure_and_original_cleanup_clock(self):
         proc=SimpleNamespace(pid=77,returncode=None)
-        proc.wait=lambda **_:(_ for _ in ()).throw(subprocess.TimeoutExpired('install',109))
+        proc.wait=lambda **_:(_ for _ in ()).throw(subprocess.TimeoutExpired('install',289))
         def close(p,row):p.returncode=-15;row['owned_group_absent']=True
         with mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(self.l,'stop_group',side_effect=close):
             with self.assertRaises(subprocess.TimeoutExpired):self.m.install_once(self.run,self.resources,'owned','/fixture/app')
-        self.assertEqual(spawn.call_count,1);self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
+        self.assertEqual(spawn.call_count,1);self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
         self.assertTrue(self.run.meta['commands'][0]['owned_group_absent'])
         self.assertEqual(self.run.meta['commands'][0]['returncode'],-15)
-        self.assertEqual(self.l.CLEANUP_END,660)
+        self.assertEqual(self.l.CLEANUP_END,1080)
     def test_late_install_does_not_spawn_and_does_not_reset_clock(self):
-        self.clock[0]=292
+        self.clock[0]=472
         with mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')) as spawn:
             with self.assertRaises(TimeoutError):self.m.install_once(self.run,self.resources,'owned','/fixture/app')
-        spawn.assert_not_called();self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
+        spawn.assert_not_called();self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
     def test_phase_never_extends_an_earlier_deadline_and_restores_after_failure(self):
         self.run.end=150;self.clock[0]=249
         with self.assertRaises(AssertionError):
-            with self.m.work_phase(self.run,self.resources,196):
+            with self.m.work_phase(self.run,self.resources,376):
                 self.assertEqual(self.run.end,150);self.clock[0]=250
         self.assertEqual(self.run.end,150);self.assertEqual(self.run.start,100)
     def test_before_inventory_checks_during_and_after_hashing(self):
-        self.run.end=226;self.clock[0]=325
+        self.run.end=526;self.clock[0]=625
         def inventory(path,budget,check):
-            check();self.clock[0]=326
+            check();self.clock[0]=626
             return {'hash':'unchanged'}
         with self.assertRaises(AssertionError):self.m.phase_payload_inventory(self.run,self.resources,SimpleNamespace(payload_inventory=inventory),None,'/fixture/app')
-        self.assertEqual(self.phases,[226,226,226])
+        self.assertEqual(self.phases,[526,526,526])
     def test_actual_resource_scan_respects_phase_after_each_stat(self):
-        self.clock[0]=325;self.m.SCOPE=Path('/fixture');self.m.OWNED_ROOT=self.m.SCOPE
+        self.clock[0]=625;self.m.SCOPE=Path('/fixture');self.m.OWNED_ROOT=self.m.SCOPE
         resources=self.m.Resources(self.start)
         def late_stat(path):
-            self.clock[0]=326
+            self.clock[0]=626
             return SimpleNamespace(st_blocks=0,st_mode=0o040700)
         with mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=32*2**30)),mock.patch.object(os,'walk',return_value=[('/fixture',[],[])]),mock.patch.object(os,'lstat',side_effect=late_stat):
-            with self.assertRaisesRegex(AssertionError,'owned stat deadline'):resources.check(226)
-    def test_test_budget_retains300_body4_stop30_final_and_rejects_late_admission(self):
-        self.clock[0]=326
-        self.assertEqual(self.m.native_test_end(self.run,self.clock[0]),626)
+            with self.assertRaisesRegex(AssertionError,'owned stat deadline'):resources.check(526)
+    def test_test_budget_retains300_body4_stop150_final_and_rejects_late_admission(self):
+        self.clock[0]=626
+        self.assertEqual(self.m.native_test_end(self.run,self.clock[0]),926)
         self.assertEqual(self.m.TEST_STOP_END-self.m.TEST_BODY_END,4)
-        self.assertEqual(self.m.FINAL_VERIFY_END-self.m.TEST_STOP_END,30)
-        self.clock[0]=326.001
+        self.assertEqual(self.m.FINAL_VERIFY_END-self.m.TEST_STOP_END,150)
+        self.clock[0]=626.001
         with self.assertRaises(AssertionError):self.m.native_test_end(self.run,self.clock[0])
         self.assertEqual(self.run.start,100)
-    def test_final_inventory_has_original560_deadline(self):
-        self.run.end=560;self.clock[0]=659
-        def inventory(path,budget,check):check();self.clock[0]=660;return {}
+    def test_final_inventory_has_original980_deadline(self):
+        self.run.end=980;self.clock[0]=1079
+        def inventory(path,budget,check):check();self.clock[0]=1080;return {}
         with self.assertRaises(AssertionError):self.m.phase_payload_inventory(self.run,self.resources,SimpleNamespace(payload_inventory=inventory),None,'/fixture/app')
-        self.assertEqual(self.phases,[560,560,560])
+        self.assertEqual(self.phases,[980,980,980])
+
+class NativePolicyWindowTests(unittest.TestCase):
+    def setUp(self):
+        self.m=load('native_policy_window',DRIVER)
+    def test_native_module_instance_policy_does_not_change_package_defaults(self):
+        native=self.m.load('lifecycle');package=load('package_default_lifecycle',MODULES/'lifecycle.py')
+        fields=('TOTAL','WORK_END','RECOVERY_END','SHUTDOWN_END','DELETE_END','CLEANUP_END')
+        self.assertEqual(tuple(getattr(native,k) for k in fields),(1200,980,1002,1039,1058,1080))
+        self.assertEqual(tuple(getattr(package,k) for k in fields),(780,560,582,619,638,660))
+        run=native.Run()
+        self.assertEqual(run.end,980);self.assertEqual(run.meta['total_seconds'],1200)
+        self.assertEqual(run.meta['phase_deadlines_seconds'],{'work':980,'recovery':1002,'shutdown':1039,'delete':1058,'absence':1080,'evidence':1192})
+        self.assertEqual(self.m.NATIVE_PHASES,{'install':376,'installed_before':526,'test_body':826,'test_stop':830,'final_verification':980,'work':980,'recovery':1002,'shutdown':1039,'delete':1058,'absence':1080,'evidence':1192,'whole':1200})
+    def test_cleanup_ack_uses1080_and_rejects_old660_identity(self):
+        for correct in (True,False):
+            with self.subTest(correct=correct):
+                clock=[1000.0];intent={};proc=SimpleNamespace(poll=lambda:None)
+                def read():return {'cleanup_phase':{'entered_monotonic':999,'absolute_deadline':1080 if correct else 660},'device_removed':True}
+                self.m.await_cleanup_ack(proc,0,intent,clock=lambda:clock[0],sleep=lambda n:clock.__setitem__(0,clock[0]+n),read=read)
+                self.assertEqual(bool(intent.get('cleanup_acknowledged')),correct)
+                self.assertEqual(bool(intent.get('device_absence_observed')),correct)
+                self.assertLessEqual(clock[0],1005)
+    def test_terminal_io_uses_original1200_without_renewal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            self.m.SCOPE=Path(temp);record={'status':'fixture'}
+            self.m.final_write(record,0,clock=lambda:1000)
+            self.assertEqual(json.loads((self.m.SCOPE/'invocation-final.json').read_bytes()),record)
+            with mock.patch.object(os,'open') as opened:
+                with self.assertRaises(AssertionError):self.m.final_write(record,0,clock=lambda:1200)
+            opened.assert_not_called()
+        write=mock.Mock()
+        self.assertFalse(self.m.terminal_stdout(record,0,clock=lambda:1200,write=write));write.assert_not_called()
 
 class InstalledInventoryReceiptTests(unittest.TestCase):
     def setUp(self):
         self.m=load('native_inventory_receipt',DRIVER)
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.path=Path(self.temp.name).resolve()/'installed-before.json'
-        self.clock=[100.0];self.run=SimpleNamespace(start=100.0,end=226)
+        self.clock=[100.0];self.run=SimpleNamespace(start=100.0,end=526)
         self.patch=mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]);self.patch.start();self.addCleanup(self.patch.stop)
         self.resources=SimpleNamespace(check=lambda phase:self.assertLess(self.clock[0],self.run.start+phase))
     def test_mismatch_is_persisted_then_rejected_with_sorted_exact_changes(self):
@@ -277,7 +344,7 @@ class InstalledInventoryReceiptTests(unittest.TestCase):
         saved=self.m.persist_installed_payload(self.run,self.resources,'/fixture/app',files,files,self.path)
         self.assertTrue(saved['exact_payload']);self.assertEqual(saved['differences'],[]);self.assertEqual(json.loads(self.path.read_bytes()),saved)
     def test_expired_phase_and_oversize_receipt_fail_before_write(self):
-        self.clock[0]=326
+        self.clock[0]=626
         with self.assertRaises(AssertionError):self.m.persist_installed_payload(self.run,self.resources,'/fixture/app',{}, {},self.path)
         self.assertFalse(self.path.exists());self.clock[0]=100
         actual={'large':{'mode':'0644','sha256':'x'*(1024*1024)}}
@@ -308,7 +375,7 @@ class InitialInstallModeTests(unittest.TestCase):
     def setUp(self):
         self.m=load('initial_install_modes',DRIVER)
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name).resolve()
-        self.run=SimpleNamespace(start=time.monotonic(),end=226);self.resources=SimpleNamespace(check=lambda _:None)
+        self.run=SimpleNamespace(start=time.monotonic(),end=526);self.resources=SimpleNamespace(check=lambda _:None)
         self.expected={name:{'mode':'0755','sha256':hashlib.sha256(name.encode()).hexdigest()} for name in self.observed_paths+('CleanSend','PlugIns/CleanSendShare.appex/CleanSendShare')}
         self.expected['.']={'mode':'0755','directory':True}
         self.expected['Frameworks']={'mode':'0755','directory':True}

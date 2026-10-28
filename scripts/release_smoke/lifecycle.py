@@ -163,6 +163,12 @@ class Run:
                     try:
                         if observe:
                             item['runtime_observation']['spawn_started_monotonic'] = time.monotonic()
+                        spawn_time = time.monotonic()
+                        allowance = min(limit, self.start + self.end - spawn_time - 4)
+                        if allowance <= 0:
+                            raise TimeoutError('No phase budget before ' + name)
+                        command_end = spawn_time + allowance
+                        item.update(timeout_seconds=allowance, command_deadline_monotonic=command_end)
                         proc = subprocess.Popen(item['args'], cwd=ROOT, env=ENV, stdout=log,
                                                 stderr=subprocess.STDOUT, start_new_session=True)
                     except BaseException as error:
@@ -182,7 +188,12 @@ class Run:
                             if observe:
                                 item['runtime_observation']['wait_started_monotonic'] = time.monotonic()
                             try:
+                                allowance = command_end - time.monotonic()
+                                if allowance <= 0:
+                                    raise TimeoutError('No phase budget before wait ' + name)
+                                item['wait_timeout_seconds'] = allowance
                                 proc.wait(timeout=allowance)
+                                assert self.remaining() > 0, 'Original phase deadline after command'
                             except BaseException as error:
                                 # Capture before sampling: a later diagnostic cannot replace wait().
                                 failed(error, 'wait')

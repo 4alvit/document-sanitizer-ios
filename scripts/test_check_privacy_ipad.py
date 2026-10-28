@@ -60,7 +60,7 @@ class FakeProcess:
             self.fault_used = True
             fault = self.backend.fault
             if fault == 'timeout':
-                if self.step in ('test', 'runtimes'):
+                if self.step in ('test', 'runtimes', 'build', 'bootstatus'):
                     self.backend.fixture.clock.value += timeout
                 raise subprocess.TimeoutExpired(self.args, timeout)
             if fault == 'signal':
@@ -70,10 +70,11 @@ class FakeProcess:
                     self.backend.complete(self)
                 self.returncode, self.group_present = 7, False
                 return self.returncode
-        if self.step in ('set_ax5', 'readback', 'test'):
+        if self.step in ('set_ax5', 'readback', 'test', 'build', 'bootstatus'):
             duration = {'set_ax5': self.backend.set_ax5_seconds,
                         'readback': self.backend.readback_seconds,
-                        'test': self.backend.test_seconds}[self.step]
+                        'test': self.backend.test_seconds, 'build': self.backend.build_seconds,
+                        'bootstatus': self.backend.bootstatus_seconds}[self.step]
             self.backend.fixture.clock.value += min(duration, timeout)
             if duration > timeout:
                 raise subprocess.TimeoutExpired(self.args, timeout)
@@ -93,11 +94,13 @@ class FakeBackend:
         self.processes, self.calls, self.signals, self.forbidden = [], [], [], []
         self.handlers = {}
         self.fault_step = self.fault = None
-        self.readback_elapsed = 345.0
+        self.readback_elapsed = 432.0
         self.bootstatus_elapsed = 0.0
         self.set_ax5_seconds = 0.0
         self.readback_seconds = 0.0
         self.test_seconds = 0.0
+        self.build_seconds = 0.0
+        self.bootstatus_seconds = 0.0
         self.bad_ax5 = False
         self.omit_result = False
         self.summary = {'passedTests': 1, 'failedTests': 0, 'skippedTests': 0, 'totalTestCount': 1}
@@ -209,10 +212,8 @@ class FakeBackend:
             self.created, self.device_name = True, a[3]
             output = UID
         elif step == 'bootstatus':
-            f.clock.value = self.bootstatus_elapsed
+            pass
         elif step == 'readback':
-            if self.readback_elapsed is not None:
-                f.clock.value = self.readback_elapsed
             output = 'large' if self.bad_ax5 else f.module.AX5
         elif step == 'delete':
             self.deleted = True
@@ -306,6 +307,20 @@ class Fixture:
                 'TestConfigurations': [{'Name': 'Local Testing', 'TestTargets': [
                     {'BlueprintName': 'CleanSendTests'}, target]}]}
         (self.dd / 'Build/Products/synthetic.xctestrun').write_bytes(plistlib.dumps(plan))
+        # Model elapsed independent preparation, not an impossible overlong wait().
+        actual_prepare = self.module.prepare_config
+        def prepare(run):
+            value = actual_prepare(run)
+            self.clock.value = max(self.clock.value, self.backend.bootstatus_elapsed)
+            return value
+        actual_ax5 = self.module.configure_system_ax5
+        def configure(run, uid):
+            value = actual_ax5(run, uid)
+            if self.backend.readback_elapsed is not None:
+                self.clock.value = max(self.clock.value, self.backend.readback_elapsed)
+            return value
+        self.stack.enter_context(mock.patch.object(self.module, 'prepare_config', prepare))
+        self.stack.enter_context(mock.patch.object(self.module, 'configure_system_ax5', configure))
         test.addCleanup(self.assert_injected_only)
 
     def assert_injected_only(self):
@@ -354,7 +369,7 @@ class PrivacyContextTrialTests(unittest.TestCase):
         self.assertEqual(captured, [(['xcrun', 'simctl', 'list', 'runtimes', '--json'], env)])
         self.assertEqual(f.backend.processes[0].wait_calls, [60])
         self.assertEqual(run.start, 0)
-        self.assertEqual(run.end, 560)
+        self.assertEqual(run.end, 740)
 
     def test_context_reports_only_presence_and_equality_without_system_values(self):
         f = self.f;keys = f.module.NATIVE_CONTEXT_KEYS
@@ -406,7 +421,8 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertEqual(meta['source_binding'], {'published_head': 'head', 'actual_checkout': 'checkout',
             'actual_tree': 'tree', 'head_tree': 'tree', 'equal_trees': True,
             'driver_sha256': self.f.module.sha(DRIVER)})
-        self.assertFalse(any(p.step in ('build', 'create', 'test') for p in self.f.backend.processes))
+        self.assertEqual(sum(p.step == 'build' for p in self.f.backend.processes), 1)
+        self.assertFalse(any(p.step in ('create', 'test') for p in self.f.backend.processes))
         self.assertNotIn('owned_uuid', meta)
 
     def test_runtime_output_stat_error_does_not_mask_timeout_or_skip_cleanup(self):
@@ -434,7 +450,8 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertEqual(command['runtime_observation']['spawn_error'], 'FileNotFoundError')
         self.assertNotIn('owned_process_group', command)
         self.assertNotIn('wait_started_monotonic', command['runtime_observation'])
-        self.assertFalse(any(p.step in ('runtimes', 'build', 'create') for p in self.f.backend.processes))
+        self.assertEqual(sum(p.step == 'build' for p in self.f.backend.processes), 1)
+        self.assertFalse(any(p.step in ('runtimes', 'create') for p in self.f.backend.processes))
 
     def test_runtime_context_preserves_empty_path_and_limits_display_without_secrets(self):
         env = {'PATH': '', 'DEVELOPER_DIR': 'x' * 4100, 'LANG': 'C'}
@@ -469,7 +486,7 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertEqual(meta['runtime_discovery_context']['tools']['xcrun']['status'], 'UNKNOWN_LOOKUP_ERROR')
 
     def test_runtime_context_cost_reduces_allowance_and_can_deny_launch(self):
-        for elapsed, expected_wait in ((499.0, 57.0), (557.0, None)):
+        for elapsed, expected_wait in ((375.0, 57.0), (433.0, None)):
             with self.subTest(elapsed=elapsed):
                 f = Fixture(self)
                 f.backend.fault_step, f.backend.fault = 'runtimes', 'timeout'
@@ -481,7 +498,8 @@ class BaselineWorkerTests(unittest.TestCase):
                 self.assertEqual(rc, 1)
                 runtimes = [p for p in f.backend.processes if p.step == 'runtimes']
                 self.assertEqual([p.wait_calls for p in runtimes], [] if expected_wait is None else [[expected_wait]])
-                self.assertFalse(any(p.step in ('build', 'create', 'test') for p in f.backend.processes))
+                self.assertEqual(sum(p.step == 'build' for p in f.backend.processes), 1)
+                self.assertFalse(any(p.step in ('create', 'test') for p in f.backend.processes))
                 self.assertEqual(meta['runtime_discovery_context'], {'synthetic_context': True})
 
     def test_runtime_cleanup_failure_records_bounded_existing_probes(self):
@@ -504,7 +522,8 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertGreater(observation['stop_probe_count'], 2)
         self.assertEqual(observation['last_stop_probe']['error'], 'PermissionError')
         self.assertLess(len(json.dumps(observation)), 1500)
-        self.assertFalse(any(p.step in ('build', 'create', 'test') for p in self.f.backend.processes))
+        self.assertEqual(sum(p.step == 'build' for p in self.f.backend.processes), 1)
+        self.assertFalse(any(p.step in ('create', 'test') for p in self.f.backend.processes))
 
     def test_runtime_diagnostic_clock_interruption_still_stops_owned_child(self):
         for field, fault in (('spawn_returned_monotonic', None),
@@ -536,7 +555,8 @@ class BaselineWorkerTests(unittest.TestCase):
                     self.assertEqual(command['runtime_observation']['wait_error'], 'TimeoutExpired')
                     self.assertEqual(command['command_error_operation'], 'wait')
                     self.assertEqual(command['secondary_errors']['wait_observation']['exception_type'], 'InterruptedError')
-                self.assertFalse(any(p.step in ('build', 'create', 'test') for p in f.backend.processes))
+                self.assertEqual(sum(p.step == 'build' for p in f.backend.processes), 1)
+                self.assertFalse(any(p.step in ('create', 'test') for p in f.backend.processes))
 
     def test_runtime_lookup_cancellation_fails_before_child_launch(self):
         with mock.patch.object(self.f.module.shutil, 'which',
@@ -544,7 +564,8 @@ class BaselineWorkerTests(unittest.TestCase):
             rc, meta = self.f.run()
         self.assertEqual(rc, 1)
         self.assert_failed(meta, 'synthetic lookup cancellation')
-        self.assertFalse(any(p.step in ('runtimes', 'build', 'create', 'test') for p in self.f.backend.processes))
+        self.assertEqual(sum(p.step == 'build' for p in self.f.backend.processes), 1)
+        self.assertFalse(any(p.step in ('runtimes', 'create', 'test') for p in self.f.backend.processes))
 
     def test_runtime_stat_cancellation_fails_and_confirms_owned_cleanup(self):
         for fault in (None, 'timeout'):
@@ -564,7 +585,8 @@ class BaselineWorkerTests(unittest.TestCase):
                     self.assertEqual(command['runtime_observation']['wait_error'], 'TimeoutExpired')
                     self.assertEqual(command['command_error_operation'], 'wait')
                     self.assertEqual(command['secondary_errors']['wait_observation']['exception_type'], 'InterruptedError')
-                self.assertFalse(any(p.step in ('build', 'create', 'test') for p in f.backend.processes))
+                self.assertEqual(sum(p.step == 'build' for p in f.backend.processes), 1)
+                self.assertFalse(any(p.step in ('create', 'test') for p in f.backend.processes))
 
     def test_runtime_relative_or_empty_path_is_explicitly_not_resolved(self):
         for path in ('bin:/usr/bin', '/usr/bin:', ':/usr/bin'):
@@ -604,7 +626,7 @@ class BaselineWorkerTests(unittest.TestCase):
         changes = json.loads((self.f.out / 'config-diff.json').read_text())['target_changes']
         self.assertEqual(changes['MaximumTestExecutionTimeAllowance'], {'before': 180, 'after': 240})
         self.assertEqual(len(self.f.test_processes()), 1)
-        self.assertEqual(self.f.test_processes()[0].wait_calls, [211])
+        self.assertEqual(self.f.test_processes()[0].wait_calls, [300])
         self.assertFalse(meta['retry'])
         self.f.assert_cleanup(meta)
 
@@ -626,55 +648,41 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertEqual(generated.read_bytes(), original)
         self.f.assert_cleanup(meta)
 
-    def test_owned_boot_precedes_build_and_readiness_follows_signature_checks(self):
+    def test_build_precedes_one_discovery_and_readiness_follows_owned_boot_and_signatures(self):
         original_popen = self.f.backend.popen
-        observed = []
-
         def popen(args, **kwargs):
             if 'build-for-testing' in args:
                 receipt = json.loads((self.f.out / 'metadata.json').read_text())
-                observed.append(receipt['owned_uuid'])
-                self.assertEqual(receipt['owned_uuid'], UID)
-                self.assertEqual([p.step for p in self.f.backend.processes][-2:], ['create', 'boot'])
-                self.assertFalse((self.f.out / 'selected.xctestrun').exists())
+                self.assertNotIn('owned_uuid', receipt)
+                self.assertFalse(any(p.step in ('runtimes', 'create', 'boot') for p in self.f.backend.processes))
             return original_popen(args, **kwargs)
-
         with mock.patch.object(subprocess, 'Popen', popen):
             rc, meta = self.f.run()
         self.assertEqual(rc, 0)
-        self.assertEqual(observed, [UID])
         steps = [p.step for p in self.f.backend.processes]
-        self.assertLess(steps.index('boot'), steps.index('build'))
-        self.assertLess(steps.index('build'), steps.index('signature'))
+        for before, after in [('build', 'runtimes'), ('runtimes', 'create'), ('create', 'boot'),
+                              ('boot', 'signature'), ('bootstatus', 'set_ax5'), ('readback', 'test')]:
+            self.assertLess(steps.index(before), steps.index(after))
         self.assertEqual(steps.count('signature'), 2)
         self.assertLess(max(i for i, step in enumerate(steps) if step == 'signature'), steps.index('bootstatus'))
-        self.assertLess(steps.index('bootstatus'), steps.index('set_ax5'))
-        self.assertLess(steps.index('readback'), steps.index('test'))
-        for step, cap in (('create', 15), ('boot', 20), ('build', 300), ('bootstatus', 90)):
+        for step, cap in (('create', 15), ('boot', 20), ('build', 300), ('runtimes', 60), ('bootstatus', 300)):
             processes = [p for p in self.f.backend.processes if p.step == step]
-            self.assertEqual(len(processes), 1)
-            self.assertEqual(processes[0].wait_calls, [cap])
+            self.assertEqual(len(processes), 1);self.assertEqual(processes[0].wait_calls, [cap])
         self.f.assert_cleanup(meta)
 
-    def test_early_build_failure_still_closes_group_and_removes_owned_device(self):
+    def test_build_failure_closes_owned_group_without_creating_device(self):
         for fault in ('nonzero', 'timeout', 'signal'):
             with self.subTest(fault=fault):
                 f = Fixture(self)
                 f.backend.fault_step, f.backend.fault = 'build', fault
                 rc, meta = f.run()
-                self.assertEqual(rc, 1)
-                self.assertEqual(meta['owned_uuid'], UID)
-                self.assertEqual(sum(p.step == 'create' for p in f.backend.processes), 1)
-                self.assertEqual(sum(p.step == 'boot' for p in f.backend.processes), 1)
+                self.assertEqual(rc, 1);self.assertNotIn('owned_uuid', meta)
+                self.assertFalse(any(p.step in ('runtimes', 'create', 'boot', 'test') for p in f.backend.processes))
                 build = next(p for p in f.backend.processes if p.step == 'build')
-                self.assertIsNotNone(build.returncode)
-                self.assertFalse(build.group_present)
+                self.assertIsNotNone(build.returncode);self.assertFalse(build.group_present)
                 command = next(c for c in meta['commands'] if c.get('owned_process_group') == build.pid)
-                self.assertTrue(command['owned_group_absent'])
-                self.assertFalse(any(p.step in ('signature', 'bootstatus', 'set_ax5', 'readback', 'test')
-                                     for p in f.backend.processes))
-                self.assertFalse(meta['retry'])
-                f.assert_cleanup(meta)
+                self.assertTrue(command['owned_group_absent']);self.assertFalse(meta['retry'])
+                self.assertFalse(any(p.step in ('shutdown', 'delete') for p in f.backend.processes))
 
     def test_signature_failure_after_early_boot_does_not_start_readiness_or_test(self):
         self.f.backend.fault_step, self.f.backend.fault = 'signature', 'nonzero'
@@ -687,34 +695,18 @@ class BaselineWorkerTests(unittest.TestCase):
         self.f.assert_cleanup(meta)
 
     def test_build_elapsed_time_is_not_renewed_for_readiness_or_downstream_work(self):
-        for elapsed, expected_boot, expected_test in ((246.0, 90, 300), (300.0, 90, 256), (500.0, 56, None)):
+        for elapsed, expected_boot in ((100.0, 300), (200.0, 232), (300.0, 132)):
             with self.subTest(build_elapsed=elapsed):
-                f = Fixture(self)
-                f.backend.bootstatus_elapsed = elapsed
-                f.backend.readback_elapsed = None
-                original_complete = f.backend.complete
-
-                def complete(proc):
-                    if proc.step == 'build':
-                        f.clock.value += elapsed
-                    original_complete(proc)
-
-                with mock.patch.object(f.backend, 'complete', complete):
-                    rc, meta = f.run()
+                f = Fixture(self);f.backend.build_seconds = elapsed;f.backend.readback_elapsed = None
+                rc, meta = f.run()
+                self.assertEqual(rc, 0)
                 bootstatus = next(p for p in f.backend.processes if p.step == 'bootstatus')
                 self.assertEqual(bootstatus.wait_calls, [expected_boot])
-                if expected_test is None:
-                    self.assertEqual(rc, 1)
-                    self.assertEqual(f.test_processes(), [])
-                    self.assertFalse(any(p.step in ('set_ax5', 'readback') for p in f.backend.processes))
-                else:
-                    self.assertEqual(rc, 0)
-                    self.assertEqual(f.test_processes()[0].wait_calls, [expected_test])
+                self.assertEqual(f.test_processes()[0].wait_calls, [300])
                 self.assertEqual(meta['phase_deadlines_seconds'],
-                                 {'work': 560, 'recovery': 582, 'shutdown': 619,
-                                  'delete': 638, 'absence': 660, 'evidence': 772})
-                self.assertEqual(meta['total_seconds'], 780)
-                self.assertFalse(meta['retry'])
+                    {'startup': 436, 'work': 740, 'recovery': 762, 'shutdown': 799,
+                     'delete': 818, 'absence': 840, 'evidence': 952})
+                self.assertEqual(meta['total_seconds'], 960);self.assertFalse(meta['retry'])
                 f.assert_cleanup(meta)
 
     def test_manual_attempt_identity_paths_and_worker_receipts(self):
@@ -732,7 +724,7 @@ class BaselineWorkerTests(unittest.TestCase):
         provenance = json.loads((self.f.out / 'source-provenance.json').read_text())
         self.assertEqual((provenance['run_id'], provenance['run_attempt']), ('40631521600', '2'))
         self.assertEqual(len(self.f.test_processes()), 1)
-        self.assertEqual(self.f.test_processes()[0].wait_calls, [211])
+        self.assertEqual(self.f.test_processes()[0].wait_calls, [300])
         self.f.assert_cleanup(meta)
 
     def test_wrong_host_profile_rejected_before_any_process(self):
@@ -784,7 +776,7 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertEqual(self.f.backend.signals, [])
 
     def test_xctest_outer_cap_and_remaining_work_clipping(self):
-        for elapsed, expected in ((246.0, 300.0), (256.0, 300.0), (256.001, 299.999)):
+        for elapsed, expected in ((400.0, 300.0), (432.0, 300.0), (435.999, 300.0)):
             with self.subTest(readback_elapsed=elapsed):
                 f = Fixture(self)
                 f.backend.readback_elapsed = elapsed
@@ -795,11 +787,11 @@ class BaselineWorkerTests(unittest.TestCase):
                 self.assertAlmostEqual(tests[0].wait_calls[0], expected)
                 command = next(c for c in meta['commands'] if 'test-without-building' in c['args'])
                 self.assertAlmostEqual(command['timeout_seconds'], expected)
-                self.assertLessEqual(elapsed + command['timeout_seconds'], 556)
+                self.assertLessEqual(elapsed + command['timeout_seconds'], 736)
                 self.assertEqual(meta['phase_deadlines_seconds'],
-                                 {'work': 560, 'recovery': 582, 'shutdown': 619,
-                                  'delete': 638, 'absence': 660, 'evidence': 772})
-                self.assertEqual(meta['total_seconds'], 780)
+                                 {'startup': 436, 'work': 740, 'recovery': 762, 'shutdown': 799,
+                                  'delete': 818, 'absence': 840, 'evidence': 952})
+                self.assertEqual(meta['total_seconds'], 960)
                 self.assertFalse(meta['retry'])
                 f.assert_cleanup(meta)
 
@@ -813,8 +805,8 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(self.f.test_processes()[0].wait_calls, [300])
         self.assertAlmostEqual(self.f.clock.value, 246.0 + startup + testcase)
-        self.assertLess(self.f.clock.value, 560 - 4)
-        self.assertEqual(meta['phase_deadlines_seconds']['absence'], 660)
+        self.assertLess(self.f.clock.value, 740 - 4)
+        self.assertEqual(meta['phase_deadlines_seconds']['absence'], 840)
         self.f.assert_cleanup(meta)
 
     def test_xctest_maximum_timeout_still_reaps_and_preserves_cleanup(self):
@@ -830,19 +822,19 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertFalse(tests[0].group_present)
         command = next(c for c in meta['commands'] if 'test-without-building' in c['args'])
         self.assertTrue(command['owned_group_absent'])
-        self.assertLess(self.f.clock.value, 560)
-        self.assertEqual(meta['phase_deadlines_seconds']['absence'], 660)
+        self.assertLess(self.f.clock.value, 740)
+        self.assertEqual(meta['phase_deadlines_seconds']['absence'], 840)
         self.assertFalse(meta['retry'])
         self.f.assert_cleanup(meta)
 
-    def test_exact_215_seconds_reaches_one_unchanged_ui_test_and_preserves_result(self):
+    def test_full300_seconds_reaches_one_unchanged_ui_test_and_preserves_result(self):
         rc, meta = self.f.run()
         self.assertEqual(rc, 0)
         self.assertEqual(meta['result'], 'passed_pending_independent_review')
         self.assertEqual(meta['counts'], {'passedTests': 1, 'failedTests': 0, 'skippedTests': 0, 'totalTestCount': 1})
         tests = self.f.test_processes()
         self.assertEqual(len(tests), 1)
-        self.assertEqual(tests[0].wait_calls, [211])
+        self.assertEqual(tests[0].wait_calls, [300])
         self.assertEqual(tests[0].args, ['xcodebuild', 'test-without-building', '-xctestrun',
             str(self.f.out / 'selected.xctestrun'), '-destination', 'platform=iOS Simulator,id=' + UID,
             '-parallel-testing-enabled', 'NO', '-maximum-concurrent-test-simulator-destinations', '1',
@@ -859,16 +851,16 @@ class BaselineWorkerTests(unittest.TestCase):
                          b'unchanged existing staging diagnostics\n')
         self.f.assert_cleanup(meta)
 
-    def test_less_than_215_seconds_denies_test_and_cleans_owned_device(self):
-        self.f.backend.readback_elapsed = 345.001
+    def test_expired_startup_denies_test_and_cleans_owned_device(self):
+        self.f.backend.readback_elapsed = 436.001
         rc, meta = self.f.run()
         self.assertEqual(rc, 1)
-        self.assert_failed(meta, 'No minimum runtime/cleanup budget')
+        self.assert_failed(meta, 'Original phase deadline')
         self.assertEqual(self.f.test_processes(), [])
         self.f.assert_cleanup(meta)
 
     def test_exact_ax5_admission_allows_full_commands_and_test(self):
-        self.f.backend.bootstatus_elapsed = 217.0  # 343s remain in unchanged WORK_END.
+        self.f.backend.bootstatus_elapsed = 312.0  # 120s AX5 body +4s stop remain before436.
         self.f.backend.set_ax5_seconds = 60.0
         self.f.backend.readback_seconds = 60.0
         self.f.backend.readback_elapsed = None  # Advance the injected clock for both full allowances.
@@ -876,13 +868,14 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         commands = [p for p in self.f.backend.processes if p.step in ('set_ax5', 'readback', 'test')]
         self.assertEqual([p.step for p in commands], ['set_ax5', 'readback', 'test'])
-        self.assertEqual([p.wait_calls for p in commands], [[60], [60], [219]])
+        self.assertEqual([p.wait_calls for p in commands], [[60], [60], [300]])
         self.assertIn('-only-testing:CleanSendUITests/' + CASE, commands[-1].args)
         self.assertEqual(meta['actual_system_content_size'], self.f.module.AX5)
         self.f.assert_cleanup(meta)
 
     def test_no_ax5_allowance_beyond_reserve_denies_both_commands_and_test(self):
-        self.f.backend.bootstatus_elapsed = 341.0  # 215s test reserve plus4s stop; no positive command budget.
+        self.f.backend.bootstatus_elapsed = 431.0
+        self.f.backend.bootstatus_seconds = 1.0  # Readiness ends at432; only its4s stop reserve remains.
         rc, meta = self.f.run()
         self.assertEqual(rc, 1)
         self.assert_failed(meta, 'No phase budget before set-ax5.log')
@@ -890,8 +883,8 @@ class BaselineWorkerTests(unittest.TestCase):
         self.f.assert_cleanup(meta)
 
     def test_cold_startup_admits_short_commands_rejected_by_old_sum(self):
-        self.f.backend.bootstatus_elapsed = 224.0
-        self.assertLess(560 - 224, 60 + 60 + 8 + 215)
+        self.f.backend.bootstatus_elapsed = 316.0
+        self.assertLess(740 - 316, 60 + 60 + 8 + 304)
         self.f.backend.set_ax5_seconds = 5.0
         self.f.backend.readback_seconds = 5.0
         self.f.backend.readback_elapsed = None
@@ -903,21 +896,21 @@ class BaselineWorkerTests(unittest.TestCase):
         self.f.assert_cleanup(meta)
 
     def test_ax5_caps_clip_to_original_deadline_without_renewal(self):
-        self.f.backend.bootstatus_elapsed = 300.0
+        self.f.backend.bootstatus_elapsed = 391.0
         self.f.backend.set_ax5_seconds = 20.0
         self.f.backend.readback_seconds = 10.0
         self.f.backend.readback_elapsed = None
         rc, meta = self.f.run()
         self.assertEqual(rc, 0)
         commands = [p for p in self.f.backend.processes if p.step in ('set_ax5', 'readback', 'test')]
-        self.assertEqual([p.wait_calls for p in commands], [[41], [21], [226]])
-        self.assertEqual(meta['phase_deadlines_seconds']['work'], 560)
-        self.assertEqual(meta['phase_deadlines_seconds']['absence'], 660)
-        self.assertEqual(meta['total_seconds'], 780)
+        self.assertEqual([p.wait_calls for p in commands], [[41], [21], [300]])
+        self.assertEqual(meta['phase_deadlines_seconds']['work'], 740)
+        self.assertEqual(meta['phase_deadlines_seconds']['absence'], 840)
+        self.assertEqual(meta['total_seconds'], 960)
         self.f.assert_cleanup(meta)
 
     def test_clipped_ax5_timeout_preserves_stop_and_device_cleanup(self):
-        self.f.backend.bootstatus_elapsed = 300.0
+        self.f.backend.bootstatus_elapsed = 391.0
         self.f.backend.set_ax5_seconds = 42.0
         self.f.backend.readback_elapsed = None
         rc, meta = self.f.run()
@@ -995,14 +988,14 @@ class BaselineWorkerTests(unittest.TestCase):
     def test_post_spawn_persistence_failure_stops_group_and_still_cleans(self):
         original_save = self.f.module.save
         failed = []
-        def save(path, value):
+        def save(path, value, check=lambda: None):
             commands = value.get('commands', []) if isinstance(value, dict) else []
             if commands and not failed:
                 last = commands[-1]
                 if last['args'][:3] == ['xcrun', 'simctl', 'boot'] and 'owned_process_group' in last:
                     failed.append(True)
                     raise OSError('injected post-spawn metadata write failure')
-            return original_save(path, value)
+            return original_save(path, value, check)
         with mock.patch.object(self.f.module, 'save', save):
             rc, meta = self.f.run()
         self.assertEqual(rc, 1)
@@ -1041,7 +1034,7 @@ class BaselineWorkerTests(unittest.TestCase):
         tests = self.f.test_processes()
         self.assertEqual(len(tests), 1)
         proc = tests[0]
-        self.assertEqual(proc.wait_calls, [211])
+        self.assertEqual(proc.wait_calls, [300])
         self.assertIn((proc.pid, signal.SIGTERM), self.f.backend.signals)
         self.assertFalse(proc.group_present)
         command = next(c for c in meta['commands'] if 'test-without-building' in c['args'])
@@ -1137,6 +1130,195 @@ BASE_STOP_GROUP_SOURCE = 'def stop_group(proc, record=None):\n    """Require bot
 
 
 STOP_OPERATIONS = ('leader_poll', 'group_probe', 'SIGTERM', 'SIGKILL', 'sleep')
+
+
+class StartupPolicyBoundaryTests(unittest.TestCase):
+    def test_late_persistence_or_log_open_denies_spawn(self):
+        for stage in ('persist', 'open', 'observation'):
+            with self.subTest(stage=stage):
+                f = Fixture(self);run = f.module.Run();run.end = f.module.STARTUP_END
+                original_persist, original_open = run.persist, Path.open
+                def persist():
+                    original_persist()
+                    if stage == 'persist':f.clock.value = 436
+                def opened(path, *args, **kwargs):
+                    stream = original_open(path, *args, **kwargs)
+                    if stage == 'open' and path == f.out / 'late.log':f.clock.value = 436
+                    return stream
+                original_now = f.module.now
+                def observed():
+                    value = original_now()
+                    if stage == 'observation':f.clock.value = 436
+                    return value
+                with mock.patch.object(run, 'persist', persist), mock.patch.object(Path, 'open', opened), \
+                     mock.patch.object(f.module, 'now', observed):
+                    with self.assertRaises(TimeoutError):run.command(['xcodebuild', '-version'], 'late.log')
+                self.assertEqual(f.backend.processes, [])
+                self.assertEqual(run.start, 0);self.assertEqual(run.end, 436)
+
+    def test_late_test_persistence_cannot_borrow_full_test_or_stop_reserve(self):
+        f = Fixture(self);original = f.module.Run.persist
+        def persist(run):
+            original(run)
+            commands = run.meta['commands']
+            if commands and commands[-1]['args'][:2] == ['xcodebuild', 'test-without-building']:
+                f.clock.value = max(f.clock.value, 437)
+        with mock.patch.object(f.module.Run, 'persist', persist):rc, meta = f.run()
+        self.assertEqual(rc, 1)
+        self.assertIn('No full XCTest/stop budget before spawn', '\n'.join(meta['failures']))
+        self.assertEqual(f.test_processes(), [])
+        f.assert_cleanup(meta)
+
+    def test_post_spawn_persistence_consumes_original_command_allowance(self):
+        f = Fixture(self);run = f.module.Run();run.end = 436
+        original = run.persist;calls = []
+        def persist():
+            original();calls.append(True)
+            if len(calls) == 2:f.clock.value += 10
+        with mock.patch.object(run, 'persist', persist):
+            self.assertEqual(run.command(['xcodebuild', '-version'], 'short.log', 15), 0)
+        self.assertEqual(f.backend.processes[0].wait_calls, [5])
+        self.assertEqual(run.meta['commands'][0]['command_deadline_monotonic'], 15)
+        self.assertEqual(run.meta['commands'][0]['wait_timeout_seconds'], 5)
+        self.assertEqual(run.start, 0)
+
+    def test_slow_spawn_cannot_wait_on_stale_budget_and_closes_owned_group(self):
+        f = Fixture(self);run = f.module.Run();run.end = 436
+        original = f.backend.popen
+        def spawn(args, **kwargs):
+            proc = original(args, **kwargs);f.clock.value = 436
+            return proc
+        with mock.patch.object(subprocess, 'Popen', spawn):
+            with self.assertRaises(TimeoutError):run.command(['xcodebuild', '-version'], 'slow-spawn.log', 15)
+        self.assertEqual(len(f.backend.processes), 1)
+        proc = f.backend.processes[0]
+        self.assertFalse(proc.group_present);self.assertEqual(proc.returncode, -signal.SIGTERM)
+        self.assertTrue(run.meta['commands'][0]['owned_group_absent'])
+        self.assertEqual(proc.wait_calls, [])
+
+    def test_late_payload_hash_and_mode_scan_fail_on_original_phase(self):
+        for stage in ('hash', 'mode', 'enumeration'):
+            with self.subTest(stage=stage):
+                f = Fixture(self);run = f.module.Run();run.end = 436
+                if stage == 'hash':
+                    original = f.module.hashlib.sha256
+                    class SlowDigest:
+                        def __init__(self):self.digest = original()
+                        def update(self, block):self.digest.update(block);f.clock.value = 436
+                        def hexdigest(self):return self.digest.hexdigest()
+                    with mock.patch.object(f.module.hashlib, 'sha256', SlowDigest):
+                        with self.assertRaises(TimeoutError):f.module.inventory(f.app, run.check)
+                elif stage == 'mode':
+                    original = Path.lstat
+                    def observed(path, *args, **kwargs):
+                        info = original(path, *args, **kwargs);f.clock.value = 436
+                        return info
+                    with mock.patch.object(Path, 'lstat', observed):
+                        with self.assertRaises(TimeoutError):f.module.payload_modes(f.app, run.check)
+                else:
+                    def enumerate_late(path, pattern):
+                        f.clock.value = 436
+                        yield f.app / 'CleanSend'
+                    with mock.patch.object(Path, 'rglob', enumerate_late):
+                        with self.assertRaises(TimeoutError):f.module.inventory(f.app, run.check)
+                self.assertEqual(f.backend.processes, []);self.assertEqual(run.start, 0)
+
+    def test_late_archive_write_or_close_never_starts_readiness_and_still_cleans(self):
+        for stage in ('write', 'close'):
+            with self.subTest(stage=stage):
+                f = Fixture(self);archive_type = f.module.zipfile.ZipFile
+                original = getattr(archive_type, stage)
+                def late(archive, *args, **kwargs):
+                    value = original(archive, *args, **kwargs)
+                    if str(archive.filename).endswith('tested-payloads.zip'):
+                        f.clock.value = max(f.clock.value, 436)
+                    return value
+                with mock.patch.object(archive_type, stage, late):rc, meta = f.run()
+                self.assertEqual(rc, 1)
+                self.assertIn('Original phase deadline', '\n'.join(meta['failures']))
+                self.assertFalse(any(p.step in ('bootstatus', 'set_ax5', 'readback', 'test') for p in f.backend.processes))
+                f.assert_cleanup(meta)
+
+    def test_late_preparation_serialization_does_not_open_output(self):
+        f = Fixture(self);run = f.module.Run();run.end = 436
+        original = f.module.json.dumps
+        def encode(value, **kwargs):
+            result = original(value, **kwargs);f.clock.value = 436
+            return result
+        with mock.patch.object(f.module.json, 'dumps', encode), mock.patch.object(Path, 'open') as opened:
+            with self.assertRaises(TimeoutError):f.module.save(f.out / 'late.json', {'a': 1}, run.check)
+        opened.assert_not_called()
+
+    def test_cold_readiness_and_full_AX5_test_model_fit_without_clock_renewal(self):
+        f = Fixture(self);f.backend.build_seconds = 130
+        f.backend.bootstatus_elapsed = 152.572553;f.backend.bootstatus_seconds = 145.72377
+        f.backend.set_ax5_seconds = 60;f.backend.readback_seconds = 60
+        f.backend.readback_elapsed = None;f.backend.test_seconds = 300
+        rc, meta = f.run()
+        self.assertEqual(rc, 0);self.assertEqual(f.test_processes()[0].wait_calls, [300])
+        self.assertAlmostEqual(f.clock.value, 718.296323)
+        self.assertEqual(meta['total_seconds'], 960)
+        self.assertEqual(meta['phase_deadlines_seconds']['startup'], 436)
+        self.assertEqual(meta['phase_deadlines_seconds']['work'], 740)
+        self.assertEqual(meta['phase_deadlines_seconds']['absence'], 840)
+        f.assert_cleanup(meta)
+
+    def test_supervisor_rechecks_after_persist_and_log_open_before_spawn(self):
+        for stage in ('persist', 'open'):
+            with self.subTest(stage=stage):
+                f = Fixture(self)
+                f.module.OUT = f.root / 'fresh-supervisor-output'
+                f.module.DD = f.root / 'fresh-supervisor-build'
+                original_save, original_open = f.module.save, Path.open
+                def persist(path, value, check=lambda: None):
+                    original_save(path, value, check)
+                    if stage == 'persist':f.clock.value = 953
+                def opened(path, *args, **kwargs):
+                    stream = original_open(path, *args, **kwargs)
+                    if stage == 'open' and path.name == 'driver.log':f.clock.value = 953
+                    return stream
+                with mock.patch.object(f.module, 'save', persist), mock.patch.object(Path, 'open', opened), \
+                     mock.patch.object(subprocess, 'Popen') as spawned:
+                    self.assertEqual(f.module.supervise(), 1)
+                spawned.assert_not_called()
+
+    def test_supervisor_spawn_cost_cannot_renew_original_outer_clock(self):
+        f = Fixture(self)
+        f.module.OUT = f.root / 'fresh-supervisor-output'
+        f.module.DD = f.root / 'fresh-supervisor-build'
+        waits = []
+        proc = SimpleNamespace(pid=9000, returncode=0, poll=lambda: 0,
+                               wait=lambda timeout: waits.append(timeout))
+        def spawn(*args, **kwargs):
+            f.clock.value += 10
+            return proc
+        with mock.patch.object(subprocess, 'Popen', spawn):
+            self.assertEqual(f.module.supervise(), 0)
+        self.assertEqual(waits, [942])
+        record = json.loads((f.module.OUT / 'invocation.json').read_text())
+        self.assertEqual(record['elapsed_seconds'], 10)
+        self.assertEqual(record['total_budget_seconds'], 960)
+
+    def test_late_result_copy_denies_decoder_and_keeps_cleanup_and_failure(self):
+        f = Fixture(self);original = f.module.shutil.copytree
+        def copy(*args, **kwargs):
+            result = original(*args, **kwargs);f.clock.value = 952
+            return result
+        with mock.patch.object(f.module.shutil, 'copytree', copy):rc, meta = f.run()
+        self.assertEqual(rc, 1)
+        self.assertIn('Original phase deadline', '\n'.join(meta['failures']))
+        self.assertFalse(any(p.step in ('summary', 'tests', 'attachments') for p in f.backend.processes))
+        f.assert_cleanup(meta)
+
+    def test_selected_case_and_cleanup_reserves_are_not_borrowed(self):
+        f = Fixture(self);m = f.module
+        self.assertEqual((m.TEST_ADMISSION, m.XCTEST_COMMAND_LIMIT, m.STARTUP_END), (304, 300, 436))
+        self.assertEqual((m.CLEANUP_END-m.WORK_END, (m.TOTAL-8)-m.CLEANUP_END, m.TOTAL-(m.TOTAL-8)), (100,112,8))
+        rc, meta = f.run();self.assertEqual(rc, 0)
+        selected = plistlib.loads((f.out / 'selected.xctestrun').read_bytes())
+        target = selected['TestConfigurations'][0]['TestTargets'][0]
+        self.assertEqual(target['MaximumTestExecutionTimeAllowance'], 240)
+        self.assertEqual(target['OnlyTestIdentifiers'], [CASE]);self.assertEqual(target['SkipTestIdentifiers'], [])
 
 
 class ScriptedStop:

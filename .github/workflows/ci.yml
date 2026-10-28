@@ -85,7 +85,7 @@ jobs:
           test "$(uname -m)" = x86_64
           test "$(xcodebuild -version)" = $'Xcode 16.4\nBuild version 16F6'
       - name: Run one bounded Release iPad privacy scenario
-        timeout-minutes: 15
+        timeout-minutes: 18
         env:
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REDACTLEAF_PRIVACY_CONFIGURATION: Release
@@ -130,7 +130,7 @@ jobs:
             ARCHS=x86_64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee .qa/native-storekit-build/build.log
       - name: Run all eight bounded native StoreKit cases
-        timeout-minutes: 14
+        timeout-minutes: 21
         env:
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ github.token }}

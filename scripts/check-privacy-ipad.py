@@ -34,14 +34,17 @@ CASE = 'PrivacySupportUITests/testRussianOfflineInformationAtSystemAX5OnLandscap
 AX5 = 'accessibility-extra-extra-extra-large'
 # Cold hosted AX5 requests can exhaust 30s after bootstatus succeeds.
 # Each finite 60s cap is clipped to the original work deadline while preserving
-# the existing 215s XCTest admission reserve and Run.command's 4s stop reserve.
+# the full 300s XCTest body plus 4s stop reservation.
 AX5_SET_LIMIT, AX5_READ_LIMIT = 60, 60
 # Runner startup and selected-case execution share this finite outer cap.
 # Run.command still clips this maximum to remaining work minus its 4s reserve.
 XCTEST_COMMAND_LIMIT = 300
-TOTAL = 780
-WORK_END = 560
-RECOVERY_END, SHUTDOWN_END, DELETE_END, CLEANUP_END = 582, 619, 638, 660
+TOTAL = 960
+WORK_END = 740
+TEST_ADMISSION = XCTEST_COMMAND_LIMIT + 4
+STARTUP_END = WORK_END - TEST_ADMISSION
+READINESS_LIMIT = 300
+RECOVERY_END, SHUTDOWN_END, DELETE_END, CLEANUP_END = 762, 799, 818, 840
 NATIVE_CONTEXT_KEYS = ('XPC_SERVICE_NAME', 'XPC_FLAGS', '__CF_USER_TEXT_ENCODING')
 
 
@@ -59,32 +62,80 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def save(path, value):
+def checked_write(path, raw, check=lambda: None):
+    check()
+    with Path(path).open('wb') as stream:
+        check()
+        stream.write(raw)
+        check()
+        stream.flush()
+        check()
+    check()
+
+
+def save(path, value, check=lambda: None):
     path = Path(path)
     temp = path.with_suffix(path.suffix + '.tmp')
-    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
+    check()
+    raw = (json.dumps(value, ensure_ascii=False, indent=2) + '\n').encode()
+    check()
+    checked_write(temp, raw, check)
+    check()
     temp.replace(path)
+    check()
 
 
-def sha(path):
+def sha(path, check=lambda: None):
     digest = hashlib.sha256()
+    check()
     with path.open('rb') as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b''):
+        check()
+        while True:
+            check()
+            block = stream.read(1024 * 1024)
+            check()
+            if not block:
+                break
             digest.update(block)
+            check()
+    check()
     return digest.hexdigest()
 
 
-def inventory(path):
-    return {str(p.relative_to(path)): sha(p) for p in sorted(path.rglob('*')) if p.is_file()}
+def paths(path, check):
+    nodes = []
+    check()
+    for node in path.rglob('*'):
+        check()
+        nodes.append(node)
+    check()
+    result = sorted(nodes)
+    check()
+    return result
 
 
-def payload_modes(path):
+def inventory(path, check=lambda: None):
     result = {}
-    for node in [path, *sorted(path.rglob('*'))]:
+    for node in paths(path, check):
+        check()
+        regular = node.is_file()
+        check()
+        if regular:
+            result[str(node.relative_to(path))] = sha(node, check)
+    check()
+    return result
+
+
+def payload_modes(path, check=lambda: None):
+    result = {}
+    for node in [path, *paths(path, check)]:
+        check()
         mode = node.lstat().st_mode
+        check()
         assert not stat.S_ISLNK(mode) and (stat.S_ISREG(mode) or stat.S_ISDIR(mode))
         result[str(node.relative_to(path))] = {'mode': f'{stat.S_IMODE(mode):04o}',
                                                'directory': stat.S_ISDIR(mode)}
+    check()
     return result
 
 
@@ -154,7 +205,7 @@ class Run:
                      'run_id': os.environ.get('GITHUB_RUN_ID'),
                      'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
                      'native_storekit_tests': 0, 'retry': False, 'result': 'running',
-                     'phase_deadlines_seconds': {'work': WORK_END, 'recovery': RECOVERY_END,
+                     'phase_deadlines_seconds': {'startup': STARTUP_END, 'work': WORK_END, 'recovery': RECOVERY_END,
                          'shutdown': SHUTDOWN_END, 'delete': DELETE_END, 'absence': CLEANUP_END,
                          'evidence': TOTAL - 8},
                      'binary_kind': f'new hosted {CONFIGURATION} simulator build, not local frozen AUT or Release ZIP',
@@ -165,8 +216,12 @@ class Run:
     def remaining(self):
         return self.end - (time.monotonic() - self.start)
 
+    def check(self, end=None):
+        if time.monotonic() >= self.start + (self.end if end is None else end):
+            raise TimeoutError('Original phase deadline')
+
     def persist(self):
-        save(OUT / 'metadata.json', self.meta)
+        save(OUT / 'metadata.json', self.meta, lambda: self.check(TOTAL))
 
     def command(self, args, name, limit=15, required=True):
         command_args = list(map(str, args))
@@ -208,6 +263,15 @@ class Run:
                     try:
                         if observe:
                             item['runtime_observation']['spawn_started_monotonic'] = time.monotonic()
+                        spawn_time = time.monotonic()
+                        phase_remaining = self.start + self.end - spawn_time
+                        allowance = min(limit, phase_remaining - 4)
+                        if allowance <= 0:
+                            raise TimeoutError('No phase budget before ' + name)
+                        if command_args[:2] == ['xcodebuild', 'test-without-building']:
+                            assert phase_remaining >= TEST_ADMISSION, 'No full XCTest/stop budget before spawn'
+                        command_end = spawn_time + allowance
+                        item.update(timeout_seconds=allowance, command_deadline_monotonic=command_end)
                         proc = subprocess.Popen(item['args'], cwd=ROOT, env=ENV, stdout=log,
                                                 stderr=subprocess.STDOUT, start_new_session=True)
                     except BaseException as error:
@@ -227,7 +291,12 @@ class Run:
                             if observe:
                                 item['runtime_observation']['wait_started_monotonic'] = time.monotonic()
                             try:
+                                allowance = command_end - time.monotonic()
+                                if allowance <= 0:
+                                    raise TimeoutError('No phase budget before wait ' + name)
+                                item['wait_timeout_seconds'] = allowance
                                 proc.wait(timeout=allowance)
+                                self.check()
                             except BaseException as error:
                                 # Capture before sampling: a later diagnostic cannot replace wait().
                                 failed(error, 'wait')
@@ -292,7 +361,10 @@ class Run:
 
     def output(self, args, name, limit=15):
         self.command(args, name, limit)
-        return (OUT / name).read_text().strip()
+        self.check()
+        value = (OUT / name).read_text().strip()
+        self.check()
+        return value
 
 
 def stop_group(proc, record=None):
@@ -433,7 +505,7 @@ def provenance(run):
     assert checkout == os.environ['GITHUB_SHA'] and tree == head_tree
     assert not run.output(['git', 'status', '--porcelain', '--untracked-files=no'], 'source-status.txt')
     files = run.output(['git', 'ls-files'], 'source-files.txt').splitlines()
-    sources = {name: sha(ROOT / name) for name in files}
+    sources = {name: sha(ROOT / name, run.check) for name in files}
     info = {'published_head': head, 'actual_checkout': checkout, 'actual_tree': tree,
             'head_tree': head_tree, 'equal_trees': True, 'source_files': sources,
             'build_configuration': CONFIGURATION, 'build_scheme': SCHEME, 'test_plan': TEST_PLAN,
@@ -442,7 +514,7 @@ def provenance(run):
             'xcode': run.output(['xcodebuild', '-version'], 'xcode-version.txt'),
             'sdk': run.output(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], 'sdk-version.txt'),
             'macos': run.output(['sw_vers'], 'macos.txt')}
-    save(OUT / 'source-provenance.json', info)
+    save(OUT / 'source-provenance.json', info, run.check)
     run.meta['simulator_sdk_version'] = info['sdk']
     run.meta['source_binding'] = {key: info[key] for key in
                                   ('published_head', 'actual_checkout', 'actual_tree', 'head_tree', 'equal_trees')}
@@ -451,11 +523,14 @@ def provenance(run):
 
 
 def prepare_config(run):
+    run.check()
     products = DD / 'Build/Products'
     generated = list(products.glob('*.xctestrun'))
+    run.check()
     assert len(generated) == 1
     raw = generated[0].read_bytes()
-    (OUT / 'generated-original.xctestrun').write_bytes(raw)
+    run.check()
+    checked_write(OUT / 'generated-original.xctestrun', raw, run.check)
     data = plistlib.loads(raw)
     assert data['__xctestrun_metadata__']['FormatVersion'] == 2
     configs = data['TestConfigurations']
@@ -488,15 +563,18 @@ def prepare_config(run):
                   SystemAttachmentLifetime='keepAlways')
     app, runner = Path(target['UITargetAppPath']), Path(target['TestHostPath'])
     assert app.is_dir() and runner.is_dir() and Path(target['TestBundlePath']).is_dir()
+    run.check()
     assert app.is_relative_to(products) and runner.is_relative_to(products)
     if CONFIGURATION == 'Release':
         assert app.parent.name == 'Release-iphonesimulator' and runner.parent == app.parent, \
             'Release AUT and UI runner must come from the selected Release products'
-        assert not list(app.rglob('*.storekit')), 'Local StoreKit configuration in Release AUT'
-        assert not list(app.rglob('*.xctest')), 'Hosted unit-test bundle in Release AUT'
-        assert not list(app.rglob('*.debug.dylib')), 'Debug executable in Release AUT'
+        run.check()
+        assert not [node for node in paths(app, run.check) if node.match('*.storekit')], 'Local StoreKit configuration in Release AUT'
+        assert not [node for node in paths(app, run.check) if node.match('*.xctest')], 'Hosted unit-test bundle in Release AUT'
+        assert not [node for node in paths(app, run.check) if node.match('*.debug.dylib')], 'Debug executable in Release AUT'
         run.meta['release_AUT_path_and_payload_checks'] = 'passed'
     built_sdk = plistlib.loads((app / 'Info.plist').read_bytes())['DTSDKName']
+    run.check()
     assert built_sdk == 'iphonesimulator' + run.meta['simulator_sdk_version'], 'Built AUT SDK must match selected runtime'
     run.meta['built_AUT_sdk'] = built_sdk
     assert target['TestingEnvironmentVariables'] == original['TestingEnvironmentVariables']
@@ -505,25 +583,29 @@ def prepare_config(run):
     prepared = resolve(copy.deepcopy(data))
     prepared['TestConfigurations'][0]['TestTargets'] = [target]
     config = OUT / 'selected.xctestrun'
-    config.write_bytes(plistlib.dumps(prepared))
-    save(OUT / 'config-diff.json', {'original_sha256': sha(OUT / 'generated-original.xctestrun'),
-         'selected_sha256': sha(config), 'placeholder_resolution': replacements,
+    checked_write(config, plistlib.dumps(prepared), run.check)
+    save(OUT / 'config-diff.json', {'original_sha256': sha(OUT / 'generated-original.xctestrun', run.check),
+         'selected_sha256': sha(config, run.check), 'placeholder_resolution': replacements,
          'selected_target_count': 1, 'selected_identifiers': [CASE],
          'target_changes': {key: {'before': original.get(key), 'after': target.get(key)}
-                            for key in set(original) | set(target) if original.get(key) != target.get(key)}})
-    payloads = {'AUT': {'path': str(app), 'files': inventory(app)},
-                'runner': {'path': str(runner), 'files': inventory(runner)}}
-    save(OUT / 'payload-before.json', payloads)
-    save(OUT / 'payload-node-modes-before.json', {label: payload_modes(Path(value['path']))
-                                               for label, value in payloads.items()})
+                            for key in set(original) | set(target) if original.get(key) != target.get(key)}}, run.check)
+    payloads = {'AUT': {'path': str(app), 'files': inventory(app, run.check)},
+                'runner': {'path': str(runner), 'files': inventory(runner, run.check)}}
+    save(OUT / 'payload-before.json', payloads, run.check)
+    save(OUT / 'payload-node-modes-before.json', {label: payload_modes(Path(value['path']), run.check)
+                                               for label, value in payloads.items()}, run.check)
     run.command(['codesign', '--verify', '--strict', '--all-architectures', app], 'aut-signature.log')
     run.command(['codesign', '--verify', '--strict', '--all-architectures', runner], 'runner-signature.log')
     # Preserve the actual new binaries, not just their paths in an ephemeral runner.
+    run.check()
     with zipfile.ZipFile(OUT / 'tested-payloads.zip', 'x', zipfile.ZIP_DEFLATED) as archive:
+        run.check()
         for label, value in payloads.items():
             for relative in value['files']:
                 assert run.remaining() > 4
                 archive.write(Path(value['path']) / relative, label + '/' + relative)
+                run.check()
+    run.check()
     return config, payloads
 
 
@@ -533,9 +615,12 @@ def collect(run):
     result = OUT / 'result.xcresult'
     if not result.exists():
         raise RuntimeError('No xcresult produced')
-    before = inventory(result)
+    run.check()
+    before = inventory(result, run.check)
     inspection = OUT.with_name(OUT.name + '-inspection.xcresult')
+    run.check()
     shutil.copytree(result, inspection)
+    run.check()
     # Decode only a copy; preserve the original complete result in the artifact.
     summary = json.loads(run.output(['xcrun', 'xcresulttool', 'get', 'test-results', 'summary',
                                     '--path', inspection, '--format', 'json'], 'summary.json', 20))
@@ -543,8 +628,8 @@ def collect(run):
                                   '--path', inspection, '--format', 'json'], 'tests.json', 20))
     run.command(['xcrun', 'xcresulttool', 'export', 'attachments', '--path', inspection,
                  '--output-path', OUT / 'attachments'], 'attachments.log', 35)
-    assert inventory(result) == before
-    save(OUT / 'original-xcresult-files.json', before)
+    assert inventory(result, run.check) == before
+    save(OUT / 'original-xcresult-files.json', before, run.check)
 
     def cases(value):
         if isinstance(value, dict):
@@ -556,7 +641,7 @@ def collect(run):
     nodes = cases(tests)
     counts = {k: summary.get(k) for k in ('passedTests', 'failedTests', 'skippedTests', 'totalTestCount')}
     run.meta['counts'] = counts
-    save(OUT / 'selected-cases.json', {'expected': CASE, 'observed': nodes})
+    save(OUT / 'selected-cases.json', {'expected': CASE, 'observed': nodes}, run.check)
     assert list(counts.values()) == [1, 0, 0, 1], counts
     assert len(nodes) == 1 and nodes[0]['nodeIdentifier'].removesuffix('()') == CASE
     assert nodes[0]['result'] == 'Passed'
@@ -566,8 +651,8 @@ def configure_system_ax5(run, uid):
     # The phase end is absolute relative to the existing run.start. The second
     # command recalculates remaining time after the first; no budget is renewed.
     previous_end = run.end
-    assert previous_end == WORK_END
-    run.end = WORK_END - 215
+    assert previous_end == STARTUP_END
+    run.end = min(previous_end, STARTUP_END)
     try:
         run.command(['xcrun', 'simctl', 'ui', uid, 'content_size', AX5], 'set-ax5.log', AX5_SET_LIMIT)
         return run.output(['xcrun', 'simctl', 'ui', uid, 'content_size'], 'ax5-readback.txt', AX5_READ_LIMIT)
@@ -582,15 +667,22 @@ def worker():
         json.dump(identity, claim)
         claim.write('\n')
     run = Run()
+    run.end = STARTUP_END
     payloads = sources = None
     failed = []
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(InterruptedError('SIGTERM')))
     try:
         hosted_only()
         sources = provenance(run)
+        run.command(['xcodebuild', '-project', 'CleanSend.xcodeproj', '-scheme', SCHEME, '-testPlan', TEST_PLAN,
+                     *(['-configuration', 'Release', 'ENABLE_TESTABILITY=NO'] if CONFIGURATION == 'Release' else []),
+                     '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', DD, '-jobs', '2',
+                     'ARCHS=arm64' if os.uname().machine == 'arm64' else 'ARCHS=x86_64', 'ONLY_ACTIVE_ARCH=YES',
+                     'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-', 'build-for-testing',
+                     '-only-testing:' + TARGET + '/' + CASE], 'build.log', 300)
         runtime, device_type = select_device(run)
-        # Let owned-device startup overlap the generic Release build without
-        # extending any deadline. Required bootstatus still gates AX5/XCTest.
+        # Generic build precedes the one runtime query. Owned boot can progress
+        # during configuration, signatures and payload binding; no second child.
         name = 'RedactLeaf-Privacy-' + str(uuid.uuid4())
         run.meta['owned_device_name'] = name
         run.persist()
@@ -599,19 +691,16 @@ def worker():
         run.meta['owned_uuid'] = uid
         run.persist()
         run.command(['xcrun', 'simctl', 'boot', uid], 'boot.log', 20)
-        run.command(['xcodebuild', '-project', 'CleanSend.xcodeproj', '-scheme', SCHEME, '-testPlan', TEST_PLAN,
-                     *(['-configuration', 'Release', 'ENABLE_TESTABILITY=NO'] if CONFIGURATION == 'Release' else []),
-                     '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', DD, '-jobs', '2',
-                     'ARCHS=arm64' if os.uname().machine == 'arm64' else 'ARCHS=x86_64', 'ONLY_ACTIVE_ARCH=YES',
-                     'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-', 'build-for-testing',
-                     '-only-testing:' + TARGET + '/' + CASE], 'build.log', 300)
         config, payloads = prepare_config(run)
-        run.command(['xcrun', 'simctl', 'bootstatus', uid, '-b'], 'bootstatus.log', 90)
+        run.check()
+        run.command(['xcrun', 'simctl', 'bootstatus', uid, '-b'], 'bootstatus.log', READINESS_LIMIT)
         readback = configure_system_ax5(run, uid)
         assert readback == AX5
         run.meta['actual_system_content_size'] = readback
         run.persist()
-        assert run.remaining() >= 215, 'No minimum runtime/cleanup budget left; do not start XCTest'
+        run.check()
+        run.end = WORK_END
+        assert run.remaining() >= TEST_ADMISSION, 'No full XCTest/stop budget left; do not start XCTest'
         run.meta['xcodebuild_returncode'] = run.command(
             ['xcodebuild', 'test-without-building', '-xctestrun', config,
              '-destination', 'platform=iOS Simulator,id=' + uid, '-parallel-testing-enabled', 'NO',
@@ -622,7 +711,7 @@ def worker():
         failed.append(repr(error))
     finally:
         # Separate deadlines preserve deletion/absence time after one 30s shutdown.
-        # Cleanup ends by 660s, leaving 112s for evidence (75s commands plus I/O).
+        # Cleanup ends by 840s, leaving 112s for evidence (75s commands plus I/O).
         run.end = RECOVERY_END
         uid = run.meta.get('owned_uuid')
         if not uid and run.meta.get('owned_device_name'):
@@ -659,15 +748,18 @@ def worker():
             failed.append('Result acceptance: ' + repr(error))
         try:
             if sources is not None:
-                assert {name: sha(ROOT / name) for name in sources} == sources
+                assert {name: sha(ROOT / name, run.check) for name in sources} == sources
             if payloads is not None:
-                after = {label: {'path': value['path'], 'files': inventory(Path(value['path']))}
+                after = {label: {'path': value['path'], 'files': inventory(Path(value['path']), run.check)}
                          for label, value in payloads.items()}
-                save(OUT / 'payload-after.json', after)
+                save(OUT / 'payload-after.json', after, run.check)
                 assert after == payloads
-                modes = {label: payload_modes(Path(value['path'])) for label, value in payloads.items()}
-                save(OUT / 'payload-node-modes-after.json', modes)
-                assert modes == json.loads((OUT / 'payload-node-modes-before.json').read_text())
+                modes = {label: payload_modes(Path(value['path']), run.check) for label, value in payloads.items()}
+                save(OUT / 'payload-node-modes-after.json', modes, run.check)
+                run.check()
+                before_modes = json.loads((OUT / 'payload-node-modes-before.json').read_text())
+                run.check()
+                assert modes == before_modes
             run.meta['source_and_built_payloads_unchanged'] = sources is not None and payloads is not None
         except BaseException as error:
             failed.append('Integrity: ' + repr(error))
@@ -716,15 +808,21 @@ def supervise():
     OUT.mkdir(parents=True, exist_ok=False)
     start = time.monotonic()
     record = {'started_at': now(), 'total_budget_seconds': TOTAL, 'result': 'running', **identity}
-    save(OUT / 'invocation.json', record)
+    def remaining(end=TOTAL - 8):
+        value = start + end - time.monotonic()
+        if value <= 0:
+            raise TimeoutError('Original supervisor deadline')
+        return value
+    save(OUT / 'invocation.json', record, remaining)
     proc = None
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(InterruptedError('SIGTERM')))
     try:
         with (OUT / 'driver.log').open('wb') as log:
+            remaining()
             proc = subprocess.Popen([sys.executable, __file__, '--worker'], cwd=ROOT,
                                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             record['owned_worker'] = proc.pid
-            proc.wait(timeout=TOTAL - 8)
+            proc.wait(timeout=remaining())
             assert proc.returncode == 0, 'Worker failed; no retry'
         record['result'] = 'passed_pending_independent_review'
     except BaseException as error:
@@ -750,7 +848,11 @@ def supervise():
                       worker_returncode=proc.returncode if proc else None)
         if record['elapsed_seconds'] >= TOTAL:
             record['result'] = 'failed'
-        save(OUT / 'invocation.json', record)
+        if time.monotonic() < start + TOTAL:
+            try:
+                save(OUT / 'invocation.json', record, lambda: remaining(TOTAL))
+            except TimeoutError:
+                record['result'] = 'failed'
     return 0 if record['result'] == 'passed_pending_independent_review' else 1
 
 

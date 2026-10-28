@@ -269,6 +269,38 @@ class HostedPreparationTests(unittest.TestCase):
                         process.wait.assert_called_once_with(timeout=expected)
                         self.assertTrue(run.meta['commands'][0]['owned_group_absent'])
 
+    def test_lifecycle_rechecks_persistence_and_log_open_before_spawn(self):
+        for stage in ('persist','open'):
+            with self.subTest(stage=stage):
+                lifecycle=load('late_package_lifecycle',SMOKE/'lifecycle.py');lifecycle.OUT=self.root
+                clock=[550.0];original_open=Path.open
+                with mock.patch.object(lifecycle.time,'monotonic',side_effect=lambda:clock[0]):
+                    run=lifecycle.Run();run.start=0
+                    def persist():
+                        if stage=='persist':clock[0]=556
+                    run.persist=persist
+                    def opened(path,*args,**kwargs):
+                        stream=original_open(path,*args,**kwargs)
+                        if stage=='open':clock[0]=556
+                        return stream
+                    with mock.patch.object(Path,'open',opened),mock.patch.object(subprocess,'Popen') as spawn:
+                        with self.assertRaises(TimeoutError):run.command(['fixture'],stage+'.log',300)
+                    spawn.assert_not_called();self.assertEqual(run.start,0);self.assertEqual(run.end,560)
+    def test_lifecycle_post_spawn_work_consumes_single_original_command_end(self):
+        lifecycle=load('post_spawn_package_lifecycle',SMOKE/'lifecycle.py');lifecycle.OUT=self.root
+        clock=[0.0];calls=[];proc=SimpleNamespace(pid=123,returncode=0,wait=mock.Mock())
+        with mock.patch.object(lifecycle.time,'monotonic',side_effect=lambda:clock[0]):
+            run=lifecycle.Run();run.start=0
+            def persist():
+                calls.append(1)
+                if len(calls)==2:clock[0]+=10
+            run.persist=persist
+            with mock.patch.object(subprocess,'Popen',return_value=proc),mock.patch.object(lifecycle,'stop_group',side_effect=lambda p,row:row.update(owned_group_absent=True)):
+                run.command(['fixture'],'post-spawn.log',15)
+        proc.wait.assert_called_once_with(timeout=5)
+        self.assertEqual(run.meta['commands'][0]['command_deadline_monotonic'],15)
+        self.assertTrue(run.meta['commands'][0]['owned_group_absent'])
+
     def test_supervisor_timeout_stops_only_identity_bound_child_group(self):
         for correct_parent in (True,False):
             with self.subTest(correct_parent=correct_parent):
@@ -347,7 +379,7 @@ class HostedPreparationTests(unittest.TestCase):
 class InstalledRunnerReceiptTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
-        self.root=Path(self.temp.name).resolve();self.runner=self.root/'Runner.app';self.runner.mkdir(mode=0o755)
+        self.root=Path(self.temp.name).resolve();self.runner=self.root/'Runner.app';self.runner.mkdir(mode=0o755);self.runner.chmod(0o755)  # Fixture mode is explicit even under a private umask.
         (self.runner/'binary').write_bytes(b'original');(self.runner/'binary').chmod(0o755)
         self.expected={'.':{'directory':True,'mode':'0755'},'binary':{'mode':'0755','sha256':digest(b'original')}}
         self.e=load('installed_runner_evidence',SMOKE/'evidence.py');self.b=load('installed_runner_window',SMOKE/'window.py');self.r=load('installed_runner_writer',SMOKE/'run.py')
