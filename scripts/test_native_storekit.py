@@ -98,17 +98,27 @@ class NativeStoreKitBindingTests(unittest.TestCase):
                 process.poll=lambda:process.returncode
                 process.wait=lambda **_:process.returncode
                 signals=[];child_present=[True]
+                parent_env={'GH_TOKEN':'fixture-secret','GITHUB_TOKEN':'other-secret','DYLD_LIBRARY_PATH':'unexpected','SDKROOT':'unexpected'}
+                if correct_parent:parent_env.update({key:'fixed-'+key for key in lifecycle.NATIVE_CONTEXT_KEYS})
                 def killpg(pid,sig):
                     signals.append((pid,sig))
                     if pid==700 and sig==0 and not child_present[0]:raise ProcessLookupError()
                     if pid==700 and sig==signal.SIGKILL:child_present[0]=False
                     if pid==500 and sig==signal.SIGKILL:process.returncode=-9
                 def spawn(*args,**kwargs):
-                    self.assertNotIn('GH_TOKEN',kwargs['env']);self.assertNotIn('GITHUB_TOKEN',kwargs['env'])
+                    for key in ('GH_TOKEN','GITHUB_TOKEN','DYLD_LIBRARY_PATH','SDKROOT'):
+                        self.assertNotIn(key,kwargs['env'])
+                    for key in lifecycle.NATIVE_CONTEXT_KEYS:
+                        if correct_parent:self.assertEqual(kwargs['env'][key],parent_env[key])
+                        else:self.assertNotIn(key,kwargs['env'])
+                    native_env=lifecycle.child_environment(kwargs['env'])
+                    for key in lifecycle.NATIVE_CONTEXT_KEYS:
+                        if correct_parent:self.assertEqual(native_env[key],parent_env[key])
+                        else:self.assertNotIn(key,native_env)
                     (scope/'metadata.json').write_text(json.dumps({'owner_worker_pid':500,'owned_device_name':'fixture-owned-device','commands':[{'owned_process_group':700,'args':['xcodebuild'],'owned_group_absent':False}]}))
                     return process
                 aggregate=self.m.aggregate_command_groups
-                with mock.patch.object(self.m,'load',return_value=lifecycle),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(self.m.Resources,'check',side_effect=AssertionError('injected allocation floor')),mock.patch.object(self.m,'await_cleanup_ack',side_effect=subprocess.TimeoutExpired('fixture-worker',3)),mock.patch.object(subprocess,'check_output',return_value='500\n' if correct_parent else '999\n') as parent_lookup,mock.patch.object(os,'getpgid',return_value=700),mock.patch.object(os,'killpg',side_effect=killpg),mock.patch.object(lifecycle,'stop_group',side_effect=lambda proc,row:row.update(owned_group_absent=True)),mock.patch.object(self.m,'aggregate_command_groups',side_effect=lambda meta,start:aggregate(meta,start,probe=killpg)),mock.patch.object(self.m,'terminal_stdout',return_value=True):
+                with mock.patch.dict(os.environ,parent_env,clear=True),mock.patch.object(self.m,'load',return_value=lifecycle),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(self.m.Resources,'check',side_effect=AssertionError('injected allocation floor')),mock.patch.object(self.m,'await_cleanup_ack',side_effect=subprocess.TimeoutExpired('fixture-worker',3)),mock.patch.object(subprocess,'check_output',return_value='500\n' if correct_parent else '999\n') as parent_lookup,mock.patch.object(os,'getpgid',return_value=700),mock.patch.object(os,'killpg',side_effect=killpg),mock.patch.object(lifecycle,'stop_group',side_effect=lambda proc,row:row.update(owned_group_absent=True)),mock.patch.object(self.m,'aggregate_command_groups',side_effect=lambda meta,start:aggregate(meta,start,probe=killpg)),mock.patch.object(self.m,'terminal_stdout',return_value=True):
                     self.assertEqual(self.m.supervise(context,{},time.monotonic()),1)
                 receipt=json.loads((scope/'invocation-final.json').read_bytes())
                 self.assertNotIn('last_resort_error',receipt)

@@ -409,4 +409,35 @@ class InstalledRunnerReceiptTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):self.r.save_installed_runner(self.receipt,{},lambda:None)
         self.assertEqual(self.receipt.read_bytes(),b'original')
 
+class NativeContextInheritanceTests(unittest.TestCase):
+    def setUp(self):
+        self.lifecycle=load('native_context_lifecycle',SMOKE/'lifecycle.py')
+
+    def test_only_existing_fixed_system_context_is_forwarded(self):
+        parent={'HOME':'/fixture/home','PATH':'/fixture/bin','LANG':'other',
+                'GH_TOKEN':'secret','GITHUB_TOKEN':'secret2','SDKROOT':'unexpected',
+                'DYLD_LIBRARY_PATH':'unexpected','STOREKIT_CONFIGURATION':'unexpected'}
+        parent.update({key:'synthetic-'+key for key in self.lifecycle.NATIVE_CONTEXT_KEYS})
+        expected={key:parent[key] for key in ('HOME','PATH')+self.lifecycle.NATIVE_CONTEXT_KEYS}
+        expected['LANG']='en_US.UTF-8'
+        self.assertEqual(self.lifecycle.child_environment(parent),expected)
+
+    def test_absent_system_context_is_not_synthesized(self):
+        self.assertEqual(self.lifecycle.child_environment({}),{'LANG':'en_US.UTF-8'})
+        self.assertEqual(self.lifecycle.child_environment({'XPC_FLAGS':''}),
+                         {'XPC_FLAGS':'','LANG':'en_US.UTF-8'})
+
+    def test_diagnostics_record_presence_and_equality_without_values(self):
+        parent={key:'not-for-diagnostics-'+key for key in self.lifecycle.NATIVE_CONTEXT_KEYS}
+        child=self.lifecycle.child_environment(parent)
+        child['XPC_FLAGS']='different-not-for-diagnostics'
+        del child['XPC_SERVICE_NAME']
+        with mock.patch.dict(os.environ,parent,clear=True),mock.patch.object(self.lifecycle,'ENV',child),mock.patch.object(self.lifecycle.shutil,'which',return_value=None):
+            value=self.lifecycle.runtime_context()
+        observed=value['native_context']
+        self.assertEqual(observed['XPC_SERVICE_NAME'],{'parent_present':True,'child_present':False,'equal_to_parent':False})
+        self.assertEqual(observed['XPC_FLAGS'],{'parent_present':True,'child_present':True,'equal_to_parent':False})
+        self.assertEqual(observed['__CF_USER_TEXT_ENCODING'],{'parent_present':True,'child_present':True,'equal_to_parent':True})
+        self.assertNotIn('not-for-diagnostics',json.dumps(value))
+
 if __name__=='__main__':unittest.main()

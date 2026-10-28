@@ -564,7 +564,7 @@ def supervise(grant_path,grant,start):
  l.save(SCOPE/'invocation.json',intent);proc=None;monitor=None
  try:
   with (SCOPE/'driver.log').open('xb') as log:
-   child_env={k:os.environ[k] for k in ('HOME','USER','LOGNAME','PATH','TMPDIR','DEVELOPER_DIR','GITHUB_ACTIONS','RUNNER_OS','GITHUB_REPOSITORY','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_SHA','EXPECTED_HEAD_SHA') if k in os.environ}
+   child_env={k:os.environ[k] for k in ('HOME','USER','LOGNAME','PATH','TMPDIR','DEVELOPER_DIR','GITHUB_ACTIONS','RUNNER_OS','GITHUB_REPOSITORY','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_SHA','EXPECTED_HEAD_SHA')+l.NATIVE_CONTEXT_KEYS if k in os.environ}
    child_env['NATIVE_STOREKIT_CONTEXT_SHA']=sha(grant_path)
    assert time.monotonic()<start+EVIDENCE_END,'original supervisor deadline before spawn'
    proc=subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve()),str(grant_path),'--worker',str(start)],cwd=ROOT,env=child_env,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
