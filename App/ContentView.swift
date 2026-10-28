@@ -7,6 +7,7 @@ struct ContentView: View {
     @EnvironmentObject private var store: ProStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var showingImporter = false
+    @State private var showingWorkspaceActions = false
     @State private var showingPro = false
     @State private var showingMaskEditor = false
     @State private var showingClear = false
@@ -35,13 +36,18 @@ struct ContentView: View {
                         .accessibilityIdentifier("open-pro")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button(L10n.text("Import PDF or images"), systemImage: "doc.badge.plus") { showingImporter = true }
-                        Button(L10n.text("Saved areas"), systemImage: "square.stack") { showingPresets = true }.accessibilityIdentifier("saved-areas-menu")
-                        Button(L10n.text("Clear workspace"), systemImage: "trash", role: .destructive) { showingClear = true }.accessibilityIdentifier("clear-workspace-menu")
-                        Button(L10n.text("Privacy and support"), systemImage: "info.circle") { showingInformation = true }
+                    Button { showingWorkspaceActions = true } label: {
+                        Label(L10n.text("Workspace actions"), systemImage: "ellipsis.circle")
+                    }
+                    .labelStyle(.iconOnly)
+                    .accessibilityIdentifier("workspace-actions")
+                    .confirmationDialog(L10n.text("Workspace actions"), isPresented: $showingWorkspaceActions, titleVisibility: .visible) {
+                        Button(L10n.text("Import PDF or images")) { showingImporter = true }
+                        Button(L10n.text("Saved areas")) { showingPresets = true }.accessibilityIdentifier("saved-areas-menu")
+                        Button(L10n.text("Clear workspace"), role: .destructive) { showingClear = true }.accessibilityIdentifier("clear-workspace-menu")
+                        Button(L10n.text("Privacy and support")) { showingInformation = true }
                             .accessibilityIdentifier("privacy-support-menu")
-                    } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel(L10n.text("Workspace actions")).accessibilityIdentifier("workspace-actions")
+                    }
                     .disabled(workspace.isBusy)
                 }
             }
