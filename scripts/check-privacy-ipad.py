@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """One hosted-only Russian iPad AX5 SDK/runtime baseline, with cleanup and evidence.
 
-This creates a new Debug simulator AUT. It does not use a local frozen binary,
+This creates a new Debug simulator AUT by default, or Release when explicitly
+selected by REDACTLEAF_PRIVACY_CONFIGURATION. It does not use a local frozen binary,
 change product behavior, select native StoreKit tests, or retry a failed run.
 """
 import copy
@@ -22,6 +23,10 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / '.qa/privacy-ipad'
 DD = ROOT / '.qa/privacy-ipad-build'
+CONFIGURATION = os.environ.get('REDACTLEAF_PRIVACY_CONFIGURATION', 'Debug')
+assert CONFIGURATION in ('Debug', 'Release'), 'Unsupported privacy build configuration'
+SCHEME = 'CleanSendPrivacyRelease' if CONFIGURATION == 'Release' else 'CleanSend'
+TEST_PLAN = SCHEME
 TARGET = 'CleanSendUITests'
 CASE = 'PrivacySupportUITests/testRussianOfflineInformationAtSystemAX5OnLandscapeIPad'
 AX5 = 'accessibility-extra-extra-extra-large'
@@ -108,7 +113,8 @@ class Run:
                      'phase_deadlines_seconds': {'work': WORK_END, 'recovery': RECOVERY_END,
                          'shutdown': SHUTDOWN_END, 'delete': DELETE_END, 'absence': CLEANUP_END,
                          'evidence': TOTAL - 8},
-                     'binary_kind': 'new hosted Debug simulator build, not local frozen AUT or Release ZIP',
+                     'binary_kind': f'new hosted {CONFIGURATION} simulator build, not local frozen AUT or Release ZIP',
+                     'build_configuration': CONFIGURATION, 'build_scheme': SCHEME, 'test_plan': TEST_PLAN,
                      'launch_capture': {'enabled': False, 'coverage': 'NOT_COLLECTED',
                          'reason': 'Primary UI acceptance uses test.log and the original result.xcresult, including any Staging files; no log streams are started.'}}
 
@@ -386,6 +392,7 @@ def provenance(run):
     sources = {name: sha(ROOT / name) for name in files}
     info = {'published_head': head, 'actual_checkout': checkout, 'actual_tree': tree,
             'head_tree': head_tree, 'equal_trees': True, 'source_files': sources,
+            'build_configuration': CONFIGURATION, 'build_scheme': SCHEME, 'test_plan': TEST_PLAN,
             'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
             'xcode': run.output(['xcodebuild', '-version'], 'xcode-version.txt'),
             'sdk': run.output(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], 'sdk-version.txt'),
@@ -434,6 +441,13 @@ def prepare_config(run):
     app, runner = Path(target['UITargetAppPath']), Path(target['TestHostPath'])
     assert app.is_dir() and runner.is_dir() and Path(target['TestBundlePath']).is_dir()
     assert app.is_relative_to(products) and runner.is_relative_to(products)
+    if CONFIGURATION == 'Release':
+        assert app.parent.name == 'Release-iphonesimulator' and runner.parent == app.parent, \
+            'Release AUT and UI runner must come from the selected Release products'
+        assert not list(app.rglob('*.storekit')), 'Local StoreKit configuration in Release AUT'
+        assert not list(app.rglob('*.xctest')), 'Hosted unit-test bundle in Release AUT'
+        assert not list(app.rglob('*.debug.dylib')), 'Debug executable in Release AUT'
+        run.meta['release_AUT_path_and_payload_checks'] = 'passed'
     built_sdk = plistlib.loads((app / 'Info.plist').read_bytes())['DTSDKName']
     assert built_sdk == 'iphonesimulator' + run.meta['simulator_sdk_version'], 'Built AUT SDK must match selected runtime'
     run.meta['built_AUT_sdk'] = built_sdk
@@ -507,7 +521,8 @@ def worker():
         hosted_only()
         sources = provenance(run)
         runtime, device_type = select_device(run)
-        run.command(['xcodebuild', '-project', 'CleanSend.xcodeproj', '-scheme', 'CleanSend', '-testPlan', 'CleanSend',
+        run.command(['xcodebuild', '-project', 'CleanSend.xcodeproj', '-scheme', SCHEME, '-testPlan', TEST_PLAN,
+                     *(['-configuration', 'Release', 'ENABLE_TESTABILITY=NO'] if CONFIGURATION == 'Release' else []),
                      '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', DD, '-jobs', '2',
                      'ARCHS=arm64' if os.uname().machine == 'arm64' else 'ARCHS=x86_64', 'ONLY_ACTIVE_ARCH=YES',
                      'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-', 'build-for-testing',

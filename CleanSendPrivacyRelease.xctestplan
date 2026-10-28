@@ -1,0 +1,30 @@
+{
+  "configurations": [
+    {
+      "id": "8F20DE12-58B1-41E5-9E1D-65598C582E6A",
+      "name": "Release Privacy",
+      "options": {}
+    }
+  ],
+  "defaultOptions": {
+    "targetForVariableExpansion": {
+      "containerPath": "container:CleanSend.xcodeproj",
+      "identifier": "ABFBCC412749C3E97847E967",
+      "name": "CleanSend"
+    },
+    "testTimeoutsEnabled": true,
+    "defaultTestExecutionTimeAllowance": 120,
+    "maximumTestExecutionTimeAllowance": 180
+  },
+  "testTargets": [
+    {
+      "parallelizable": false,
+      "target": {
+        "containerPath": "container:CleanSend.xcodeproj",
+        "identifier": "DBBBCFC96FAD72F0A6B3EED8",
+        "name": "CleanSendUITests"
+      }
+    }
+  ],
+  "version": 1
+}

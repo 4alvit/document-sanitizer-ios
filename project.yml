@@ -7,6 +7,7 @@ options:
   developmentLanguage: en
 fileGroups:
   - CleanSend.xctestplan
+  - CleanSendPrivacyRelease.xctestplan
 packages:
   SanitizerCore:
     path: .
@@ -139,6 +140,23 @@ schemes:
         - name: CleanSendTests
           parallelizable: false
           randomExecutionOrder: false
+        - name: CleanSendUITests
+          parallelizable: false
+          randomExecutionOrder: false
+    archive:
+      config: Release
+  CleanSendPrivacyRelease:
+    build:
+      targets:
+        CleanSend: all
+    run:
+      config: Release
+    test:
+      config: Release
+      testPlans:
+        - path: CleanSendPrivacyRelease.xctestplan
+          defaultPlan: true
+      targets:
         - name: CleanSendUITests
           parallelizable: false
           randomExecutionOrder: false
