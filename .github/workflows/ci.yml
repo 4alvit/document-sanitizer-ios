@@ -31,7 +31,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         timeout-minutes: 3
         with:
-          name: release-simulator-packages
+          name: release-simulator-packages-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: ${{ steps.release-packages.outputs.package_directory }}
           include-hidden-files: true
           if-no-files-found: error
@@ -48,7 +48,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: verification-evidence
+          name: verification-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: |
             .qa/corpus/report.json
             .qa/verifier-probe.json
@@ -76,8 +76,8 @@ jobs:
         timeout-minutes: 3
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: privacy-ipad-evidence
-          path: .qa/privacy-ipad/
+          name: privacy-ipad-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: .qa/privacy-ipad/run-${{ github.run_id }}-attempt-${{ github.run_attempt }}/
           include-hidden-files: true
           if-no-files-found: error
 

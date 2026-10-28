@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import signal
 import subprocess
@@ -67,7 +68,17 @@ def hosted_only():
     assert os.environ.get('GITHUB_ACTIONS') == 'true', 'This driver must not run locally'
     assert os.environ.get('RUNNER_OS') == 'macOS'
     assert os.environ.get('GITHUB_EVENT_NAME') == 'pull_request'
-    assert os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'No replay of this run'
+    identity = {'run_id': os.environ.get('GITHUB_RUN_ID', ''),
+                'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT', '')}
+    assert all(re.fullmatch(r'[1-9][0-9]*', value) for value in identity.values()), \
+        'Run ID and attempt must be canonical positive decimals'
+    return identity
+
+
+def hosted_paths():
+    identity = hosted_only()
+    key = 'run-' + identity['run_id'] + '-attempt-' + identity['run_attempt']
+    return ROOT / '.qa/privacy-ipad' / key, ROOT / '.qa/privacy-ipad-build' / key
 
 
 def runtime_context():
@@ -111,6 +122,8 @@ class Run:
         self.start = time.monotonic()
         self.end = WORK_END
         self.meta = {'started_at': now(), 'total_seconds': TOTAL, 'commands': [],
+                     'run_id': os.environ.get('GITHUB_RUN_ID'),
+                     'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
                      'native_storekit_tests': 0, 'retry': False, 'result': 'running',
                      'phase_deadlines_seconds': {'work': WORK_END, 'recovery': RECOVERY_END,
                          'shutdown': SHUTDOWN_END, 'delete': DELETE_END, 'absence': CLEANUP_END,
@@ -486,7 +499,7 @@ def collect(run):
     if not result.exists():
         raise RuntimeError('No xcresult produced')
     before = inventory(result)
-    inspection = ROOT / '.qa/privacy-ipad-inspection.xcresult'
+    inspection = OUT.with_name(OUT.name + '-inspection.xcresult')
     shutil.copytree(result, inspection)
     # Decode only a copy; preserve the original complete result in the artifact.
     summary = json.loads(run.output(['xcrun', 'xcresulttool', 'get', 'test-results', 'summary',
@@ -515,6 +528,11 @@ def collect(run):
 
 
 def worker():
+    identity = hosted_only()
+    # The supervisor creates a fresh attempt scope. Never run a second worker in it.
+    with (OUT / 'worker-started.json').open('x') as claim:
+        json.dump(identity, claim)
+        claim.write('\n')
     run = Run()
     payloads = sources = None
     failed = []
@@ -643,10 +661,13 @@ def stop_recorded_children(worker_pid, metadata, deadline):
 
 
 def supervise():
-    hosted_only()
+    identity = hosted_only()
+    assert not os.path.lexists(DD), 'Attempt build directory already exists; no reuse'
+    assert not os.path.lexists(OUT.with_name(OUT.name + '-inspection.xcresult')), \
+        'Attempt inspection evidence already exists; no reuse'
     OUT.mkdir(parents=True, exist_ok=False)
     start = time.monotonic()
-    record = {'started_at': now(), 'total_budget_seconds': TOTAL, 'result': 'running'}
+    record = {'started_at': now(), 'total_budget_seconds': TOTAL, 'result': 'running', **identity}
     save(OUT / 'invocation.json', record)
     proc = None
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(InterruptedError('SIGTERM')))
@@ -686,4 +707,5 @@ def supervise():
 
 
 if __name__ == '__main__':
+    OUT, DD = hosted_paths()
     raise SystemExit(worker() if sys.argv[1:] == ['--worker'] else supervise())

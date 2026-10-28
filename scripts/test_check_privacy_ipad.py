@@ -271,7 +271,7 @@ class Fixture:
         self.stack.enter_context(mock.patch.object(self.module.time, 'sleep', self.clock.sleep))
         self.stack.enter_context(mock.patch.dict(os.environ, {'GITHUB_ACTIONS': 'true', 'RUNNER_OS': 'macOS',
             'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_RUN_ATTEMPT': '1', 'EXPECTED_HEAD_SHA': 'head',
-            'GITHUB_SHA': 'checkout', 'GITHUB_RUN_ID': 'offline-fixture'}))
+            'GITHUB_SHA': 'checkout', 'GITHUB_RUN_ID': '123456789'}))
         self.out = self.root / '.qa/privacy-ipad'
         self.out.mkdir(parents=True)
         self.dd = self.root / '.qa/privacy-ipad-build'
@@ -520,6 +520,61 @@ class BaselineWorkerTests(unittest.TestCase):
                 self.assertEqual(context['child_env']['PATH']['value'], path)
                 self.assertTrue(all(t['status'] == 'NOT_READ_RELATIVE_OR_EMPTY_PATH'
                                     for t in context['tools'].values()))
+
+    def test_manual_attempt_identity_paths_and_worker_receipts(self):
+        with mock.patch.dict(os.environ, {'GITHUB_RUN_ID': '40631521600', 'GITHUB_RUN_ATTEMPT': '2'}):
+            self.assertEqual(self.f.module.hosted_only(), {'run_id': '40631521600', 'run_attempt': '2'})
+            self.assertEqual(self.f.module.hosted_paths(), (
+                self.f.root / '.qa/privacy-ipad/run-40631521600-attempt-2',
+                self.f.root / '.qa/privacy-ipad-build/run-40631521600-attempt-2'))
+            rc, meta = self.f.run()
+        self.assertEqual(rc, 0)
+        self.assertEqual((meta['run_id'], meta['run_attempt']), ('40631521600', '2'))
+        self.assertFalse(meta['retry'])
+        self.assertEqual(json.loads((self.f.out / 'worker-started.json').read_text()),
+                         {'run_id': '40631521600', 'run_attempt': '2'})
+        provenance = json.loads((self.f.out / 'source-provenance.json').read_text())
+        self.assertEqual((provenance['run_id'], provenance['run_attempt']), ('40631521600', '2'))
+        self.assertEqual(len(self.f.test_processes()), 1)
+        self.assertEqual(self.f.test_processes()[0].wait_calls, [210])
+        self.f.assert_cleanup(meta)
+
+    def test_noncanonical_run_or_attempt_rejected_before_any_process(self):
+        for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'):
+            for value in ('', '0', '01', '+2', '-2', ' 2', '2 ', '2\n', '٢'):
+                with self.subTest(key=key, value=value), mock.patch.dict(os.environ, {key: value}):
+                    with self.assertRaisesRegex(AssertionError, 'canonical positive decimals'):
+                        self.f.module.hosted_paths()
+        self.assertEqual(self.f.backend.calls, [])
+
+    def test_second_worker_in_attempt_cannot_overwrite_receipts_or_spawn(self):
+        rc, meta = self.f.run()
+        self.assertEqual(rc, 0)
+        before = {p.name: p.read_bytes() for p in self.f.out.iterdir() if p.is_file()}
+        calls = list(self.f.backend.calls)
+        with self.assertRaises(FileExistsError):
+            self.f.module.worker()
+        self.assertEqual(self.f.backend.calls, calls)
+        self.assertEqual({p.name: p.read_bytes() for p in self.f.out.iterdir() if p.is_file()}, before)
+        self.f.assert_cleanup(meta)
+
+    def test_supervisor_rejects_existing_attempt_output_before_spawn(self):
+        with mock.patch.object(self.f.module, 'DD', self.f.root / 'unused-derived'):
+            with self.assertRaises(FileExistsError):
+                self.f.module.supervise()
+        self.assertEqual(self.f.backend.calls, [])
+
+    def test_supervisor_rejects_existing_attempt_build_or_inspection_before_spawn(self):
+        self.f.module.OUT = self.f.root / 'fresh-attempt'
+        with self.assertRaisesRegex(AssertionError, 'build directory already exists'):
+            self.f.module.supervise()
+        self.f.module.DD = self.f.root / 'unused-derived'
+        inspection = self.f.module.OUT.with_name(self.f.module.OUT.name + '-inspection.xcresult')
+        inspection.mkdir()
+        with self.assertRaisesRegex(AssertionError, 'inspection evidence already exists'):
+            self.f.module.supervise()
+        self.assertFalse(self.f.module.OUT.exists())
+        self.assertEqual(self.f.backend.calls, [])
 
     def test_import_is_inert(self):
         self.assertEqual(self.f.import_calls, [])
