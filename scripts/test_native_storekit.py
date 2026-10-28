@@ -134,6 +134,66 @@ class NativeStartupBudgetTests(unittest.TestCase):
             self.phases.append(phase)
             assert self.clock[0]<self.start+phase,'original phase deadline'
         self.resources=SimpleNamespace(check=check)
+    def test_readiness_and_install_share_original_startup_phase_without_renewal(self):
+        waits=[]
+        def spawn(args,**kwargs):
+            proc=SimpleNamespace(pid=77+len(waits),returncode=None)
+            def wait(timeout):
+                waits.append((args,timeout));self.clock[0]+=70 if args[2]=='bootstatus' else 10;proc.returncode=0
+            proc.wait=wait
+            return proc
+        with mock.patch.object(subprocess,'Popen',side_effect=spawn) as popen,mock.patch.object(self.l,'stop_group',side_effect=lambda p,row:row.update(owned_group_absent=True)):
+            self.assertEqual(self.m.wait_ready_once(self.run,self.resources,'owned'),0)
+            self.assertEqual(self.m.install_once(self.run,self.resources,'owned','/fixture/app'),0)
+        self.assertEqual(popen.call_count,2)
+        self.assertEqual([args[2] for args,_ in waits],['bootstatus','install'])
+        self.assertEqual([limit for _,limit in waits],[109,39])
+        self.assertEqual(self.m.COLD_BOOT_LIMIT,300)
+        self.assertEqual(self.phases,[196,196,196,196])
+        self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
+
+    def test_readiness_timeout_uses_actual_owned_group_stop_and_preserves_cleanup(self):
+        self.clock[0]=114;present=[True];signals=[]
+        proc=SimpleNamespace(pid=77,returncode=None)
+        proc.poll=lambda:proc.returncode
+        def wait(timeout):
+            self.assertEqual(timeout,178);self.clock[0]+=timeout
+            raise subprocess.TimeoutExpired('bootstatus',timeout)
+        proc.wait=wait
+        def killpg(pid,sig):
+            self.assertEqual(pid,77);signals.append(sig)
+            if not present[0]:raise ProcessLookupError()
+            if sig:present[0]=False;proc.returncode=-int(sig)
+        with mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(os,'killpg',side_effect=killpg):
+            with self.assertRaises(subprocess.TimeoutExpired):self.m.wait_ready_once(self.run,self.resources,'owned')
+        self.assertEqual(spawn.call_count,1);self.assertIn(signal.SIGTERM,signals)
+        self.assertEqual(proc.returncode,-15);self.assertFalse(present[0])
+        record=self.run.meta['commands'][0]
+        self.assertTrue(record['owned_group_absent']);self.assertEqual(record['returncode'],-15)
+        self.assertEqual(self.clock[0],292);self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
+        self.assertEqual(self.l.CLEANUP_END,660);self.assertEqual(self.l.TOTAL,780)
+        # Exhausted startup cannot launch installation even though work remains.
+        with mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')) as late:
+            with self.assertRaises(TimeoutError):self.m.install_once(self.run,self.resources,'owned','/fixture/app')
+        late.assert_not_called()
+
+    def test_late_readiness_does_not_spawn_or_extend_an_earlier_phase(self):
+        self.clock[0]=292
+        with mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')) as spawn:
+            with self.assertRaises(TimeoutError):self.m.wait_ready_once(self.run,self.resources,'owned')
+        spawn.assert_not_called();self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
+        self.run.end=150;self.clock[0]=246
+        with mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')) as spawn:
+            with self.assertRaises(TimeoutError):self.m.wait_ready_once(self.run,self.resources,'owned')
+        spawn.assert_not_called();self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,150)
+
+    def test_readiness_cannot_bypass_unresolved_owned_group(self):
+        self.run.meta['commands'].append({'owned_group_absent':False,'owned_process_group':99})
+        with mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')) as spawn:
+            with self.assertRaisesRegex(AssertionError,'Prior owned child group unresolved'):
+                self.m.wait_ready_once(self.run,self.resources,'owned')
+        spawn.assert_not_called();self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,560)
+
     def test_actual_install_command_uses_remaining_original_phase_once(self):
         proc=SimpleNamespace(pid=77,returncode=None)
         def wait(timeout):

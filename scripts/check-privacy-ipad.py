@@ -589,13 +589,8 @@ def worker():
         hosted_only()
         sources = provenance(run)
         runtime, device_type = select_device(run)
-        run.command(['xcodebuild', '-project', 'CleanSend.xcodeproj', '-scheme', SCHEME, '-testPlan', TEST_PLAN,
-                     *(['-configuration', 'Release', 'ENABLE_TESTABILITY=NO'] if CONFIGURATION == 'Release' else []),
-                     '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', DD, '-jobs', '2',
-                     'ARCHS=arm64' if os.uname().machine == 'arm64' else 'ARCHS=x86_64', 'ONLY_ACTIVE_ARCH=YES',
-                     'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-', 'build-for-testing',
-                     '-only-testing:' + TARGET + '/' + CASE], 'build.log', 300)
-        config, payloads = prepare_config(run)
+        # Let owned-device startup overlap the generic Release build without
+        # extending any deadline. Required bootstatus still gates AX5/XCTest.
         name = 'RedactLeaf-Privacy-' + str(uuid.uuid4())
         run.meta['owned_device_name'] = name
         run.persist()
@@ -604,6 +599,13 @@ def worker():
         run.meta['owned_uuid'] = uid
         run.persist()
         run.command(['xcrun', 'simctl', 'boot', uid], 'boot.log', 20)
+        run.command(['xcodebuild', '-project', 'CleanSend.xcodeproj', '-scheme', SCHEME, '-testPlan', TEST_PLAN,
+                     *(['-configuration', 'Release', 'ENABLE_TESTABILITY=NO'] if CONFIGURATION == 'Release' else []),
+                     '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', DD, '-jobs', '2',
+                     'ARCHS=arm64' if os.uname().machine == 'arm64' else 'ARCHS=x86_64', 'ONLY_ACTIVE_ARCH=YES',
+                     'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-', 'build-for-testing',
+                     '-only-testing:' + TARGET + '/' + CASE], 'build.log', 300)
+        config, payloads = prepare_config(run)
         run.command(['xcrun', 'simctl', 'bootstatus', uid, '-b'], 'bootstatus.log', 90)
         readback = configure_system_ax5(run, uid)
         assert readback == AX5

@@ -176,6 +176,7 @@ class Resources:
 
 
 # Absolute offsets from the one original worker start, within WORK_END=560.
+COLD_BOOT_LIMIT=300
 INSTALL_END=196
 INSTALLED_BEFORE_END=226
 TEST_BODY_END=526
@@ -191,6 +192,12 @@ def work_phase(run,resources,deadline):
   yield
   resources.check(run.end)
  finally:run.end=previous
+
+def wait_ready_once(run,resources,uid):
+ # Cold migration shares the original startup phase with installation; the300s
+ # ceiling never extends INSTALL_END or the4s owned-process stop reserve.
+ with work_phase(run,resources,INSTALL_END):
+  return run.command(['xcrun','simctl','bootstatus',uid,'-b'],'bootstatus.log',COLD_BOOT_LIMIT)
 
 def install_once(run,resources,uid,host):
  with work_phase(run,resources,INSTALL_END):
@@ -302,7 +309,8 @@ def worker(start,context):
   name='RedactLeaf-Native-Payment-'+str(uuid.uuid4());run.meta['owned_device_name']=name;run.persist()
   uid=output(['xcrun','simctl','create',name,DEVICE,RUNTIME],'create.txt');uuid.UUID(uid)
   run.meta['owned_uuid']=uid;resources.device=Path.home()/'Library/Developer/CoreSimulator/Devices'/uid;run.persist()
-  command(['xcrun','simctl','boot',uid],'boot.log',20);command(['xcrun','simctl','bootstatus',uid,'-b'],'bootstatus.log',90)
+  command(['xcrun','simctl','boot',uid],'boot.log',20)
+  wait_ready_once(run,resources,uid)
   install_once(run,resources,uid,host)
   with work_phase(run,resources,INSTALLED_BEFORE_END):installed('installed-before.json',initial_install=True)
   assert run.remaining()>=TEST_ADMISSION,'full300s XCTest and final verification admission unavailable'

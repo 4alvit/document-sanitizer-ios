@@ -608,7 +608,7 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertFalse(meta['retry'])
         self.f.assert_cleanup(meta)
 
-    def test_selected_ax5_config_rejects_ambiguous_ui_target_before_device_or_test(self):
+    def test_selected_ax5_config_rejects_ambiguous_ui_target_before_readiness_or_test(self):
         generated = self.f.dd / 'Build/Products/synthetic.xctestrun'
         data = plistlib.loads(generated.read_bytes())
         targets = data['TestConfigurations'][0]['TestTargets']
@@ -618,9 +618,104 @@ class BaselineWorkerTests(unittest.TestCase):
         rc, meta = self.f.run()
         self.assertEqual(rc, 1)
         self.assert_failed(meta, 'AssertionError')
-        self.assertFalse(any(p.step in ('create', 'test') for p in self.f.backend.processes))
+        self.assertEqual(sum(p.step == 'create' for p in self.f.backend.processes), 1)
+        self.assertEqual(sum(p.step == 'boot' for p in self.f.backend.processes), 1)
+        self.assertFalse(any(p.step in ('bootstatus', 'set_ax5', 'readback', 'test')
+                             for p in self.f.backend.processes))
         self.assertFalse((self.f.out / 'selected.xctestrun').exists())
         self.assertEqual(generated.read_bytes(), original)
+        self.f.assert_cleanup(meta)
+
+    def test_owned_boot_precedes_build_and_readiness_follows_signature_checks(self):
+        original_popen = self.f.backend.popen
+        observed = []
+
+        def popen(args, **kwargs):
+            if 'build-for-testing' in args:
+                receipt = json.loads((self.f.out / 'metadata.json').read_text())
+                observed.append(receipt['owned_uuid'])
+                self.assertEqual(receipt['owned_uuid'], UID)
+                self.assertEqual([p.step for p in self.f.backend.processes][-2:], ['create', 'boot'])
+                self.assertFalse((self.f.out / 'selected.xctestrun').exists())
+            return original_popen(args, **kwargs)
+
+        with mock.patch.object(subprocess, 'Popen', popen):
+            rc, meta = self.f.run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(observed, [UID])
+        steps = [p.step for p in self.f.backend.processes]
+        self.assertLess(steps.index('boot'), steps.index('build'))
+        self.assertLess(steps.index('build'), steps.index('signature'))
+        self.assertEqual(steps.count('signature'), 2)
+        self.assertLess(max(i for i, step in enumerate(steps) if step == 'signature'), steps.index('bootstatus'))
+        self.assertLess(steps.index('bootstatus'), steps.index('set_ax5'))
+        self.assertLess(steps.index('readback'), steps.index('test'))
+        for step, cap in (('create', 15), ('boot', 20), ('build', 300), ('bootstatus', 90)):
+            processes = [p for p in self.f.backend.processes if p.step == step]
+            self.assertEqual(len(processes), 1)
+            self.assertEqual(processes[0].wait_calls, [cap])
+        self.f.assert_cleanup(meta)
+
+    def test_early_build_failure_still_closes_group_and_removes_owned_device(self):
+        for fault in ('nonzero', 'timeout', 'signal'):
+            with self.subTest(fault=fault):
+                f = Fixture(self)
+                f.backend.fault_step, f.backend.fault = 'build', fault
+                rc, meta = f.run()
+                self.assertEqual(rc, 1)
+                self.assertEqual(meta['owned_uuid'], UID)
+                self.assertEqual(sum(p.step == 'create' for p in f.backend.processes), 1)
+                self.assertEqual(sum(p.step == 'boot' for p in f.backend.processes), 1)
+                build = next(p for p in f.backend.processes if p.step == 'build')
+                self.assertIsNotNone(build.returncode)
+                self.assertFalse(build.group_present)
+                command = next(c for c in meta['commands'] if c.get('owned_process_group') == build.pid)
+                self.assertTrue(command['owned_group_absent'])
+                self.assertFalse(any(p.step in ('signature', 'bootstatus', 'set_ax5', 'readback', 'test')
+                                     for p in f.backend.processes))
+                self.assertFalse(meta['retry'])
+                f.assert_cleanup(meta)
+
+    def test_signature_failure_after_early_boot_does_not_start_readiness_or_test(self):
+        self.f.backend.fault_step, self.f.backend.fault = 'signature', 'nonzero'
+        rc, meta = self.f.run()
+        self.assertEqual(rc, 1)
+        self.assertEqual(meta['owned_uuid'], UID)
+        self.assert_failed(meta, 'aut-signature.log exited 7')
+        self.assertFalse(any(p.step in ('bootstatus', 'set_ax5', 'readback', 'test')
+                             for p in self.f.backend.processes))
+        self.f.assert_cleanup(meta)
+
+    def test_build_elapsed_time_is_not_renewed_for_readiness_or_downstream_work(self):
+        for elapsed, expected_boot, expected_test in ((246.0, 90, 300), (300.0, 90, 256), (500.0, 56, None)):
+            with self.subTest(build_elapsed=elapsed):
+                f = Fixture(self)
+                f.backend.bootstatus_elapsed = elapsed
+                f.backend.readback_elapsed = None
+                original_complete = f.backend.complete
+
+                def complete(proc):
+                    if proc.step == 'build':
+                        f.clock.value += elapsed
+                    original_complete(proc)
+
+                with mock.patch.object(f.backend, 'complete', complete):
+                    rc, meta = f.run()
+                bootstatus = next(p for p in f.backend.processes if p.step == 'bootstatus')
+                self.assertEqual(bootstatus.wait_calls, [expected_boot])
+                if expected_test is None:
+                    self.assertEqual(rc, 1)
+                    self.assertEqual(f.test_processes(), [])
+                    self.assertFalse(any(p.step in ('set_ax5', 'readback') for p in f.backend.processes))
+                else:
+                    self.assertEqual(rc, 0)
+                    self.assertEqual(f.test_processes()[0].wait_calls, [expected_test])
+                self.assertEqual(meta['phase_deadlines_seconds'],
+                                 {'work': 560, 'recovery': 582, 'shutdown': 619,
+                                  'delete': 638, 'absence': 660, 'evidence': 772})
+                self.assertEqual(meta['total_seconds'], 780)
+                self.assertFalse(meta['retry'])
+                f.assert_cleanup(meta)
 
     def test_manual_attempt_identity_paths_and_worker_receipts(self):
         with mock.patch.dict(os.environ, {'GITHUB_RUN_ID': '40631521600', 'GITHUB_RUN_ATTEMPT': '2'}):
