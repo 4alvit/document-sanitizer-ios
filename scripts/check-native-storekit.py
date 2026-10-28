@@ -70,12 +70,15 @@ def accepted_cases(data):
  assert len(actual)==8 and len(set(actual))==8 and set(actual)==CASES
  return sorted(actual)
 
-def write_small(path,value,start):
- assert time.monotonic()<start+780
- raw=(json.dumps(value,indent=2)+'\n').encode();assert len(raw)<=1024*1024
+def write_small(path,value,start,*,deadline=None):
+ end=min(start+780,deadline if deadline is not None else start+780)
+ def check():assert time.monotonic()<end
+ check()
+ raw=(json.dumps(value,indent=2)+'\n').encode();check();assert len(raw)<=1024*1024
  with path.open('xb') as stream:
-  assert time.monotonic()<start+780;assert stream.write(raw)==len(raw);stream.flush();os.fsync(stream.fileno())
- assert time.monotonic()<start+780
+  check();assert stream.write(raw)==len(raw);check()
+  stream.flush();check();os.fsync(stream.fileno());check()
+ check()
 
 def prepare_context(start):
  global SCOPE,OWNED_ROOT
@@ -180,6 +183,28 @@ def phase_payload_inventory(run,resources,evidence,budget,path):
  check();result=evidence.payload_inventory(path,budget,check);check()
  return result
 
+def persist_installed_payload(run,resources,path,files,expected,receipt_path):
+ differences=[]
+ for name in sorted(set(files)|set(expected)):
+  actual,wanted=files.get(name),expected.get(name)
+  if actual==wanted:continue
+  kind='added' if name not in expected else 'missing' if name not in files else 'changed'
+  fields=[]
+  if kind=='changed':
+   if bool(actual.get('directory'))!=bool(wanted.get('directory')):fields.append('type')
+   if actual.get('mode')!=wanted.get('mode'):fields.append('mode')
+   if actual.get('sha256')!=wanted.get('sha256'):fields.append('sha256')
+   if set(actual)!=set(wanted):fields.append('entry_fields')
+  differences.append({'path':name,'change':kind,'fields':fields,'expected':wanted,'actual':actual})
+ exact=files==expected
+ receipt={'path':str(path),'exact_payload':exact,'files':files,'differences':differences,
+          'expected_entries':len(expected),'actual_entries':len(files)}
+ resources.check(run.end)
+ write_small(receipt_path,receipt,run.start,deadline=run.start+run.end)
+ resources.check(run.end)
+ assert exact,'installed payload differs from compiled host; bounded inventory saved'
+ return receipt
+
 def native_test_end(run,now):
  assert run.remaining()>=TEST_ADMISSION,'300s XCTest and final verification admission unavailable'
  return min(now+300,run.start+TEST_BODY_END)
@@ -211,8 +236,8 @@ def worker(start,context):
   value=output(['xcrun','simctl','get_app_container',uid,APP_ID,'app'],name+'-path.txt')
   path=Path(value);assert path.is_absolute() and str(path)==str(path.resolve()) and path.is_relative_to(resources.device/'data')
   resources.check(run.end)
-  files=phase_payload_inventory(run,resources,e,b,path);assert files==expected
-  resources.check(run.end);l.save(SCOPE/name,{'path':str(path),'exact_payload':True,'files':files});resources.check(run.end)
+  files=phase_payload_inventory(run,resources,e,b,path)
+  persist_installed_payload(run,resources,path,files,expected,SCOPE/name)
   return path
  try:
   names=output(['git','ls-files'],'tracked-files.txt').splitlines();assert 0<len(names)<=1000

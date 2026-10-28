@@ -169,4 +169,45 @@ class NativeStartupBudgetTests(unittest.TestCase):
         with self.assertRaises(AssertionError):self.m.phase_payload_inventory(self.run,self.resources,SimpleNamespace(payload_inventory=inventory),None,'/fixture/app')
         self.assertEqual(self.phases,[560,560,560])
 
+class InstalledInventoryReceiptTests(unittest.TestCase):
+    def setUp(self):
+        self.m=load('native_inventory_receipt',DRIVER)
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.path=Path(self.temp.name).resolve()/'installed-before.json'
+        self.clock=[100.0];self.run=SimpleNamespace(start=100.0,end=226)
+        self.patch=mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]);self.patch.start();self.addCleanup(self.patch.stop)
+        self.resources=SimpleNamespace(check=lambda phase:self.assertLess(self.clock[0],self.run.start+phase))
+    def test_mismatch_is_persisted_then_rejected_with_sorted_exact_changes(self):
+        expected={'.':{'directory':True,'mode':'0755'},'remove':{'mode':'0644','sha256':'a'},'mode':{'mode':'0644','sha256':'b'},'hash':{'mode':'0644','sha256':'c'},'type':{'directory':True,'mode':'0755'}}
+        actual={'.':expected['.'],'add':{'mode':'0644','sha256':'d'},'mode':{'mode':'0600','sha256':'b'},'hash':{'mode':'0644','sha256':'changed'},'type':{'mode':'0755','sha256':'e'}}
+        with self.assertRaisesRegex(AssertionError,'inventory saved'):self.m.persist_installed_payload(self.run,self.resources,'/fixture/app',actual,expected,self.path)
+        saved=json.loads(self.path.read_bytes());self.assertFalse(saved['exact_payload']);self.assertEqual(saved['files'],actual)
+        self.assertEqual([r['path'] for r in saved['differences']],['add','hash','mode','remove','type'])
+        rows={r['path']:r for r in saved['differences']}
+        self.assertEqual(rows['add']['change'],'added');self.assertEqual(rows['remove']['change'],'missing')
+        self.assertEqual(rows['mode']['fields'],['mode']);self.assertEqual(rows['hash']['fields'],['sha256']);self.assertIn('type',rows['type']['fields'])
+        for name,row in rows.items():self.assertEqual(row['actual'],actual.get(name));self.assertEqual(row['expected'],expected.get(name))
+    def test_exact_payload_still_saves_truthful_success(self):
+        files={'.':{'directory':True,'mode':'0755'},'main':{'mode':'0755','sha256':'abc'}}
+        saved=self.m.persist_installed_payload(self.run,self.resources,'/fixture/app',files,files,self.path)
+        self.assertTrue(saved['exact_payload']);self.assertEqual(saved['differences'],[]);self.assertEqual(json.loads(self.path.read_bytes()),saved)
+    def test_expired_phase_and_oversize_receipt_fail_before_write(self):
+        self.clock[0]=326
+        with self.assertRaises(AssertionError):self.m.persist_installed_payload(self.run,self.resources,'/fixture/app',{}, {},self.path)
+        self.assertFalse(self.path.exists());self.clock[0]=100
+        actual={'large':{'mode':'0644','sha256':'x'*(1024*1024)}}
+        with self.assertRaises(AssertionError):self.m.persist_installed_payload(self.run,self.resources,'/fixture/app',actual,{},self.path)
+        self.assertFalse(self.path.exists())
+    def test_phase_expiring_during_serialization_never_opens_output(self):
+        original=self.m.json.dumps
+        def encode_then_expire(*args,**kwargs):
+            raw=original(*args,**kwargs);self.clock[0]=self.run.start+self.run.end;return raw
+        with mock.patch.object(self.m.json,'dumps',side_effect=encode_then_expire),mock.patch.object(Path,'open') as opened:
+            with self.assertRaises(AssertionError):self.m.persist_installed_payload(self.run,self.resources,'/fixture/app',{}, {},self.path)
+        opened.assert_not_called();self.assertFalse(self.path.exists())
+    def test_existing_receipt_is_not_overwritten(self):
+        self.path.write_bytes(b'original')
+        with self.assertRaises(FileExistsError):self.m.persist_installed_payload(self.run,self.resources,'/fixture/app',{}, {},self.path)
+        self.assertEqual(self.path.read_bytes(),b'original')
+
 if __name__=='__main__':unittest.main()

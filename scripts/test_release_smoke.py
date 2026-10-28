@@ -84,7 +84,7 @@ class HostedPreparationTests(unittest.TestCase):
         for n,v in runner_files.items():payloads['runner/'+n]=(v,stat.S_IFREG|int(modes[n]['mode'],8))
         if fault=='mode':payloads['runner/Frameworks/XCTest.framework/XCTest']=(b'framework',0o100644)
         provenance={'published_head':self.head,'run_id':'123','run_attempt':'1','build_configuration':'Release','sdk':'18.5','xcode':'Xcode 16.4\nBuild version 16F6','equal_trees':True,'actual_tree':self.tree,'head_tree':self.tree,'actual_checkout':self.checkout,'source_files':source_hashes}
-        metadata={'source_and_built_payloads_unchanged':True,'device_removed':True,'cleanup':{'shutdown':0,'delete':0},'xcodebuild_returncode':0,'failures':[],'runtime':{'identifier':'com.apple.CoreSimulator.SimRuntime.iOS-18-5'},'device_type':{'identifier':'com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4-16GB'}}
+        metadata={'commands':[{'args':['xcodebuild','-scheme','CleanSendPrivacyRelease','-configuration','Release','ENABLE_TESTABILITY=NO','build-for-testing'],'returncode':0,'owned_group_absent':True}],'source_and_built_payloads_unchanged':True,'device_removed':True,'cleanup':{'shutdown':0,'delete':0},'xcodebuild_returncode':0,'failures':[],'runtime':{'identifier':'com.apple.CoreSimulator.SimRuntime.iOS-18-5'},'device_type':{'identifier':'com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4-16GB'}}
         privacy={'tested-payloads.zip':archive(payloads),'generated-original.xctestrun':self.template,'selected.xctestrun':self.template,'source-provenance.json':encoded(provenance),'metadata.json':encoded(metadata),'summary.json':encoded({'passedTests':1,'failedTests':0,'skippedTests':0,'totalTestCount':1}),'selected-cases.json':b'{}','invocation.json':b'{}'}
         for when in ('before','after'):
             privacy['payload-'+when+'.json']=encoded(before)
@@ -156,6 +156,83 @@ class HostedPreparationTests(unittest.TestCase):
         self.assertNotIn(b'/producer',raw);self.assertEqual(target['MaximumTestExecutionTimeAllowance'],240)
         selected=Path(binding['selected_test_source_path']);selected.write_bytes(b'changed')
         with self.assertRaises(AssertionError):self.config.verify_runner(binding)
+    def configured_fixture(self,change=None):
+        self.inputs()
+        raw=(ROOT/'scripts/fixtures/release-ui-template.xctestrun').read_bytes()
+        self.assertEqual(digest(raw),'77b44d732bf2ccee2242edf444ca9ef02eec560f62c820a3cd83506ecd912acb')
+        template=plistlib.loads(raw)
+        if change:change(template['TestConfigurations'][0]['TestTargets'][0])
+        # The control uses the exact observed template shape, with only public
+        # placeholders; artifact paths and binaries remain inert local fixtures.
+        raw=plistlib.dumps(template)
+        with zipfile.ZipFile(io.BytesIO(self.zips[12])) as z:
+            files={row.filename:z.read(row) for row in z.infolist()}
+        files['generated-original.xctestrun']=raw
+        self.zips[12]=archive(files)
+        row=self.listing['artifacts'][1];row.update(size_in_bytes=len(self.zips[12]),digest='sha256:'+digest(self.zips[12]))
+        self.assertEqual(self.execute()['status'],'prepared')
+        app=self.root/'installed/CleanSend.app';(app/'PlugIns/CleanSendShare.appex').mkdir(parents=True)
+        dev=self.root/'Developer';framework=dev/'Platforms/iPhoneSimulator.platform/Developer/Library/Frameworks/XCTest.framework';framework.mkdir(parents=True);(framework/'XCTest').write_bytes(b'fixture')
+        (dev/'Platforms/iPhoneSimulator.platform/Developer/usr/lib').mkdir(parents=True)
+        return app,dev
+
+    def test_observed_generated_AUT_environment_is_validated_and_fully_removed(self):
+        app,dev=self.configured_fixture();state={};out=self.root/'config'
+        receipt=self.config.prepare(app,dev,out,self.scope/'runner-binding.json',self.scope/'privacy-inputs/generated-original.xctestrun',self.head,self.tree,state)
+        encoded=(out/'exact-package-share.xctestrun').read_bytes();target=plistlib.loads(encoded)['TestConfigurations'][0]['TestTargets'][0]
+        self.assertEqual(target['UITargetAppEnvironmentVariables'],{});self.assertEqual(target['UITargetAppCommandLineArguments'],[])
+        self.assertEqual(target['OnlyTestIdentifiers'],[self.config.CASE]);self.assertEqual(state['stage'],'prepared')
+        self.assertEqual(len(receipt['target_changes']['UITargetAppEnvironmentVariables']['before']),8)
+        for unwanted in (b'/producer',b'__TESTROOT__',b'Debug-iphonesimulator',b'storekit',b'commerce'):
+            self.assertNotIn(unwanted,encoded.lower() if unwanted in (b'storekit',b'commerce') else encoded)
+
+    def test_unknown_or_value_changed_AUT_environment_fails_with_safe_stage(self):
+        app,dev=self.configured_fixture();original=(self.scope/'privacy-inputs/generated-original.xctestrun').read_bytes()
+        binding_path=self.scope/'runner-binding.json';binding=json.loads(binding_path.read_bytes())
+        run=load('smoke_failure_frames',SMOKE/'run.py')
+        for key,value in [('UNEXPECTED_SEED','sensitive-fixture-value'),('APP_DISTRIBUTOR_ID_OVERRIDE','unexpected'),('DYLD_LIBRARY_PATH','/wrong/products')]:
+            with self.subTest(key=key):
+                data=plistlib.loads(original);data['TestConfigurations'][0]['TestTargets'][0]['UITargetAppEnvironmentVariables'][key]=value;raw=plistlib.dumps(data)
+                template=self.root/(key+'.xctestrun');template.write_bytes(raw);binding['template_sha256']=digest(raw);binding_path.write_text(json.dumps(binding));state={};out=self.root/('out-'+key)
+                try:self.config.prepare(app,dev,out,binding_path,template,self.head,self.tree,state)
+                except AssertionError as error:failure=run.failure_detail(error)
+                else:self.fail('unexpected AUT environment accepted')
+                self.assertEqual(state['stage'],'AUT_environment');self.assertFalse(out.exists())
+                self.assertEqual(failure['type'],'AssertionError');self.assertTrue(any(row['file']=='config.py' and row['function']=='prepare' for row in failure['frames']))
+                self.assertNotIn(value,json.dumps(failure));self.assertNotIn(str(self.root),json.dumps(failure))
+
+    def test_commerce_and_template_integrity_guards_remain_strict(self):
+        app,dev=self.configured_fixture(lambda target:target.update(StoreKitConfigurationFilePath='fixture.storekit'))
+        state={};out=self.root/'config';binding=self.scope/'runner-binding.json';template=self.scope/'privacy-inputs/generated-original.xctestrun'
+        with self.assertRaises(AssertionError):self.config.prepare(app,dev,out,binding,template,self.head,self.tree,state)
+        self.assertEqual(state['stage'],'final_template_guards');self.assertFalse(out.exists())
+        template.write_bytes(template.read_bytes()+b' ');state={}
+        with self.assertRaises(AssertionError):self.config.prepare(app,dev,out,binding,template,self.head,self.tree,state)
+        self.assertEqual(state['stage'],'immutable_binding');self.assertFalse(out.exists())
+
+    def test_new_compiled_test_bundle_and_prebuilt_carrier_have_distinct_provenance(self):
+        runner=self.root/'carrier/CleanSendUITests-Runner.app';unit=runner/'PlugIns/CleanSendUITests.xctest';unit.mkdir(parents=True)
+        developer=self.root/'Developer';template=developer/'Platforms/iPhoneSimulator.platform/Developer/Library/Xcode/Agents/XCTRunner.app/Info.plist';template.parent.mkdir(parents=True)
+        carrier_info={'CFBundleIdentifier':'io.github.4alvit.cleansend.uitests.xctrunner','MinimumOSVersion':'13.0','DTXcodeBuild':'16F1t','DTSDKName':'iphonesimulator18.4.internal','DTSDKBuild':'22E169','DTPlatformName':'iphonesimulator','DTPlatformVersion':'18.4','DTPlatformBuild':'22E169'}
+        unit_info={'CFBundleIdentifier':'io.github.4alvit.cleansend.uitests','MinimumOSVersion':'17.0','DTXcodeBuild':'16F6','DTSDKName':'iphonesimulator18.5','DTPlatformName':'iphonesimulator'}
+        context={'head':self.head,'tree':self.tree,'checkout':self.checkout,'run':'123','attempt':'1','xcode_build':'16F6','runtime_version':'18.5'}
+        producer={k:context[k]for k in ('head','tree','checkout','run','attempt')};producer.update(configuration='Release',xcode='Xcode 16.4\nBuild version 16F6',sdk='18.5')
+        binding={'runner':str(runner),'producer':producer,'runner_entries':{}}
+        def write_infos():
+            for name,value in [('Info.plist',carrier_info),('PlugIns/CleanSendUITests.xctest/Info.plist',unit_info)]:
+                raw=plistlib.dumps(value);(runner/name).write_bytes(raw);binding['runner_entries'][name]={'sha256':digest(raw)}
+        write_infos();template.write_bytes(plistlib.dumps(carrier_info));checks=[]
+        result=self.config.runner_toolchain(binding,developer,context,lambda:checks.append(True))
+        self.assertTrue(result['carrier_matches_selected_Xcode_template']);self.assertEqual(result['test_bundle_Info']['DTXcodeBuild'],'16F6');self.assertEqual(result['carrier_metadata']['DTXcodeBuild'],'16F1t');self.assertGreater(len(checks),3)
+        producer['sdk']='18.4'
+        with self.assertRaises(AssertionError):self.config.runner_toolchain(binding,developer,context,lambda:None)
+        producer['sdk']='18.5';unit_info['DTXcodeBuild']='16F1t';write_infos()
+        with self.assertRaises(AssertionError):self.config.runner_toolchain(binding,developer,context,lambda:None)
+        unit_info['DTXcodeBuild']='16F6';unit_info['DTSDKName']='iphonesimulator18.4';write_infos()
+        with self.assertRaises(AssertionError):self.config.runner_toolchain(binding,developer,context,lambda:None)
+        unit_info['DTSDKName']='iphonesimulator18.5';write_infos();wrong=dict(carrier_info,DTXcodeBuild='wrong');template.write_bytes(plistlib.dumps(wrong))
+        with self.assertRaises(AssertionError):self.config.runner_toolchain(binding,developer,context,lambda:None)
+
     def test_native_command_uses_original_remaining_work_after_preflight(self):
         lifecycle=load('smoke_lifecycle_test',SMOKE/'lifecycle.py')
         lifecycle.OUT=self.root

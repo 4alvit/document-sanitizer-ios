@@ -45,6 +45,7 @@ def validate_grant(path):
  assert ASSETS==expected/'release-assets' and BINDING==expected/'runner-binding.json' and TEMPLATE==expected/'privacy-inputs/generated-original.xctestrun'
  ZIP=ASSETS/'RedactLeaf-adhoc-simulator.zip';BUNDLE=SCOPE/'extracted/CleanSend.app'
  ZIP_SHA=grant['adhoc_zip_sha256'];PAYLOAD_SHA=grant['payload_manifest_sha256'];HEAD=grant['head']
+ assert sha(BINDING)==grant['runner_binding_sha256']
  return grant
 
 class Resources:
@@ -104,6 +105,13 @@ def extract_exact(b,e,resources,expected):
      finally:os.close(target)
  assert e.payload_inventory(BUNDLE,b,resources.check)==expected
 
+def failure_detail(error):
+ frames=[];trace=error.__traceback__
+ while trace is not None:
+  frames.append({'file':Path(trace.tb_frame.f_code.co_filename).name,'function':trace.tb_frame.f_code.co_name,'line':trace.tb_lineno});trace=trace.tb_next
+ return {'type':type(error).__name__,'frames':frames[-4:]}
+
+
 def worker(start,grant):
  b,e,l,c=load('window_budget'),load('evidence'),load('bounded_lifecycle'),load('prepare_config')
  l.OUT=SCOPE;l.ROOT=HERE;l.CONFIGURATION='Release'
@@ -151,12 +159,15 @@ def worker(start,grant):
   assert version(device[0]['minRuntimeVersionString'])<=version(grant['runtime_version'])<=version(device[0]['maxRuntimeVersionString'])
   appinfo=plistlib.loads((BUNDLE/'Info.plist').read_bytes());assert version(appinfo['MinimumOSVersion'])<=version(grant['runtime_version'])
   run.meta['runtime']=runtime[0];run.meta['device_type']=device[0]
-  config=c.prepare(BUNDLE,developer,SCOPE/'config',BINDING,TEMPLATE,HEAD,grant['tree'])
+  run.meta['phase']='config.prepare';run.meta['config_preparation']={};run.persist()
+  config=c.prepare(BUNDLE,developer,SCOPE/'config',BINDING,TEMPLATE,HEAD,grant['tree'],run.meta['config_preparation'])
   encoded=(SCOPE/'config/exact-package-share.xctestrun').read_bytes()
   assert b'storekit' not in encoded.lower() and b'commerce' not in encoded.lower(),'commerce configuration rejected'
   frozen=json.loads(BINDING.read_bytes())
-  assert frozen['runner_Info']['DTXcodeBuild']==grant['xcode_build']
+  run.meta['phase']='runner_toolchain'
+  run.meta['runner_toolchain']=c.runner_toolchain(frozen,developer,grant,resources.check)
   assert version(frozen['runner_Info']['MinimumOSVersion'])<=version(grant['runtime_version'])
+  run.meta['phase']='package_smoke'
   for label,bundle in [('app',BUNDLE),('extension',BUNDLE/'PlugIns/CleanSendShare.appex'),('runner',Path(frozen['runner']))]:
    command(['codesign','--verify','--strict','--all-architectures',bundle],'signature-'+label+'.log',15)
   assert run.remaining()>=304,'insufficient test admission before device creation'
@@ -210,7 +221,8 @@ def worker(start,grant):
    run.meta['share_copy_cleanup']=sampler.assert_workflow()
   assert e.payload_inventory(BUNDLE,b,resources.check)==expected
   run.meta['original_extracted_payload_unchanged']=True
- except BaseException as error:failures.append(repr(error))
+ except BaseException as error:
+  run.meta['primary_error']=failure_detail(error);failures.append(type(error).__name__)
  finally:
   mark_cleanup(run,start,failures,l)
   run.end=l.RECOVERY_END
@@ -247,6 +259,7 @@ def worker(start,grant):
   try:
    resources.check(772)
    assert sha(ZIP)==ZIP_SHA and sha(ASSETS/'payload-sha256.json')==PAYLOAD_SHA
+   assert sha(BINDING)==grant['runner_binding_sha256']
    c.verify_runner(json.loads(BINDING.read_bytes()));run.meta['runner_and_package_unchanged']=True
   except BaseException as error:failures.append('final integrity/resources: '+repr(error))
   run.meta.update(result='failed' if failures else 'passed_pending_independent_review',failures=failures,finished_at=l.now(),elapsed_seconds=time.monotonic()-start,maximum_observed_owned_allocation=resources.maximum)
