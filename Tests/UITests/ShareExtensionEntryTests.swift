@@ -77,7 +77,13 @@ final class ShareExtensionEntryTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
-        XCTAssertTrue(app.buttons["sample-button"].waitForExistence(timeout: 10))
+        guard app.buttons["sample-button"].waitForExistence(timeout: 10) else {
+            XCTFail("The initial workspace did not become ready after launch.")
+            throw NSError(domain: "CleanSendShareEntryTests", code: 1)
+        }
+        // The external exact-package observer must bind after this launch has
+        // recreated Workspace's temporary directory, and before any export.
+        FileHandle.standardOutput.write(Data("REDACT_PACKAGE_WORKSPACE_READY format=\(format)\n".utf8))
         reveal(app.buttons["sample-button"], in: app.scrollViews["workspace-scroll"])
         app.buttons["sample-button"].tap()
         XCTAssertTrue(app.buttons["review-button"].waitForExistence(timeout: 10))

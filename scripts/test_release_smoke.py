@@ -1,5 +1,6 @@
 """Small same-run preparation/config controls: inert ZIPs, fake transport, no native work."""
 import contextlib
+import ast
 import hashlib
 import importlib.util
 import io
@@ -615,6 +616,127 @@ class PackageRunnerReadmissionTests(unittest.TestCase):
             self.new.rename(old);shutil.copytree(old,self.new)
         with self.assertRaisesRegex(AssertionError,'while recording evidence'):
             self.r.verify_package_runner(self.new,self.device,self.UID,self.before['files'],self.b,self.e,self.check,replace,baseline=self.before,started_log=self.START)
+
+
+class PackageObservationRootTests(unittest.TestCase):
+    UID='11111111-1111-4111-8111-111111111111'
+    FIRST='22222222-2222-4222-8222-222222222222'
+    SECOND='33333333-3333-4333-8333-333333333333'
+    GROUP='44444444-4444-4444-8444-444444444444'
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.home=Path(self.temp.name).resolve();self.device=self.home/'Devices'/self.UID
+        self.data=self.device/'data/Containers/Data/Application'/self.FIRST
+        self.new=self.data.with_name(self.SECOND)
+        self.group=self.device/'data/Containers/Shared/AppGroup'/self.GROUP
+        for path in (self.data,self.new,self.group):path.mkdir(parents=True)
+        self.r=load('observation_run',SMOKE/'run.py');self.e=load('observation_evidence',SMOKE/'evidence.py');self.b=load('observation_window',SMOKE/'window.py')
+        self.expired=False;self.before=self.bind(self.data)
+        self.ready=self.r.CASE_STARTED+b'\n'+self.r.WORKSPACE_READY
+        for patch in (mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')),
+                      mock.patch.object(os,'killpg',side_effect=AssertionError('signals forbidden'))):
+            patch.start();self.addCleanup(patch.stop)
+    def check(self):
+        if self.expired:raise TimeoutError('original phase deadline')
+    def bind(self,data,baseline=None,log=None,group=None):
+        return self.r.verify_observation_roots(data,group or self.group,self.device,self.UID,self.b,self.check,baseline=baseline,started_log=log)
+    def during(self):return self.bind(self.new,self.before,self.ready)
+    def test_actual_worker_sequence_waits_for_late_aut_ready_with_same_data_container(self):
+        # Execute the worker's real three observation branches in sequence. All
+        # process/native operations are mocked; the container filesystem is real.
+        worker=next(n for n in ast.parse((SMOKE/'run.py').read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='worker')
+        loop=next(n for n in ast.walk(worker) if isinstance(n,ast.While) and ast.unparse(n.test)=='proc.poll() is None')
+        branches=[n for n in loop.body if isinstance(n,ast.If)]
+        self.assertEqual(len(branches),3)
+        step=compile(ast.fix_missing_locations(ast.Module(body=branches,type_ignores=[])),'actual-worker-observation','exec')
+        tmp=self.data/'tmp/CleanSend';tmp.mkdir(parents=True)
+        prelaunch=self.e.Observer(self.b,self.check);prelaunch.started=time.monotonic()
+        prelaunch.event(self.group/'SharedInbox',tmp,io.BytesIO())
+        sampler=self.e.Observer(self.b,self.check);sampler.started=time.monotonic();events=io.BytesIO();queried=[]
+        def container(kind,name):
+            queried.append(name);return self.data if kind=='data' else self.group
+        env=dict(vars(self.r),during=False,observation_roots=None,tail=self.r.CASE_STARTED,
+            installed=mock.Mock(),container=container,initial_roots=self.before,
+            resources=SimpleNamespace(device=self.device,check=self.check),uid=self.UID,b=self.b,
+            sampler=sampler,events=events,run=SimpleNamespace(meta={'container_observation':{}},persist=lambda:None))
+        exec(step,env)
+        self.assertTrue(env['during']);self.assertIsNone(env['observation_roots'])
+        self.assertEqual(queried,[]);self.assertEqual(sampler.events,[])
+        # Workspace.init has not run at case start. It now replaces the same
+        # path's directory; retaining the old root inode would fail here.
+        tmp.rename(tmp.with_name('old-CleanSend'));tmp.mkdir()
+        env['tail']=self.r.CASE_STARTED+b'\n'+self.r.WORKSPACE_READY[:-1]
+        exec(step,env);self.assertEqual(sampler.events,[])
+        env['tail']+=b'\n';exec(step,env)
+        self.assertTrue(env['run'].meta['container_observation']['case_baseline_empty'])
+        self.assertEqual(len(queried),2);self.assertEqual(env['installed'].call_count,1)
+        self.assertEqual(sampler.roots[str(tmp)],(tmp.stat().st_dev,tmp.stat().st_ino))
+        export=tmp/'document.pdf';export.write_bytes(b'current export')
+        ready=self.group/'SharedInbox/batch.ready';ready.mkdir(parents=True)
+        (ready/'copy.pdf').write_bytes(b'current export');exec(step,env)
+        export.unlink();shutil.rmtree(ready);exec(step,env)
+        self.assertEqual(sampler.assert_workflow()['matched_hashes'],[digest(b'current export')])
+        self.assertEqual(len(queried),2)  # No second admission or repeated native lookup.
+
+    def test_real_export_hash_matches_only_current_data_root_and_final_cleanup_stays_required(self):
+        during=self.during();self.assertNotEqual(during['data'],self.before['data'])
+        observer=self.e.Observer(self.b,self.check);observer.started=time.monotonic();events=io.BytesIO()
+        tmp=self.new/'tmp/CleanSend';tmp.mkdir(parents=True);inbox=self.group/'SharedInbox'
+        state=observer.event(inbox,tmp,events)
+        self.assertFalse(state['group']['entries']);self.assertFalse(state['tmp']['entries'])
+        export=tmp/'export-1';export.mkdir();(export/'document.pdf').write_bytes(b'actual synthetic PDF')
+        ready=inbox/'batch.ready';ready.mkdir(parents=True);(ready/'copy.pdf').write_bytes(b'actual synthetic PDF')
+        observer.event(inbox,tmp,events)
+        with self.assertRaisesRegex(AssertionError,'temporary files remain'):observer.assert_workflow()
+        shutil.rmtree(export);shutil.rmtree(ready);observer.event(inbox,tmp,events)
+        self.assertEqual(observer.assert_workflow()['matched_hashes'],[digest(b'actual synthetic PDF')])
+        self.assertEqual(self.bind(self.new,during),during)
+        stale=self.e.Observer(self.b,self.check);stale.started=time.monotonic()
+        stale.event(inbox,self.data/'tmp/CleanSend',io.BytesIO())
+        with self.assertRaisesRegex(AssertionError,'exactly one exported PDF'):stale.assert_workflow()
+    def test_wrong_export_content_never_matches_queue(self):
+        observer=self.e.Observer(self.b,self.check);observer.started=time.monotonic();events=io.BytesIO()
+        tmp=self.new/'tmp/CleanSend';tmp.mkdir(parents=True);inbox=self.group/'SharedInbox'
+        observer.event(inbox,tmp,events)
+        (tmp/'document.pdf').write_bytes(b'original')
+        ready=inbox/'batch.ready';ready.mkdir(parents=True);(ready/'copy.pdf').write_bytes(b'changed')
+        observer.event(inbox,tmp,events);shutil.rmtree(ready);(tmp/'document.pdf').unlink();observer.event(inbox,tmp,events)
+        with self.assertRaisesRegex(AssertionError,'exactly one exported PDF'):observer.assert_workflow()
+    def test_rebind_requires_complete_selected_case_and_existing_baseline(self):
+        for log in (b'',self.r.CASE_STARTED,self.ready[:-1],self.ready.replace(b'ShareExtensionEntryTests',b'OtherTests'),self.ready.replace(b'format=PDF',b'format=PNG'),self.r.WORKSPACE_READY+self.r.CASE_STARTED,b'x'*131073):
+            with self.subTest(log=log[:80]),self.assertRaises(AssertionError):self.bind(self.new,self.before,log)
+        with self.assertRaises(AssertionError):self.bind(self.new,None,self.ready)
+        with self.assertRaises(AssertionError):self.bind(self.new,self.before)
+    def test_changed_group_wrong_path_and_device_identity_are_rejected(self):
+        other=self.group.with_name(self.SECOND);other.mkdir()
+        with self.assertRaises(AssertionError):self.bind(self.new,self.before,self.ready,other)
+        for path in (self.group,self.data.parent/'not-a-uuid',self.home/'outside'):
+            with self.subTest(path=str(path)),self.assertRaises((AssertionError,ValueError)):self.bind(path,self.before,self.ready)
+        old=self.device.with_name('old');self.device.rename(old);shutil.copytree(old,self.device)
+        with self.assertRaises(AssertionError):self.during()
+    def test_data_relocation_or_replaced_inode_after_admission_is_rejected(self):
+        during=self.during()
+        with self.assertRaises(AssertionError):self.bind(self.data,during)
+        old=self.new.with_name('old');self.new.rename(old);shutil.copytree(old,self.new)
+        with self.assertRaises(AssertionError):self.bind(self.new,during)
+    def test_symlink_root_and_ancestor_are_never_followed(self):
+        old=self.new.with_name('old');self.new.rename(old);self.new.symlink_to(old,target_is_directory=True)
+        with self.assertRaises(OSError):self.during()
+        self.new.unlink();old.rename(self.new)
+        parent=self.new.parent;old=parent.with_name('old-parent');parent.rename(old);parent.symlink_to(old,target_is_directory=True)
+        with self.assertRaises(OSError):self.during()
+    def test_replacement_during_admission_and_expired_original_deadline_fail(self):
+        original=self.b.directory;calls=[0]
+        @contextlib.contextmanager
+        def changing(path):
+            with original(path) as fd:
+                yield fd
+            calls[0]+=1
+            if calls[0]==3:
+                old=self.new.with_name('old');self.new.rename(old);shutil.copytree(old,self.new)
+        with mock.patch.object(self.b,'directory',changing),self.assertRaises(AssertionError):self.during()
+        self.expired=True
+        with self.assertRaises(TimeoutError):self.during()
 
 
 class PackageResourceScanTests(unittest.TestCase):

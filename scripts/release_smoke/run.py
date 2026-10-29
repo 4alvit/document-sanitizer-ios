@@ -9,6 +9,7 @@ SCOPE=OWNED_ROOT=ASSETS=ZIP=BUNDLE=BINDING=TEMPLATE=None
 ZIP_SHA=PAYLOAD_SHA=HEAD=None
 CASE='CleanSendUITests/ShareExtensionEntryTests/testPDFReceivedByExtensionThenImported'
 CASE_STARTED=b"Test Case '-[CleanSendUITests.ShareExtensionEntryTests testPDFReceivedByExtensionThenImported]' started."
+WORKSPACE_READY=b"REDACT_PACKAGE_WORKSPACE_READY format=PDF\n"
 APP_ID='io.github.4alvit.cleansend';GROUP='group.io.github.4alvit.cleansend'
 CAP=2*2**30;FLOOR=12*2**30
 
@@ -166,6 +167,13 @@ def save_installed_runner(path,value,check):
 def selected_case_started(tail):return CASE_STARTED in tail
 
 
+def selected_workspace_ready(tail):
+ # The test emits this flushed marker only after AUT launch and the initial
+ # workspace control exists. Case start alone precedes Workspace initialization.
+ start=tail.find(CASE_STARTED)
+ return start>=0 and tail.find(WORKSPACE_READY,start+len(CASE_STARTED))>=0
+
+
 def verify_package_runner(root,device,uid,entries,budget,evidence,check,record,*,baseline=None,started_log=None):
  # XCTest may install the identical runner in a fresh bundle container. Admit
  # that transition once, only after the selected case starts; pin it thereafter.
@@ -211,6 +219,36 @@ def verify_package_runner(root,device,uid,entries,budget,evidence,check,record,*
     assert identity(current_device)==device_identity['root_device_inode'] and identity(current_root)==root_identity['root_device_inode'], 'installed runner location changed while recording evidence'
   return evidence.verify_installed_runner(root,entries,budget,check,save,initial_install=first,
    installed_identity=None if first or readmit else {key:baseline[key] for key in ('path','root_device_inode')})
+
+
+def verify_observation_roots(data,group,device,uid,budget,check,*,baseline=None,started_log=None):
+ # XCTest can replace the AUT data container when installing the tested app.
+ # Rebind once after the selected AUT workspace is ready, then pin the roots.
+ check();data,group,device=map(Path,(data,group,device))
+ assert str(uuid.UUID(uid)).upper()==uid and device.name==uid and device.parent.name=='Devices'
+ roots={'device':device,'data':data,'group':group}
+ for label,path in roots.items():
+  assert path.is_absolute() and str(path)==os.path.normpath(str(path))
+  if label!='device':
+   relative=path.relative_to(device).parts
+   prefix=('data','Containers','Data','Application') if label=='data' else ('data','Containers','Shared','AppGroup')
+   assert len(relative)==5 and relative[:4]==prefix
+   assert str(uuid.UUID(relative[4])).upper()==relative[4]
+ def current():
+  values={}
+  for label,path in roots.items():
+   with budget.directory(path) as fd:
+    info=os.fstat(fd);assert stat.S_ISDIR(info.st_mode)
+    values[label]={'path':str(path),'root_device_inode':[info.st_dev,info.st_ino]}
+  check();return values
+ value=current()
+ if started_log is not None:
+  assert baseline is not None and type(started_log) is bytes and len(started_log)<=131072
+  assert selected_workspace_ready(started_log)
+  assert value['device']==baseline['device'] and value['group']==baseline['group']
+ elif baseline is not None:assert value==baseline,'observed container identity changed after admission'
+ assert current()==value,'observed container replaced during admission'
+ return value
 
 
 def wait_for_package_boot(run,resources,uid):
@@ -350,14 +388,19 @@ def worker(start,grant):
   command(['xcrun','simctl','launch',uid,APP_ID],'initial-launch.log',20)
   data=container('data','data-container.txt');group=container(GROUP,'group-container.txt')
   assert data!=group
+  initial_roots=verify_observation_roots(data,group,resources.device,uid,b,resources.check)
+  run.meta['container_observation']={'before':initial_roots};run.persist()
   sampler=e.Observer(b,resources.check);sampler.started=start
   with (SCOPE/'container-events.jsonl').open('xb') as events:
    baseline=sampler.event(group/'SharedInbox',data/'tmp/CleanSend',events)
    assert not baseline['group']['entries'] and not baseline['tmp']['entries']
+   # The empty pre-launch snapshot is separate: Workspace recreates its temp
+   # directory on launch, even when XCTest keeps the same data container.
+   sampler=e.Observer(b,resources.check);sampler.started=start
    assert run.remaining()>=304,'insufficient full300s XCTest admission'
    argv=['xcodebuild','test-without-building','-xctestrun',str(SCOPE/'config/exact-package-share.xctestrun'),'-destination','platform=iOS Simulator,id='+uid,'-parallel-testing-enabled','NO','-maximum-concurrent-test-simulator-destinations','1','-only-testing:'+CASE,'-test-timeouts-enabled','YES','-maximum-test-execution-time-allowance','240','-collect-test-diagnostics','never','-resultBundlePath',str(SCOPE/'result.xcresult')]
    item={'args':argv,'started_at':l.now(),'timeout_seconds':300};run.meta['commands'].append(item);run.persist()
-   proc=None;during=False;tail=b'';log_read=0;end=min(time.monotonic()+300,start+560-4)
+   proc=None;during=False;observation_roots=None;tail=b'';log_read=0;end=min(time.monotonic()+300,start+560-4)
    previous_end=run.end;run.end=min(previous_end,end-start)
    try:
     with (SCOPE/'test.log').open('xb') as log:
@@ -370,16 +413,33 @@ def worker(start,grant):
        tail=(tail+chunk)[-131072:]
        if not during and selected_case_started(tail):
         installed('installed-during.json',started_log=tail);during=True
-       sampler.event(group/'SharedInbox',data/'tmp/CleanSend',events)
+       if observation_roots is None and during and selected_workspace_ready(tail):
+        data=container('data','data-container-during.txt');group=container(GROUP,'group-container-during.txt')
+        observation_roots=verify_observation_roots(data,group,resources.device,uid,b,resources.check,
+         baseline=initial_roots,started_log=tail)
+        run.meta['container_observation']['during']=observation_roots;run.persist()
+        current=sampler.event(group/'SharedInbox',data/'tmp/CleanSend',events)
+        assert not sampler.exported and not sampler.queued and not current['group']['entries'] and not current['tmp']['entries'],'nonempty selected-case inbox/export baseline'
+        run.meta['container_observation']['case_baseline_empty']=True
+        run.meta['container_observation']['workspace_ready_observed']=True;run.persist()
+       if observation_roots is not None:
+        verify_observation_roots(data,group,resources.device,uid,b,resources.check,baseline=observation_roots)
+        sampler.event(group/'SharedInbox',data/'tmp/CleanSend',events)
+        verify_observation_roots(data,group,resources.device,uid,b,resources.check,baseline=observation_roots)
        time.sleep(min(.25,max(0,end-time.monotonic())))
     run.meta['xcodebuild_returncode']=proc.returncode;assert proc.returncode==0
     assert during,'selected testcase was not observed; no inferred installed identity'
+    assert observation_roots is not None,'selected AUT workspace was not observed ready; no inferred export baseline'
    finally:
     if proc is not None:
      l.stop_group(proc,item);item['returncode']=proc.returncode
     item['finished_at']=l.now();run.end=previous_end;run.persist()
    installed('installed-after.json')
+   after_data=container('data','data-container-after.txt');after_group=container(GROUP,'group-container-after.txt')
+   after_roots=verify_observation_roots(after_data,after_group,resources.device,uid,b,resources.check,baseline=observation_roots)
+   run.meta['container_observation']['after']=after_roots;run.persist()
    sampler.event(group/'SharedInbox',data/'tmp/CleanSend',events)
+   verify_observation_roots(data,group,resources.device,uid,b,resources.check,baseline=observation_roots)
    run.meta['share_copy_cleanup']=sampler.assert_workflow()
   assert e.payload_inventory(BUNDLE,b,resources.check)==expected
   run.meta['original_extracted_payload_unchanged']=True
