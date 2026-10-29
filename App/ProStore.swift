@@ -40,6 +40,9 @@ final class ProStore: ObservableObject {
     }
 
     init(source: StoreKitSource) {
+        #if DEBUG && targetEnvironment(simulator)
+        NativeUnitTestHost.recordStoreConstruction()
+        #endif
         self.source = source
         // Start before requesting products so interrupted/Ask to Buy purchases
         // can be delivered even while the paywall is closed.

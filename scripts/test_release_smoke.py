@@ -9,6 +9,8 @@ from pathlib import Path
 import plistlib
 import shutil
 import stat
+import struct
+import time
 import signal
 import subprocess
 import sys
@@ -322,9 +324,13 @@ class HostedPreparationTests(unittest.TestCase):
                     (scope/'metadata.json').write_text(json.dumps({'owner_worker_pid':500,'owned_device_name':'fixture-owned-device','commands':[{'owned_process_group':700,'args':['xcodebuild'],'owned_group_absent':False}]}))
                     return process
                 aggregate=run.aggregate_command_groups
-                with mock.patch.object(run,'load',return_value=lifecycle),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(run.Resources,'check',side_effect=AssertionError('injected allocation floor')),mock.patch.object(run,'await_cleanup_ack',side_effect=subprocess.TimeoutExpired('fixture-worker',3)),mock.patch.object(subprocess,'check_output',return_value='500\n' if correct_parent else '999\n') as parent_lookup,mock.patch.object(os,'getpgid',return_value=700),mock.patch.object(os,'killpg',side_effect=killpg),mock.patch.object(lifecycle,'stop_group',side_effect=lambda proc,row:row.update(owned_group_absent=True)),mock.patch.object(run,'aggregate_command_groups',side_effect=lambda meta,start:aggregate(meta,start,probe=killpg)),mock.patch.object(run,'terminal_stdout',return_value=True):
+                def fail_scan(resources,*_):
+                    resources.first_failure={'operation':'free_floor','root':None,'charged_allocated_bytes':0}
+                    raise AssertionError('injected allocation floor')
+                with mock.patch.object(run,'load',return_value=lifecycle),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(run.Resources,'check',new=fail_scan),mock.patch.object(run,'await_cleanup_ack',side_effect=subprocess.TimeoutExpired('fixture-worker',3)),mock.patch.object(subprocess,'check_output',return_value='500\n' if correct_parent else '999\n') as parent_lookup,mock.patch.object(os,'getpgid',return_value=700),mock.patch.object(os,'killpg',side_effect=killpg),mock.patch.object(lifecycle,'stop_group',side_effect=lambda proc,row:row.update(owned_group_absent=True)),mock.patch.object(run,'aggregate_command_groups',side_effect=lambda meta,start:aggregate(meta,start,probe=killpg)),mock.patch.object(run,'terminal_stdout',return_value=True):
                     self.assertEqual(run.supervise(context,{}),1)
                 receipt=json.loads((scope/'invocation-final.json').read_bytes())
+                self.assertEqual(receipt['resource_scan_first_failure'],{'operation':'free_floor','root':None,'charged_allocated_bytes':0})
                 self.assertNotIn('last_resort_error',receipt)
                 self.assertEqual(parent_lookup.call_args.args[0],['ps','-p','700','-o','ppid='])
                 expected='signal_sent_absence_not_established' if correct_parent else 'identity_mismatch_no_signal'
@@ -439,5 +445,172 @@ class NativeContextInheritanceTests(unittest.TestCase):
         self.assertEqual(observed['XPC_FLAGS'],{'parent_present':True,'child_present':True,'equal_to_parent':False})
         self.assertEqual(observed['__CF_USER_TEXT_ENCODING'],{'parent_present':True,'child_present':True,'equal_to_parent':True})
         self.assertNotIn('not-for-diagnostics',json.dumps(value))
+
+
+class InstalledRunnerLoaderPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name).resolve()
+        self.e=load('loader_policy_evidence',SMOKE/'evidence.py');self.b=load('loader_policy_window',SMOKE/'window.py');self.index=0
+    def fixture(self,kind_override=None):
+        self.index+=1;root=self.root/str(self.index);root.mkdir();root.chmod(0o755)
+        (root/'Runner').write_bytes(b'unchanged main executable');(root/'Runner').chmod(0o755)
+        for name,kind in self.e.INSTALLED_RUNNER_LOADERS.items():
+            path=root/name;path.parent.mkdir(parents=True,exist_ok=True)
+            value=struct.pack('<8I',0xfeedfacf,0x0100000c,0,kind_override or kind,0,0,0,0)
+            path.write_bytes(value);path.chmod(0o755)
+        expected=self.e.payload_inventory(root,self.b,lambda:None)
+        for name in self.e.INSTALLED_RUNNER_LOADERS:(root/name).chmod(0o644)
+        return root,expected
+    def test_exact_observed_nine_loader_transitions_then_strict_baseline(self):
+        root,expected=self.fixture();receipts=[]
+        first=self.e.verify_installed_runner(root,expected,self.b,lambda:None,receipts.append,initial_install=True)
+        self.assertFalse(first['exact_payload']);self.assertTrue(first['accepted_payload']);self.assertEqual(len(first['accepted_install_transitions']),9)
+        self.assertEqual(set(first['loader_headers']),set(self.e.INSTALLED_RUNNER_LOADERS))
+        later=self.e.verify_installed_runner(root,first['files'],self.b,lambda:None,receipts.append)
+        self.assertTrue(later['exact_payload']);self.assertEqual(later['accepted_install_transitions'],[])
+        (root/next(iter(self.e.INSTALLED_RUNNER_LOADERS))).chmod(0o755)
+        with self.assertRaises(AssertionError):self.e.verify_installed_runner(root,first['files'],self.b,lambda:None,receipts.append)
+        self.assertFalse(receipts[-1]['accepted_payload'])
+    def test_replaced_installed_root_is_fatal_even_with_exact_mode_and_content(self):
+        root,expected=self.fixture();receipts=[]
+        first=self.e.verify_installed_runner(root,expected,self.b,lambda:None,receipts.append,initial_install=True)
+        identity={k:first[k] for k in ('path','root_device_inode')}
+        prior=root.with_name(root.name+'-prior');root.rename(prior);shutil.copytree(prior,root)
+        with self.assertRaises(AssertionError):self.e.verify_installed_runner(root,first['files'],self.b,lambda:None,receipts.append,installed_identity=identity)
+        self.assertTrue(receipts[-1]['exact_payload']);self.assertFalse(receipts[-1]['installed_identity_matches'])
+    def test_missing_transition_added_path_hash_directory_main_or_wrong_mode_stays_fatal(self):
+        path=next(iter(self.e.INSTALLED_RUNNER_LOADERS))
+        mutations=[lambda r:(r/path).chmod(0o755),lambda r:(r/'added').write_bytes(b'added'),
+            lambda r:(r/path).write_bytes(b'changed'),lambda r:(r/'Frameworks').chmod(0o711),
+            lambda r:(r/'Runner').chmod(0o644),lambda r:(r/path).chmod(0o600),lambda r:(r/path).unlink()]
+        for mutate in mutations:
+            root,expected=self.fixture();mutate(root);receipts=[]
+            with self.assertRaisesRegex(AssertionError,'bounded inventory saved'):self.e.verify_installed_runner(root,expected,self.b,lambda:None,receipts.append,initial_install=True)
+            self.assertFalse(receipts[-1]['accepted_payload']);self.assertFalse(receipts[-1]['exact_payload'])
+    def test_execute_headers_never_qualify_as_loader_even_with_identical_hashes(self):
+        root,expected=self.fixture(kind_override=2);receipts=[]
+        with self.assertRaises(AssertionError):self.e.verify_installed_runner(root,expected,self.b,lambda:None,receipts.append,initial_install=True)
+        self.assertFalse(receipts[-1]['accepted_payload'])
+    def test_fat_headers_validate_all_slices_and_bounds(self):
+        thin=lambda cpu,kind:struct.pack('<8I',0xfeedfacf,cpu,0,kind,0,0,0,0)
+        a=thin(0x0100000c,6);x=thin(0x01000007,6)
+        fat=struct.pack('>II',0xcafebabe,2)+struct.pack('>5I',0x0100000c,0,48,32,0)+struct.pack('>5I',0x01000007,0,80,32,0)+a+x
+        self.assertEqual(self.e.loader_header_types(fat),[{'cpu':0x0100000c,'filetype':6},{'cpu':0x01000007,'filetype':6}])
+        for bad in (b'',fat[:-1],fat[:48]+b'bad!'+fat[52:],fat[:28]+struct.pack('>5I',0x01000007,0,48,32,0)+a+x):self.assertIsNone(self.e.loader_header_types(bad))
+    def test_initial_policy_not_enabled_for_ordinary_later_comparison(self):
+        root,expected=self.fixture();receipts=[]
+        with self.assertRaises(AssertionError):self.e.verify_installed_runner(root,expected,self.b,lambda:None,receipts.append)
+        self.assertFalse(receipts[-1]['accepted_payload']);self.assertIsNone(receipts[-1]['loader_headers'])
+
+class PackageResourceScanTests(unittest.TestCase):
+    def setUp(self):
+        self.m=load('package_resource_scan',SMOKE/'run.py');self.clock=[101.0]
+        self.m.SCOPE=self.m.OWNED_ROOT=Path('/fixture/private-owned-root')
+        patches=(mock.patch.object(time,'monotonic',new=lambda:self.clock[0]),
+                 mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=32*2**30)),
+                 mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native/network forbidden')),
+                 mock.patch.object(os,'killpg',side_effect=AssertionError('signals forbidden')))
+        for patch in patches:patch.start();self.addCleanup(patch.stop)
+    @staticmethod
+    def info(blocks,mode=0o100600):return SimpleNamespace(st_blocks=blocks,st_mode=mode)
+    def test_complete_two_root_scan_keeps_both_directory_stats_and_all_allocations(self):
+        owned=str(self.m.OWNED_ROOT);device='/fixture/device';device_dirs=['data','link']
+        rows={owned:[(owned,['Products'],['receipt.json']),(owned+'/Products',[],['app'])],
+              device:[(device,device_dirs,[]),(device+'/data',[],['state'])]}
+        values={owned:self.info(4,0o040700),owned+'/Products':self.info(2,0o040700),
+                owned+'/receipt.json':self.info(1),owned+'/Products/app':self.info(5),
+                device:self.info(3,0o040700),device+'/data':self.info(4,0o040700),
+                device+'/link':self.info(1,0o120777),device+'/data/state':self.info(7)}
+        resources=self.m.Resources(100);resources.device=Path(device)
+        with mock.patch.object(Path,'exists',return_value=True),mock.patch.object(os,'walk',side_effect=lambda root,**kw:rows[str(root)]) as walk,mock.patch.object(os,'lstat',side_effect=lambda path:values[path]) as stat_call:
+            resources.check(196)
+        self.assertEqual(resources.maximum,33*512)
+        names=[call.args[0] for call in stat_call.call_args_list]
+        self.assertEqual(len(names),10)  # R + 2D + F = 2 + 4 + 4; no stats omitted.
+        self.assertEqual(names.count(owned+'/Products'),2);self.assertEqual(names.count(device+'/data'),2)
+        self.assertEqual(names.count(device+'/link'),1);self.assertNotIn('link',device_dirs)
+        self.assertEqual([call.kwargs for call in walk.call_args_list],[{'followlinks':False}]*2)
+        self.assertIsNone(resources.first_failure)
+    def test_changed_or_replaced_directory_is_reobserved_at_traversal(self):
+        root=str(self.m.OWNED_ROOT);seen=[]
+        def observe(path):
+            seen.append(path)
+            if path==root:return self.info(1,0o040700)
+            if path==root+'/child':return self.info(2 if seen.count(path)==1 else 20,0o040700)
+            return self.info(3)
+        resources=self.m.Resources(100)
+        with mock.patch.object(os,'walk',return_value=[(root,['child'],[]),(root+'/child',[],['file'])]),mock.patch.object(os,'lstat',side_effect=observe):resources.check(196)
+        self.assertEqual(resources.maximum,(1+2+20+3)*512)
+        self.assertEqual(seen.count(root+'/child'),2)
+    def test_real_walk_does_not_follow_directory_replaced_by_symlink(self):
+        with tempfile.TemporaryDirectory(prefix='native-scan-links-') as temporary:
+            root=Path(temporary)/'owned';outside=Path(temporary)/'outside'
+            root.mkdir();outside.mkdir();child=root/'child';child.mkdir()
+            (child/'old').write_bytes(b'old');(outside/'never-read').write_bytes(b'outside')
+            self.m.OWNED_ROOT=root;resources=self.m.Resources(100)
+            original_walk=os.walk;original_stat=os.lstat;visited=[];stats=[]
+            def changing_walk(*args,**kwargs):
+                self.assertFalse(kwargs['followlinks'])
+                for row in original_walk(*args,**kwargs):
+                    visited.append(row[0]);yield row
+                    if row[0]==str(root):
+                        child.rename(outside/'previous');child.symlink_to(outside,target_is_directory=True)
+            def observe(path,*args,**kwargs):stats.append(os.fspath(path));return original_stat(path,*args,**kwargs)
+            with mock.patch.object(os,'walk',side_effect=changing_walk),mock.patch.object(os,'lstat',side_effect=observe):resources.check(196)
+            self.assertEqual(visited,[str(root)])
+            self.assertFalse(any(name.startswith(str(outside)) for name in stats))
+            self.assertIsNone(resources.first_failure)
+    def test_each_worker_and_supervisor_sample_is_fresh_and_independent(self):
+        root=str(self.m.OWNED_ROOT);blocks=[1];worker=self.m.Resources(100);supervisor=self.m.Resources(100)
+        with mock.patch.object(os,'walk',side_effect=lambda *a,**k:iter([(root,[],[])])),mock.patch.object(os,'lstat',side_effect=lambda path:self.info(blocks[0],0o040700)) as observed:
+            worker.check(196);supervisor.check(772)
+            self.assertEqual(observed.call_count,2)
+            blocks[0]=7;self.clock[0]+=2;worker.check(196)
+            self.assertEqual(worker.maximum,7*512);self.assertEqual(supervisor.maximum,512)
+            supervisor.check(772);self.assertEqual(observed.call_count,4);self.assertEqual(supervisor.maximum,7*512)
+    def test_first_deadline_failure_has_bounded_counters_and_is_not_overwritten(self):
+        root=str(self.m.OWNED_ROOT);resources=self.m.Resources(100)
+        def observe(path):
+            if path!=root:self.clock[0]=296
+            return self.info(1)
+        with mock.patch.object(os,'walk',return_value=[(root,[],['secret-token'])]),mock.patch.object(os,'lstat',side_effect=observe),mock.patch.object(Path,'open',side_effect=AssertionError('failure I/O forbidden')):
+            with self.assertRaisesRegex(AssertionError,'owned stat deadline'):resources.check(196)
+        failure=dict(resources.first_failure)
+        self.assertEqual(failure['operation'],'stat_deadline');self.assertEqual(failure['root'],'owned')
+        self.assertEqual(failure['successful_lstat_count'],2);self.assertEqual(failure['lstat_calls'],2)
+        self.assertEqual(failure['charged_allocated_bytes'],512);self.assertFalse(failure['complete_scan'])
+        self.assertEqual(failure['deadline_monotonic'],296);self.assertEqual(failure['elapsed_seconds'],196)
+        self.assertEqual(failure['roots']['owned']['lstat_calls'],2);self.assertFalse(failure['roots']['owned']['complete'])
+        self.assertLess(len(json.dumps(failure)),2048);self.assertNotIn('secret',json.dumps(failure));self.assertNotIn('/fixture',json.dumps(failure))
+        self.clock[0]=101
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',side_effect=PermissionError('credential must not enter evidence')):
+            with self.assertRaises(PermissionError):resources.check(772)
+        self.assertEqual(resources.first_failure,failure)
+    def test_complete_scan_over_cap_remains_fatal(self):
+        root=str(self.m.OWNED_ROOT);resources=self.m.Resources(100)
+        with mock.patch.object(self.m,'CAP',512),mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',return_value=self.info(2)):
+            with self.assertRaisesRegex(AssertionError,'owned allocation cap'):resources.check(196)
+        failure=resources.first_failure
+        self.assertTrue(failure['complete_scan']);self.assertEqual(failure['charged_allocated_bytes'],1024)
+        self.assertEqual(failure['operation'],'allocation_cap')
+    def test_original100000_entry_ceiling_stops_the_complete_scan(self):
+        root=str(self.m.OWNED_ROOT);resources=self.m.Resources(100)
+        with mock.patch.object(os,'walk',return_value=[(root,[],['file']*100000)]),mock.patch.object(os,'lstat',new=lambda path:self.info(1)):
+            with self.assertRaisesRegex(AssertionError,'owned inventory entry cap'):resources.check(196)
+        failure=resources.first_failure
+        self.assertEqual(failure['successful_lstat_count'],100001);self.assertEqual(failure['lstat_calls'],100001)
+        self.assertEqual(failure['charged_allocated_bytes'],100000*512);self.assertEqual(failure['operation'],'entry_cap')
+    def test_diagnostic_failure_does_not_mask_primary_exception(self):
+        root=str(self.m.OWNED_ROOT);resources=self.m.Resources(100);primary=PermissionError('private text')
+        def fail(path):
+            self.clock[0]=None
+            raise primary
+        def clock():
+            if self.clock[0] is None:raise RuntimeError('diagnostic clock failure')
+            return self.clock[0]
+        with mock.patch.object(time,'monotonic',side_effect=clock),mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',side_effect=fail):
+            with self.assertRaises(PermissionError) as caught:resources.check(196)
+        self.assertIs(caught.exception,primary);self.assertIsNone(resources.first_failure)
+
 
 if __name__=='__main__':unittest.main()

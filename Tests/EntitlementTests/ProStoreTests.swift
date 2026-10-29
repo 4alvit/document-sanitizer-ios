@@ -313,6 +313,14 @@ final class ProStoreTests: XCTestCase {
     }
 
     private func makeSession() async throws -> SKTestSession {
+        #if DEBUG && targetEnvironment(simulator)
+        if NativeUnitTestHost.explicit {
+            guard NativeUnitTestHost.firstSessionIsInert() else {
+                XCTFail("The explicit unit host constructed production state before the first local StoreKit session.")
+                throw NSError(domain: "CleanSendStoreKitTests", code: 5)
+            }
+        }
+        #endif
         let url = Bundle(for: Self.self).url(forResource: "CleanSend", withExtension: "storekit")
             ?? Bundle.main.url(forResource: "CleanSend", withExtension: "storekit")
         tracePhase("SKTestSession.init", "begin")

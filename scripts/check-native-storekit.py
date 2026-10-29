@@ -2,7 +2,7 @@
 """One bounded same-host native StoreKit invocation; no build, account sign-in or retry."""
 from contextlib import contextmanager
 import datetime as dt
-import hashlib, importlib.util, json, os, plistlib, re, shutil, signal, stat, subprocess, sys, time, uuid
+import copy, hashlib, importlib.util, json, os, plistlib, re, shutil, signal, stat, subprocess, sys, time, uuid
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parent
@@ -82,9 +82,78 @@ def validate_test_plan(data):
  assert 'storekit' not in json.dumps(data).lower()
  return {'cases':sorted(CASES),'maximum_case_seconds':180,'outer_seconds':300,'command_count':1}
 
-def test_arguments(uid,result):
+NATIVE_HOST_MARKER='REDACT_NATIVE_UNIT_TEST_HOST'
+
+def bind_unit_test_host(products,host,unit,output,check):
+ # EnvironmentVariables is the documented test-host environment, distinct from
+ # UITargetAppEnvironmentVariables. Keep the compiler-produced fields intact.
+ check();candidates=sorted(products.glob('*.xctestrun'));assert 0<len(candidates)<=4
+ matches=[]
+ for path in candidates:
+  check();fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+  try:
+   check();before=os.fstat(fd);assert stat.S_ISREG(before.st_mode) and before.st_size<=1024*1024
+   content=bytearray()
+   while True:
+    check();block=os.read(fd,min(65536,1024*1024-len(content)+1));check()
+    if not block:break
+    content.extend(block);assert len(content)<=1024*1024
+   after=os.fstat(fd);check();linked=path.lstat();check()
+   token=lambda st:(st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns)
+   assert len(content)==before.st_size and token(before)==token(after)==token(linked)
+   raw=bytes(content)
+  finally:os.close(fd)
+  data=plistlib.loads(raw);assert data.get('__xctestrun_metadata__',{}).get('FormatVersion')==2
+  configurations=data.get('TestConfigurations',[]);assert len(configurations)==1 and configurations[0].get('IsEnabled',True)
+  targets=configurations[0]['TestTargets'];assert len(targets)<=4
+  assert NATIVE_HOST_MARKER not in repr(data) and 'StoreKitConfigurationFilePath' not in repr(data)
+  selected=[t for t in targets if t.get('BlueprintName')=='CleanSendTests']
+  if selected:assert len(selected)==1;matches.append((path,raw,data,selected[0]))
+ assert len(matches)==1,'ambiguous or missing compiled hosted-unit configuration'
+ original,raw,data,target=matches[0]
+ assert target.get('IsAppHostedTestBundle') is True and not target.get('IsUITestBundle') and not target.get('IsXCTRunnerHostedTestBundle')
+ assert not any(k.startswith('UITargetApp') for k in target)
+ assert target['TestHostPath']=='__TESTROOT__/Debug-iphonesimulator/CleanSend.app'
+ assert target['TestBundlePath']=='__TESTHOST__/PlugIns/CleanSendTests.xctest'
+ assert target['TestHostBundleIdentifier']==APP_ID and host==products/'Debug-iphonesimulator/CleanSend.app' and unit==host/'PlugIns/CleanSendTests.xctest'
+ assert target.get('DefaultTestExecutionTimeAllowance',120)==120 and target.get('MaximumTestExecutionTimeAllowance',180)==180
+ assert target.get('TestTimeoutsEnabled',True) is True
+ assert not target.get('CommandLineArguments',[]) and not target.get('UseDestinationArtifacts',False)
+ assert isinstance(target.get('EnvironmentVariables',{}),dict) and isinstance(target.get('TestingEnvironmentVariables'),dict)
+ assert all(isinstance(k,str) and isinstance(v,str) for key in ('EnvironmentVariables','TestingEnvironmentVariables') for k,v in target.get(key,{}).items())
+ def resolve(value):
+  if isinstance(value,str):return value.replace('__TESTROOT__',str(products))
+  if isinstance(value,list):return [resolve(v) for v in value]
+  if isinstance(value,dict):return {k:resolve(v) for k,v in value.items()}
+  return value
+ selected=resolve(copy.deepcopy(target));selected.setdefault('EnvironmentVariables',{})[NATIVE_HOST_MARKER]='1'
+ selected.update(OnlyTestIdentifiers=sorted(CASES),SkipTestIdentifiers=[],TestTimeoutsEnabled=True,
+  DefaultTestExecutionTimeAllowance=120,MaximumTestExecutionTimeAllowance=180)
+ bound=resolve(copy.deepcopy(data));bound['TestConfigurations'][0]['TestTargets']=[selected]
+ assert selected['TestHostPath']==str(host) and selected['TestBundlePath']=='__TESTHOST__/PlugIns/CleanSendTests.xctest'
+ encoded=plistlib.dumps(bound);assert len(encoded)<=1024*1024 and b'__TESTROOT__' not in encoded
+ check()
+ with output.open('xb') as stream:
+  check();assert stream.write(encoded)==len(encoded);check();stream.flush();check();os.fsync(stream.fileno());check()
+ return {'original_path':str(original),'original_sha256':hashlib.sha256(raw).hexdigest(),'bound_path':str(output),
+  'bound_sha256':hashlib.sha256(encoded).hexdigest(),'host':str(host),'unit_bundle':str(unit),
+  'host_marker':{NATIVE_HOST_MARKER:'1'},'selected_cases':sorted(CASES),'default_case_seconds':120,'maximum_case_seconds':180,
+  'changes':['original TESTROOT resolved','only compiled CleanSendTests selected','fixed host-only marker','same eight selected cases and120/180 policy'],'no_StoreKit_configuration_override':True}
+
+def test_arguments(uid,result,config):
  uuid.UUID(uid)
- return ['xcodebuild','test-without-building','-project','CleanSend.xcodeproj','-scheme','CleanSend','-testPlan','CleanSend','-derivedDataPath','.derivedData','-destination','platform=iOS Simulator,id='+uid,'-parallel-testing-enabled','NO','-maximum-concurrent-test-simulator-destinations','1','-only-testing:CleanSendTests/ProStoreTests','-test-timeouts-enabled','YES','-maximum-test-execution-time-allowance','180','-collect-test-diagnostics','never','-resultBundlePath',str(result)]
+ return ['xcodebuild','test-without-building','-xctestrun',str(config),'-destination','platform=iOS Simulator,id='+uid,'-parallel-testing-enabled','NO','-maximum-concurrent-test-simulator-destinations','1','-only-testing:CleanSendTests/ProStoreTests','-test-timeouts-enabled','YES','-maximum-test-execution-time-allowance','180','-collect-test-diagnostics','never','-resultBundlePath',str(result)]
+
+def observed_inert_unit_host(tail):
+ for line in tail.splitlines():
+  if not line.startswith(b'NATIVE_STOREKIT_HOST ') or len(line)>512:continue
+  try:row=json.loads(line[len(b'NATIVE_STOREKIT_HOST '):])
+  except (ValueError,UnicodeError):continue
+  if (row.get('event')=='first.session' and row.get('explicitUnitHost') is True
+      and row.get('firstSessionInert') is True and row.get('xctestLoaded') is True
+      and type(row.get('rootConstructions')) is int and row['rootConstructions']==0
+      and type(row.get('storeConstructions')) is int and row['storeConstructions']==0):return True
+ return False
 
 def accepted_cases(data):
  rows=[]
@@ -320,6 +389,9 @@ def worker(start,context):
   return result
  def installed(name,*,initial_install=False):
   nonlocal installed_baseline
+  resources.check(run.end);assert sha(Path(generated['original_path']))==generated['original_sha256']
+  resources.check(run.end);assert sha(Path(generated['bound_path']))==generated['bound_sha256']
+  resources.check(run.end)
   assert (installed_baseline is None)==initial_install,'installed baseline must be captured exactly once'
   value=output(['xcrun','simctl','get_app_container',uid,APP_ID,'app'],name+'-path.txt')
   path=Path(value);assert path.is_absolute() and str(path)==str(path.resolve()) and path.is_relative_to(resources.device/'data')
@@ -351,7 +423,8 @@ def worker(start,context):
   scheme=ROOT/'CleanSend.xcodeproj/xcshareddata/xcschemes/CleanSend.xcscheme';assert scheme.is_file() and not scheme.is_symlink();scheme_hash=sha(scheme)
   expected=phase_payload_inventory(run,resources,e,b,host)
   write_small(SCOPE/'compiled-host-before.json',expected,start,deadline=start+run.end)
-  write_small(SCOPE/'config-binding.json',{'plan':plan,'plan_sha256':sources['CleanSend.xctestplan'],'scheme_sha256':scheme_hash,'configuration_sha256':sources['App/CleanSend.storekit'],'native_tests_source_sha256':sources['Tests/EntitlementTests/ProStoreTests.swift'],'host':str(host),'unit_bundle':str(unit),'rebuild':False,'resign':False,'host_UI':'existing Debug EmptyView test host; real production ProStore constructed by each case','no_real_account_sign_in':True},start,deadline=start+run.end)
+  generated=bind_unit_test_host(host.parent.parent,host,unit,SCOPE/'native-unit-host.xctestrun',lambda:resources.check(run.end))
+  write_small(SCOPE/'config-binding.json',{'generated_unit_host':generated,'plan':plan,'plan_sha256':sources['CleanSend.xctestplan'],'scheme_sha256':scheme_hash,'configuration_sha256':sources['App/CleanSend.storekit'],'native_tests_source_sha256':sources['Tests/EntitlementTests/ProStoreTests.swift'],'host':str(host),'unit_bundle':str(unit),'rebuild':False,'resign':False,'host_UI':'explicit DEBUG simulator inert unit host; each case still constructs real production ProStore','no_real_account_sign_in':True},start,deadline=start+run.end)
   command(['codesign','--verify','--strict','--all-architectures',host],'signature-host.log',15)
   assert start+WORK_END-time.monotonic()>=TEST_ADMISSION,'test and final verification admission unavailable before device creation'
   resources.check(run.end)
@@ -364,8 +437,8 @@ def worker(start,context):
   run.end=WORK_END
   with work_phase(run,resources,INSTALLED_BEFORE_END):installed('installed-before.json',initial_install=True)
   assert run.remaining()>=TEST_ADMISSION,'full300s XCTest and final verification admission unavailable'
-  argv=test_arguments(uid,SCOPE/'result.xcresult');item={'args':argv,'started_at':l.now(),'timeout_seconds':300};run.meta['commands'].append(item);run.persist()
-  proc=None;tail=b'';log_read=0;previous_end=run.end
+  argv=test_arguments(uid,SCOPE/'result.xcresult',SCOPE/'native-unit-host.xctestrun');item={'args':argv,'started_at':l.now(),'timeout_seconds':300};run.meta['commands'].append(item);run.persist()
+  proc=None;tail=b'';log_read=0;previous_end=run.end;inert_host_observed=False
   try:
    with (SCOPE/'test.log').open('xb') as log:
     end=native_test_end(run,time.monotonic());run.end=min(previous_end,end-start)
@@ -376,11 +449,14 @@ def worker(start,context):
       resources.check(run.end);assert time.monotonic()<end,'native StoreKit outer300s limit'
       chunk=reader.read(65536);log_read+=len(chunk);assert log_read<=16*2**20
       tail=(tail+chunk)[-131072:]
+      inert_host_observed=inert_host_observed or observed_inert_unit_host(tail)
       if not during and b'ProStoreTests test' in tail and b"' started" in tail:
        installed('installed-during.json');during=True
       time.sleep(min(.25,max(0,end-time.monotonic())))
    resources.check(run.end);assert time.monotonic()<end,'native StoreKit outer300s completion limit'
-   run.meta['xcodebuild_returncode']=proc.returncode;assert proc.returncode==0 and during
+   run.meta['xcodebuild_returncode']=proc.returncode
+   run.meta['explicit_inert_unit_host_observed']=inert_host_observed
+   assert proc.returncode==0 and during and inert_host_observed
   finally:
    if proc is not None:
     l.stop_group(proc,item);item['returncode']=proc.returncode

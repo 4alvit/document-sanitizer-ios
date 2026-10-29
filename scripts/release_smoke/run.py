@@ -51,30 +51,70 @@ def validate_grant(path):
  return grant
 
 class Resources:
- def __init__(self,start):self.start=start;self.device=None;self.last=0;self.maximum=0
+ def __init__(self,start):
+  self.start=start;self.device=None;self.last=0;self.maximum=0;self.first_failure=None
  def check(self,phase=560):
-  assert time.monotonic()<self.start+phase,'original phase deadline'
-  assert shutil.disk_usage(SCOPE).free>=FLOOR,'free floor'
-  assert time.monotonic()<self.start+phase,'deadline after free-floor observation'
-  if time.monotonic()-self.last<1:return
-  total=0;count=0
-  for root in [OWNED_ROOT]+([self.device] if self.device and self.device.exists() else []):
-   for directory,dirs,files in os.walk(root,followlinks=False):
-    assert time.monotonic()<self.start+phase
-    for name in ['.']+dirs+files:
-     assert time.monotonic()<self.start+phase,'owned entry deadline'
-     path=Path(directory)/name
-     try:info=path.lstat()
-     except FileNotFoundError:continue  # Concurrent simulator deletion; no traversal or inferred content.
-     count+=1
-     assert count<=100000,'owned inventory entry cap'
-     # Symlinks in simulator OS state are counted but never traversed.
-     assert time.monotonic()<self.start+phase,'owned stat deadline'
-     total+=info.st_blocks*512
-     if name in dirs and stat.S_ISLNK(info.st_mode):dirs.remove(name)
-  assert time.monotonic()<self.start+phase,'final inventory deadline'
-  self.maximum=max(self.maximum,total);self.last=time.monotonic()
-  assert total<=CAP,'owned allocation cap'
+  total=0;count=0;stat_calls=0;directories=0;root_label=None;root_start=None;root_progress={};traversal_complete=False;operation='phase_admission'
+  observed=time.monotonic();scan_started=observed
+  try:
+   assert observed<self.start+phase,'original phase deadline'
+   operation='free_floor'
+   assert shutil.disk_usage(SCOPE).free>=FLOOR,'free floor'
+   assert time.monotonic()<self.start+phase,'deadline after free-floor observation'
+   if time.monotonic()-self.last<1:return
+   operation='device_presence'
+   roots=[('owned',OWNED_ROOT)]+([('device',self.device)] if self.device and self.device.exists() else [])
+   for root_label,root in roots:
+    root_start=(time.monotonic(),count,stat_calls,directories,total)
+    operation='walk_directory'
+    for directory,dirs,files in os.walk(root,followlinks=False):
+     directories+=1
+     assert time.monotonic()<self.start+phase,'owned directory deadline'
+     dir_names=set(dirs)
+     for name in ['.']+dirs+files:
+      operation='entry_deadline'
+      assert time.monotonic()<self.start+phase,'owned entry deadline'
+      # Keep both directory observations: replacement/growth can occur between
+      # the parent listing and this directory's own traversal. Never reuse stats.
+      path=directory if name=='.' else os.path.join(directory,name)
+      operation='lstat';stat_calls+=1
+      try:info=os.lstat(path)
+      except FileNotFoundError:continue  # Concurrent deletion; no inferred content.
+      count+=1;operation='entry_cap'
+      assert count<=100000,'owned inventory entry cap'
+      operation='stat_deadline'
+      assert time.monotonic()<self.start+phase,'owned stat deadline'
+      total+=info.st_blocks*512
+      # A set avoids rescanning every directory name for each file. The original
+      # mutable dirs list still controls os.walk's no-follow symlink pruning.
+      if name in dir_names and stat.S_ISLNK(info.st_mode):dirs.remove(name)
+     operation='walk_directory'
+    root_progress[root_label]={'elapsed_seconds':time.monotonic()-root_start[0],
+      'successful_lstat_count':count-root_start[1],'lstat_calls':stat_calls-root_start[2],
+      'directory_visits':directories-root_start[3],'charged_allocated_bytes':total-root_start[4],'complete':True}
+   operation='final_deadline'
+   assert time.monotonic()<self.start+phase,'final inventory deadline'
+   traversal_complete=True
+   self.maximum=max(self.maximum,total);self.last=time.monotonic()
+   operation='allocation_cap'
+   assert total<=CAP,'owned allocation cap'
+  except BaseException as error:
+   # Fixed in-memory evidence only; no paths, exception text, I/O or new window.
+   # Later final-integrity scans must not overwrite the first failed observation.
+   if self.first_failure is None:
+    try:
+     observed=time.monotonic()
+     if root_start is not None and root_label not in root_progress:
+      root_progress[root_label]={'elapsed_seconds':observed-root_start[0],
+        'successful_lstat_count':count-root_start[1],'lstat_calls':stat_calls-root_start[2],
+        'directory_visits':directories-root_start[3],'charged_allocated_bytes':total-root_start[4],'complete':False}
+     self.first_failure={'phase_seconds':phase,'deadline_monotonic':self.start+phase,
+       'scan_started_elapsed_seconds':scan_started-self.start,'elapsed_seconds':observed-self.start,
+       'scan_elapsed_seconds':observed-scan_started,'operation':operation,'root':root_label,
+       'directory_visits':directories,'successful_lstat_count':count,'lstat_calls':stat_calls,
+       'charged_allocated_bytes':total,'complete_scan':traversal_complete,'roots':root_progress,'error_type':type(error).__name__}
+    except BaseException:pass  # Preserve the primary exception if diagnostics fail.
+   raise
 
 def extract_exact(b,e,resources,expected):
  assert ZIP.stat().st_size==CONTEXT['adhoc_zip_bytes'] and sha(ZIP)==ZIP_SHA
@@ -127,7 +167,7 @@ def worker(start,grant):
  l.OUT=SCOPE;l.ROOT=HERE;l.CONFIGURATION='Release'
  run=l.Run();run.start=start
  run.meta.update(owner_worker_pid=os.getpid(),binary_kind='exact verified shipped adhoc simulator ZIP; same-run provenance-bound Release UI runner',build_configuration='Release',build_scheme=None,test_plan=None,context_sha256=sha(Path(sys.argv[1])),head=HEAD)
- resources=Resources(start);uid=None;failures=[];sampler=None;expected=None
+ resources=Resources(start);uid=None;failures=[];sampler=None;expected=None;installed_runner_baseline=None
  def interrupted(*_):
   if run.meta.get('cleanup_phase'):return
   raise InterruptedError('SIGTERM')
@@ -142,7 +182,8 @@ def worker(start,grant):
   assert path.is_absolute() and str(path)==str(path.resolve()) and path.is_relative_to(resources.device/'data')
   with b.directory(path):pass
   return path
- def installed(name):
+ def installed(name,*,initial_install=False):
+  nonlocal installed_runner_baseline
   runner=c.verify_runner(json.loads(BINDING.read_bytes()))
   l.save(SCOPE/(name+'.runner.json'),runner)
   path=container('app',name+'-path.txt');value=e.payload_inventory(path,b,resources.check)
@@ -151,8 +192,11 @@ def worker(start,grant):
   actual_runner=container('app',name+'-runner-path.txt',frozen['runner_Info']['CFBundleIdentifier'])
   phase=run.end
   def check_runner():resources.check(phase)
-  e.verify_installed_runner(actual_runner,frozen['runner_entries'],b,check_runner,
-   lambda value:save_installed_runner(SCOPE/(name+'.installed-runner.json'),value,check_runner))
+  assert initial_install or installed_runner_baseline is not None
+  receipt=e.verify_installed_runner(actual_runner,frozen['runner_entries'] if initial_install else installed_runner_baseline['files'],b,check_runner,
+   lambda value:save_installed_runner(SCOPE/(name+'.installed-runner.json'),value,check_runner),initial_install=initial_install,
+   installed_identity=None if initial_install else {k:installed_runner_baseline[k] for k in ('path','root_device_inode')})
+  if initial_install:installed_runner_baseline=receipt
   return path
  try:
   assert CONTEXT['head']==HEAD and CONTEXT['tree'] and CONTEXT['checkout']
@@ -195,7 +239,7 @@ def worker(start,grant):
   assert output(['xcrun','simctl','ui',uid,'content_size'],'ax5-readback.txt',60)==l.AX5
   command(['xcrun','simctl','install',uid,BUNDLE],'install.log',30)
   command(['xcrun','simctl','install',uid,Path(frozen['runner'])],'install-runner.log',30)
-  installed('installed-before.json')
+  installed('installed-before.json',initial_install=True)
   # The app creates its own state; the driver never seeds a workspace or queue.
   command(['xcrun','simctl','launch',uid,APP_ID],'initial-launch.log',20)
   data=container('data','data-container.txt');group=container(GROUP,'group-container.txt')
@@ -274,7 +318,7 @@ def worker(start,grant):
    assert sha(BINDING)==grant['runner_binding_sha256']
    c.verify_runner(json.loads(BINDING.read_bytes()));run.meta['runner_and_package_unchanged']=True
   except BaseException as error:failures.append('final integrity/resources: '+repr(error))
-  run.meta.update(result='failed' if failures else 'passed_pending_independent_review',failures=failures,finished_at=l.now(),elapsed_seconds=time.monotonic()-start,maximum_observed_owned_allocation=resources.maximum)
+  run.meta.update(result='failed' if failures else 'passed_pending_independent_review',failures=failures,finished_at=l.now(),elapsed_seconds=time.monotonic()-start,maximum_observed_owned_allocation=resources.maximum,resource_scan_first_failure=resources.first_failure)
   run.persist()
  return 1 if failures else 0
 
@@ -400,7 +444,7 @@ def close_worker_group(proc,receipt,lifecycle,start):
 def supervise(grant_path,grant):
  assert not SCOPE.exists();SCOPE.mkdir(mode=0o700);start=time.monotonic();l=load('bounded_lifecycle')
  intent={'started_at':l.now(),'start_monotonic':start,'context_sha256':sha(grant_path),'seconds':780,'status':'running'}
- l.save(SCOPE/'invocation.json',intent);proc=None
+ l.save(SCOPE/'invocation.json',intent);proc=None;monitor=None
  try:
   with (SCOPE/'driver.log').open('xb') as log:
    proc=subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve()),str(grant_path),'--worker',str(start)],cwd=HERE,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
@@ -448,6 +492,7 @@ def supervise(grant_path,grant):
   except BaseException as error:intent.update(status='failed',owned_command_groups={'all_absent':False,'error':repr(error)})
   retain_cleanup_obligation(intent,start)
   if not intent['cleanup_obligation'].get('absence_verified'):intent['status']='failed'
+  if monitor is not None:intent['resource_scan_first_failure']=monitor.first_failure
   intent.update(returncode=proc.returncode if proc else None,elapsed_seconds=time.monotonic()-start)
   if intent['elapsed_seconds']>=780:intent['status']='failed'
   try:intent['terminal_receipt']=final_write(intent,start)

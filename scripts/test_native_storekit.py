@@ -1,4 +1,5 @@
 """Pure binding/admission controls for the one native payment command; no native/network."""
+import plistlib,copy
 import contextlib,datetime as dt,hashlib,importlib.util,io,json,os,signal,subprocess,tempfile,time,unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,8 +19,9 @@ class NativeStoreKitBindingTests(unittest.TestCase):
     def test_eight_existing_cases_share_one_unchanged_bounded_command(self):
         plan=self.m.validate_test_plan(json.loads((ROOT/'CleanSend.xctestplan').read_bytes()))
         self.assertEqual(len(plan['cases']),8);self.assertEqual(plan['maximum_case_seconds'],180);self.assertEqual(plan['outer_seconds'],300)
-        args=self.m.test_arguments('A09F18F8-31EF-432D-A426-0197E73D75E8',Path('/fixture/result.xcresult'))
-        self.assertEqual(args[:2],['xcodebuild','test-without-building'])
+        args=self.m.test_arguments('A09F18F8-31EF-432D-A426-0197E73D75E8',Path('/fixture/result.xcresult'),Path('/fixture/native-unit-host.xctestrun'))
+        self.assertEqual(args[:4],['xcodebuild','test-without-building','-xctestrun','/fixture/native-unit-host.xctestrun'])
+        self.assertNotIn('-project',args);self.assertNotIn('-testPlan',args)
         self.assertEqual([a for a in args if a.startswith('-only-testing:')],['-only-testing:CleanSendTests/ProStoreTests'])
         self.assertEqual(args[args.index('-maximum-test-execution-time-allowance')+1],'180')
         self.assertEqual(args[args.index('-parallel-testing-enabled')+1],'NO')
@@ -544,5 +546,69 @@ class NativeResourceScanTests(unittest.TestCase):
         with mock.patch.object(time,'monotonic',side_effect=clock),mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',side_effect=fail):
             with self.assertRaises(PermissionError) as caught:resources.check(196)
         self.assertIs(caught.exception,primary);self.assertIsNone(resources.first_failure)
+
+
+class ExplicitUnitHostBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name).resolve();self.products=self.root/'Products';self.products.mkdir()
+        self.host=self.products/'Debug-iphonesimulator/CleanSend.app';self.host.mkdir(parents=True)
+        self.unit=self.host/'PlugIns/CleanSendTests.xctest';self.unit.mkdir(parents=True)
+        self.output=self.root/'selected.xctestrun';self.original=self.products/'CleanSend.xctestrun'
+        self.m=load('native_explicit_host',DRIVER)
+        self.target={'BlueprintName':'CleanSendTests','IsAppHostedTestBundle':True,
+            'TestHostPath':'__TESTROOT__/Debug-iphonesimulator/CleanSend.app',
+            'TestBundlePath':'__TESTHOST__/PlugIns/CleanSendTests.xctest','TestHostBundleIdentifier':self.m.APP_ID,
+            'EnvironmentVariables':{'APP_DISTRIBUTOR_ID_OVERRIDE':'com.apple.AppStore'},
+            'TestingEnvironmentVariables':{'DYLD_FRAMEWORK_PATH':'__TESTROOT__/Debug-iphonesimulator','DYLD_INSERT_LIBRARIES':'__TESTHOST__/Frameworks/libXCTestBundleInject.dylib'},
+            'CommandLineArguments':[],'DefaultTestExecutionTimeAllowance':120,'MaximumTestExecutionTimeAllowance':180}
+        self.ui={'BlueprintName':'CleanSendUITests','IsUITestBundle':True,'UITargetAppEnvironmentVariables':{},'EnvironmentVariables':{}}
+        self.data={'__xctestrun_metadata__':{'FormatVersion':2},'TestConfigurations':[{'TestTargets':[self.target,self.ui]}]}
+    def bind(self,check=lambda:None):
+        self.original.write_bytes(plistlib.dumps(self.data));return self.m.bind_unit_test_host(self.products,self.host,self.unit,self.output,check)
+    def test_actual_generated_shape_bound_only_to_host_with_all_eight_cases(self):
+        before=copy.deepcopy(self.data);receipt=self.bind();bound=plistlib.loads(self.output.read_bytes())
+        self.assertEqual(plistlib.loads(self.original.read_bytes()),before)
+        targets=bound['TestConfigurations'][0]['TestTargets'];self.assertEqual(len(targets),1);selected=targets[0]
+        expected=copy.deepcopy(self.target);expected['TestHostPath']=str(self.host)
+        expected['TestingEnvironmentVariables']['DYLD_FRAMEWORK_PATH']=str(self.products/'Debug-iphonesimulator')
+        expected['EnvironmentVariables'][self.m.NATIVE_HOST_MARKER]='1'
+        expected.update(OnlyTestIdentifiers=sorted(self.m.CASES),SkipTestIdentifiers=[],TestTimeoutsEnabled=True)
+        self.assertEqual(selected,expected);self.assertEqual(receipt['original_sha256'],hashlib.sha256(self.original.read_bytes()).hexdigest())
+        self.assertEqual(receipt['bound_sha256'],hashlib.sha256(self.output.read_bytes()).hexdigest())
+        self.assertNotIn(self.m.NATIVE_HOST_MARKER,self.ui['EnvironmentVariables']);self.assertNotIn('UITargetAppEnvironmentVariables',selected)
+    def test_wrong_host_target_ui_and_preexisting_ui_marker_are_rejected(self):
+        for mutate in (lambda:setitem(self.target,'TestHostPath','__TESTROOT__/Release-iphonesimulator/CleanSend.app'),
+                       lambda:setitem(self.target,'BlueprintName','OtherTests'),
+                       lambda:setitem(self.target,'IsUITestBundle',True),
+                       lambda:self.ui['EnvironmentVariables'].update({self.m.NATIVE_HOST_MARKER:'1'}),
+                       lambda:setitem(self.target,'StoreKitConfigurationFilePath','unexpected.storekit'),
+                       lambda:setitem(self.target,'MaximumTestExecutionTimeAllowance',240)):
+            saved=copy.deepcopy(self.data);mutate()
+            with self.assertRaises(AssertionError):self.bind()
+            self.assertFalse(self.output.exists());self.data=saved;self.target,self.ui=self.data['TestConfigurations'][0]['TestTargets']
+    def test_duplicate_config_and_expired_serialization_cannot_open_output(self):
+        self.original.write_bytes(plistlib.dumps(self.data));(self.products/'duplicate.xctestrun').write_bytes(self.original.read_bytes())
+        with self.assertRaisesRegex(AssertionError,'ambiguous'):self.m.bind_unit_test_host(self.products,self.host,self.unit,self.output,lambda:None)
+        (self.products/'duplicate.xctestrun').unlink();expired=[False];original=plistlib.dumps
+        def encode(value):result=original(value);expired[0]=True;return result
+        def check():
+            if expired[0]:raise TimeoutError('original phase')
+        with mock.patch.object(plistlib,'dumps',side_effect=encode),mock.patch.object(Path,'open') as opened:
+            with self.assertRaises(TimeoutError):self.m.bind_unit_test_host(self.products,self.host,self.unit,self.output,check)
+        opened.assert_not_called();self.assertFalse(self.output.exists())
+    def test_symlink_original_and_replaced_configuration_are_rejected(self):
+        outside=self.root/'outside';outside.write_bytes(plistlib.dumps(self.data));self.original.symlink_to(outside)
+        with self.assertRaises(OSError):self.m.bind_unit_test_host(self.products,self.host,self.unit,self.output,lambda:None)
+        self.assertFalse(self.output.exists())
+    def test_only_actual_fixed_inert_host_event_is_accepted(self):
+        event={'event':'first.session','explicitUnitHost':True,'firstSessionInert':True,'xctestLoaded':True,'rootConstructions':0,'storeConstructions':0}
+        line=lambda row:b'NATIVE_STOREKIT_HOST '+json.dumps(row).encode()+b'\n'
+        self.assertTrue(self.m.observed_inert_unit_host(line(event)))
+        for key,value in [('event','host.classification'),('explicitUnitHost',False),('firstSessionInert',False),('xctestLoaded',False),('rootConstructions',1),('storeConstructions',1),('rootConstructions',False)]:
+            row=dict(event);row[key]=value;self.assertFalse(self.m.observed_inert_unit_host(line(row)))
+        self.assertFalse(self.m.observed_inert_unit_host(b'NATIVE_STOREKIT_HOST {partial'))
+
+def setitem(mapping,key,value):mapping[key]=value
 
 if __name__=='__main__':unittest.main()
