@@ -19,8 +19,9 @@ final class ShareExtensionEntryTests: XCTestCase {
         reveal(batch, in: app.scrollViews["workspace-scroll"])
         capture("share-pdf-queued-before-import")
         batch.tap()
-        let imported = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH %@", "2 pages"), object: app.staticTexts["workspace-status"])
+        let imported = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Temporary workspace · export to keep your edits"), object: app.staticTexts["workspace-mode"])
         XCTAssertEqual(XCTWaiter.wait(for: [imported], timeout: 15), .completed)
+        XCTAssertTrue(app.staticTexts["workspace-status"].label.hasPrefix("1 page"))
         XCTAssertFalse(app.buttons["Import this batch"].exists)
         capture("share-pdf-imported-queue-cleared")
     }

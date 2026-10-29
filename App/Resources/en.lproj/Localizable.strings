@@ -255,7 +255,7 @@
 "privacy.overview.offline" = "This information is included in RedactLeaf. You can read it without a connection or a purchase. External pages open only when you choose a link.";
 "privacy.overview.processing" = "RedactLeaf processes selected PDFs and images on your device, including text recognition with Apple Vision. It has no document server, advertising, analytics service, required app account or app-provided cloud sync.";
 "privacy.files.title" = "Workspace and temporary files";
-"privacy.files.workspace" = "Original files stay unchanged. Working pages, edits and recognition results stay in memory. Clear workspace removes the pages and edits; the search field can retain your query until you clear it or restart the app. Restarting starts a new workspace; returning from the background does not.";
+"privacy.files.workspace" = "Original files stay unchanged. Working pages, edits and recognition results stay in memory. Clear workspace removes the pages, edits and search query. Restarting starts a new workspace; returning from the background does not.";
 "privacy.files.temporary" = "RedactLeaf makes local import and export copies. It attempts to remove import copies when import finishes or is cancelled, and temporary exports after the share sheet finishes or closes. The app also attempts to remove leftover workspace files when a new workspace starts after a restart. An unfinished operation or file-system error can delay cleanup.";
 "privacy.queue.title" = "Shared-file queue";
 "privacy.queue.copies" = "Sending files to RedactLeaf from another app stores local copies in the Share Extension queue. They can still contain original private content and filenames: adding a file to the queue does not hide anything. The queue uses iOS file protection and is excluded from backups.";
@@ -280,3 +280,8 @@
 "privacy.online.guide" = "Support guide — preview";
 "privacy.online.issues" = "Open public GitHub issues";
 "privacy.online.hint" = "Opens an external page when activated. Requires a connection.";
+
+"Remove this page?" = "Remove this page?";
+"The page and its hidden areas will be removed from this workspace. The original file stays unchanged." = "The page and its hidden areas will be removed from this workspace. The original file stays unchanged.";
+"Importing your files replaces this practice sample after a successful import. Cancelled or failed imports keep your practice edits." = "Importing your files replaces this practice sample after a successful import. Cancelled or failed imports keep your practice edits.";
+"Import your own files" = "Import your own files";

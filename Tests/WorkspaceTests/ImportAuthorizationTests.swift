@@ -157,6 +157,7 @@ final class ImportAuthorizationTests: XCTestCase {
         workspace.loadDemo()
         let page = try XCTUnwrap(workspace.pages.first)
         workspace.addMask(NormalizedRect(x: 0, y: 0, width: 0.2, height: 0.2), pageID: page.id)
+        workspace.searchQuery = "practice search"
         workspace.prepareReview()
         await workspace.runningTask?.value
         let review = try XCTUnwrap(workspace.review)
@@ -164,7 +165,62 @@ final class ImportAuthorizationTests: XCTestCase {
         await workspace.runningTask?.value
         XCTAssertEqual(workspace.pages.map(\.id), [page.id])
         XCTAssertEqual(workspace.redactionCount, 1)
+        XCTAssertTrue(workspace.isSynthetic)
+        XCTAssertEqual(workspace.searchQuery, "practice search")
         XCTAssertEqual(workspace.review?.id, review.id)
+        XCTAssertNotNil(workspace.errorMessage)
+        XCTAssertEqual(workspace.sharedBatchCount, 1)
+        XCTAssertEqual(try Data(contentsOf: source), original)
+        try assertNoImportStaging()
+    }
+
+    func testCancelledDemoReplacementKeepsPracticeEditsAndQuery() async throws {
+        let arrived = expectation(description: "Replacement decoded before cancellation")
+        let gate = ImportWorkerGate(arrived: arrived)
+        let workspace = makeWorkspace(gate: gate)
+        workspace.loadDemo()
+        let page = try XCTUnwrap(workspace.pages.first)
+        workspace.addMask(.init(x: 0, y: 0, width: 0.2, height: 0.2), pageID: page.id)
+        workspace.searchQuery = "practice search"
+        workspace.prepareReview(); await workspace.runningTask?.value
+        let reviewID = try XCTUnwrap(workspace.review?.id)
+        let source = try makePDF("replacement.pdf", pages: 3)
+        let original = try Data(contentsOf: source)
+        await gate.arm()
+        workspace.importURLs([source])
+        let task = workspace.runningTask
+        await fulfillment(of: [arrived], timeout: 5)
+        workspace.cancel()
+        await gate.release(); await task?.value
+        XCTAssertEqual(workspace.pages.map(\.id), [page.id])
+        XCTAssertTrue(workspace.isSynthetic)
+        XCTAssertEqual(workspace.redactionCount, 1)
+        XCTAssertEqual(workspace.review?.id, reviewID)
+        XCTAssertEqual(workspace.searchQuery, "practice search")
+        XCTAssertNil(workspace.errorMessage)
+        XCTAssertEqual(try Data(contentsOf: source), original)
+        try assertNoImportStaging()
+    }
+
+    func testDemoReplacementStillChecksLiveAuthorizationBeforeDiscardingPractice() async throws {
+        let arrived = expectation(description: "Four replacement pages decoded")
+        let gate = ImportWorkerGate(arrived: arrived)
+        let access = ImportAccess()
+        let (batch, source) = try makeBatch(pages: 4)
+        let original = try Data(contentsOf: source)
+        let workspace = makeWorkspace(gate: gate, sharedInbox: batch.deletingLastPathComponent())
+        workspace.loadDemo()
+        let page = try XCTUnwrap(workspace.pages.first)
+        workspace.searchQuery = "practice search"
+        await gate.arm()
+        workspace.importShared(currentIsPro: { access.isPro })
+        let task = workspace.runningTask
+        await fulfillment(of: [arrived], timeout: 5)
+        access.isPro = false
+        await gate.release(); await task?.value
+        XCTAssertEqual(workspace.pages.map(\.id), [page.id])
+        XCTAssertTrue(workspace.isSynthetic)
+        XCTAssertEqual(workspace.searchQuery, "practice search")
         XCTAssertNotNil(workspace.errorMessage)
         XCTAssertEqual(workspace.sharedBatchCount, 1)
         XCTAssertEqual(try Data(contentsOf: source), original)
@@ -272,9 +328,10 @@ final class ImportAuthorizationTests: XCTestCase {
         XCTAssertFalse(workspace.isBusy)
         XCTAssertNil(workspace.runningTask)
         XCTAssertNil(workspace.errorMessage)
-        XCTAssertEqual(workspace.pages.count, 3, "Only the new import may append two pages.")
-        XCTAssertEqual(workspace.pages.first?.id, existing.id)
-        XCTAssertEqual(workspace.redactionCount, 1)
+        XCTAssertEqual(workspace.pages.count, 2, "Only the new import may replace the practice page.")
+        XCTAssertFalse(workspace.pages.contains { $0.id == existing.id })
+        XCTAssertEqual(workspace.redactionCount, 0)
+        XCTAssertFalse(workspace.isSynthetic)
         XCTAssertNil(workspace.review, "A successful new addition must invalidate the former review.")
         XCTAssertEqual(workspace.sharedBatchCount, 0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: batch.path))

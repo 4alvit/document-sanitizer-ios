@@ -109,6 +109,47 @@ final class CleanSendUITests: XCTestCase {
     }
 
     @MainActor
+    func testPageRemovalCanBeCancelledAndNewWorkspaceForgetsSearch() throws {
+        let app = launch()
+        loadSample(in: app)
+        let scroll = app.scrollViews["workspace-scroll"]
+        let canvas = app.descendants(matching: .any)["document-canvas"].firstMatch
+        drawMask(on: canvas, in: app)
+        waitForLabel(app.staticTexts["workspace-status"], containing: "1 hidden area")
+        let remove = app.buttons["remove-page-button"]
+        reveal(remove, in: scroll)
+        remove.tap()
+        let confirm = app.buttons.matching(identifier: "confirm-remove-page").firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        let cancel = app.buttons["Cancel"].firstMatch
+        if cancel.exists {
+            cancel.tap()
+        } else {
+            let outside = app.otherElements["PopoverDismissRegion"]
+            XCTAssertTrue(outside.exists)
+            outside.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.5)).tap()
+        }
+        XCTAssertFalse(confirm.exists)
+        XCTAssertEqual(app.staticTexts["workspace-status"].label, "1 page · 1 hidden area")
+
+        remove.tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.tap()
+        XCTAssertTrue(app.buttons["sample-button"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["review-button"].exists)
+        loadSample(in: app)
+        let query = app.textFields["text-search-query"]
+        reveal(query, in: scroll)
+        query.tap()
+        query.typeText("private@example.invalid")
+        XCTAssertEqual(query.value as? String, "private@example.invalid")
+        clearWorkspace(in: app)
+        loadSample(in: app)
+        reveal(query, in: scroll)
+        XCTAssertEqual(query.value as? String, "Name, email or phrase")
+    }
+
+    @MainActor
     private func launch(extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"] + extra

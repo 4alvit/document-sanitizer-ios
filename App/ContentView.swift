@@ -12,9 +12,9 @@ struct ContentView: View {
     @State private var showingMaskEditor = false
     @State private var showingClear = false
     @State private var showingClearQueue = false
+    @State private var removingPageID: UUID?
     @State private var showingInformation = false
     @State private var showingPresets = false
-    @State private var query = ""
 
     var body: some View {
         NavigationStack {
@@ -93,6 +93,13 @@ struct ContentView: View {
                 Button(L10n.text("Clear queued files"), role: .destructive) { workspace.clearShared() }
                 Button(L10n.text("Cancel"), role: .cancel) {}
             } message: { Text(L10n.text("Only the temporary queue is removed. Original files and current edits are unchanged.")) }
+            .confirmationDialog(L10n.text("Remove this page?"), isPresented: Binding(get: { removingPageID != nil }, set: { if !$0 { removingPageID = nil } }), titleVisibility: .visible) {
+                Button(L10n.text("Remove page"), role: .destructive) {
+                    if let id = removingPageID { workspace.removePage(id) }
+                    removingPageID = nil
+                }.accessibilityIdentifier("confirm-remove-page")
+                Button(L10n.text("Cancel"), role: .cancel) { removingPageID = nil }
+            } message: { Text(L10n.text("The page and its hidden areas will be removed from this workspace. The original file stays unchanged.")) }
         }
     }
 
@@ -164,11 +171,17 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(L10n.format("%@ · %@", L10n.count("count.pages", workspace.pages.count), L10n.count("count.hiddenAreas", workspace.redactionCount))).font(.headline).accessibilityIdentifier("workspace-status")
                     Text(workspace.isSynthetic ? L10n.text("Synthetic sample · no real personal data") : L10n.text("Temporary workspace · export to keep your edits"))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("workspace-mode")
                 }
                 Spacer()
                 Button { showingImporter = true } label: { Image(systemName: "plus.circle.fill").font(.title2) }
                     .accessibilityLabel(L10n.text("Add PDF or images")).disabled(workspace.isBusy)
+            }
+            if workspace.isSynthetic {
+                Text(L10n.text("Importing your files replaces this practice sample after a successful import. Cancelled or failed imports keep your practice edits."))
+                    .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button(L10n.text("Import your own files")) { showingImporter = true }
+                    .buttonStyle(.bordered).accessibilityIdentifier("replace-sample-button")
             }
             ScrollView(.horizontal) {
                 HStack(spacing: 12) {
@@ -189,7 +202,8 @@ struct ContentView: View {
                 HStack {
                     Text(page.sourceName).font(.subheadline).lineLimit(2)
                     Spacer()
-                    Button(L10n.text("Remove page"), role: .destructive) { workspace.removePage(page.id) }.font(.caption)
+                    Button(L10n.text("Remove page"), role: .destructive) { removingPageID = page.id }
+                        .font(.caption).accessibilityIdentifier("remove-page-button")
                 }
                 Text(L10n.text("Drag over details to hide. Red marks become solid black in your clean copies."))
                     .font(.subheadline).foregroundStyle(.secondary)
@@ -214,11 +228,12 @@ struct ContentView: View {
             }
             VStack(alignment: .leading, spacing: 10) {
                 Label(L10n.text("Find text in the whole batch"), systemImage: "text.magnifyingglass").font(.headline)
-                TextField(L10n.text("Name, email or phrase"), text: $query).textFieldStyle(.roundedBorder)
+                TextField(L10n.text("Name, email or phrase"), text: $workspace.searchQuery).textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("text-search-query")
                     .autocorrectionDisabled().textInputAutocapitalization(.never)
-                    .submitLabel(.search).onSubmit { workspace.search(query) }
-                Button(L10n.text("Find matching lines")) { workspace.search(query) }
-                    .buttonStyle(.bordered).disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || workspace.isBusy)
+                    .submitLabel(.search).onSubmit { workspace.search(workspace.searchQuery) }
+                Button(L10n.text("Find matching lines")) { workspace.search(workspace.searchQuery) }
+                    .buttonStyle(.bordered).disabled(workspace.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || workspace.isBusy)
                 Text(L10n.text("Suggestions cover a whole recognized line. Nothing is hidden until you confirm. OCR does not find all private information."))
                     .font(.caption).foregroundStyle(.secondary)
             }.padding().background(.background, in: RoundedRectangle(cornerRadius: 16))

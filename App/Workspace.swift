@@ -54,6 +54,7 @@ final class Workspace: ObservableObject {
     @Published private(set) var isBusy = false
     @Published private(set) var busyLabel = ""
     @Published var errorMessage: String?
+    @Published var searchQuery = ""
     @Published var proposals: [ProposedMask] = []
     @Published var review: ReviewPacket?
     @Published private(set) var presetPreview: PresetApplicationPreview?
@@ -164,7 +165,12 @@ final class Workspace: ObservableObject {
     func importURLs(_ urls: [URL], currentIsPro: @escaping @MainActor () -> Bool = { false }, consumedBatches: [URL] = []) {
         guard !isBusy, !urls.isEmpty else { return }
         guard urls.count <= 30 else { errorMessage = L10n.text("Choose at most 30 files at a time."); return }
-        let existingPages = pages.count
+        // The demo is a separate practice workspace, not part of a real batch.
+        // Keep it intact until replacement decoding and live authorization succeed.
+        let replacesDemo = isSynthetic
+        let existingPages = replacesDemo ? 0 : pages.count
+        // Count retained demo pixels too: cancellation keeps that image alive
+        // while replacement pages decode, within the same memory safety limit.
         let existingPixels = pages.reduce(0) { $0 + $1.image.width * $1.image.height }
         let isPro = currentIsPro()
         let permittedPages = permittedImportPages(isPro: isPro)
@@ -211,8 +217,13 @@ final class Workspace: ObservableObject {
                 // Read the delivered entitlement again on the main actor, with
                 // no suspension between authorization, publication and consume.
                 let liveIsPro = currentIsPro()
-                guard pages.count + imported.count <= permittedImportPages(isPro: liveIsPro) else {
+                guard (replacesDemo ? 0 : pages.count) + imported.count <= permittedImportPages(isPro: liveIsPro) else {
                     throw WorkspaceError.pageCapacity(isPro: liveIsPro)
+                }
+                if replacesDemo {
+                    pages = []
+                    selectedPageID = nil
+                    searchQuery = ""
                 }
                 pages.append(contentsOf: imported)
                 #if DEBUG && targetEnvironment(simulator)
@@ -265,8 +276,16 @@ final class Workspace: ObservableObject {
     }
 
     func removePage(_ id: UUID) {
-        guard !isBusy else { return }
-        pages.removeAll { $0.id == id }; selectedPageID = pages.first?.id; changed()
+        guard !isBusy, let index = pages.firstIndex(where: { $0.id == id }) else { return }
+        let selectedID = selectedPage?.id
+        pages.remove(at: index)
+        if selectedID == id {
+            selectedPageID = pages.isEmpty ? nil : pages[min(index, pages.count - 1)].id
+        } else {
+            selectedPageID = selectedID
+        }
+        if pages.isEmpty { searchQuery = ""; isSynthetic = false }
+        changed()
     }
 
     func search(_ query: String) {
@@ -421,7 +440,7 @@ final class Workspace: ObservableObject {
 
     func clear() {
         cancel()
-        pages = []; selectedPageID = nil; proposals = []; review = nil; isSynthetic = false
+        pages = []; selectedPageID = nil; proposals = []; review = nil; isSynthetic = false; searchQuery = ""
         if let exported { cleanExport(exported) }
         changed()
     }

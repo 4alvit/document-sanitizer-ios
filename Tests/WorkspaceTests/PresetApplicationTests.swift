@@ -357,7 +357,8 @@ final class PresetApplicationTests: XCTestCase {
         XCTAssertNil(workspace.presetPreview)
         await gate.release()
         await importTask?.value
-        XCTAssertEqual(workspace.pages.count, 2)
+        XCTAssertEqual(workspace.pages.count, 1)
+        XCTAssertFalse(workspace.pages.contains { $0.id == page.id }, "A successful real import replaces the practice sample.")
         XCTAssertFalse(workspace.isBusy)
         XCTAssertNil(workspace.errorMessage)
     }

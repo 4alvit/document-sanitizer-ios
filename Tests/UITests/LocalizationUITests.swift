@@ -19,8 +19,9 @@ final class LocalizationUITests: XCTestCase {
         reveal(batch, in: app.scrollViews["workspace-scroll"])
         capture("share-pdf-queued-before-import")
         batch.tap()
-        let imported = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH %@", "2 страницы"), object: app.staticTexts["workspace-status"])
+        let imported = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Временная рабочая область · экспортируйте, чтобы сохранить изменения"), object: app.staticTexts["workspace-mode"])
         XCTAssertEqual(XCTWaiter.wait(for: [imported], timeout: 15), .completed)
+        XCTAssertTrue(app.staticTexts["workspace-status"].label.hasPrefix("1 страница"))
         XCTAssertFalse(app.buttons["Импортировать пакет"].exists)
         capture("share-pdf-imported-queue-cleared")
     }

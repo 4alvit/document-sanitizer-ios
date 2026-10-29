@@ -114,6 +114,88 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertFalse(workspace.isBusy)
     }
 
+    func testRealImportReplacesDemoWithoutUsingItsFreePageAllowance() async throws {
+        let source = try makeSource("real-import.png")
+        let original = try Data(contentsOf: source)
+        let workspace = makeWorkspace()
+        workspace.loadDemo()
+        let demo = try XCTUnwrap(workspace.selectedPage)
+        workspace.addMask(.init(x: 0, y: 0, width: 0.2, height: 0.2), pageID: demo.id)
+        workspace.searchQuery = "practice query"
+        workspace.prepareReview(); await workspace.runningTask?.value
+        XCTAssertNotNil(workspace.review)
+
+        workspace.importURLs(Array(repeating: source, count: 3))
+        await workspace.runningTask?.value
+        XCTAssertNil(workspace.errorMessage)
+        XCTAssertEqual(workspace.pages.count, 3, "All three free pages belong to the real import.")
+        XCTAssertFalse(workspace.pages.contains { $0.id == demo.id })
+        XCTAssertFalse(workspace.isSynthetic)
+        XCTAssertEqual(workspace.selectedPageID, workspace.pages.first?.id)
+        XCTAssertEqual(workspace.redactionCount, 0, "Practice masks must not transfer onto real pages.")
+        XCTAssertEqual(workspace.searchQuery, "")
+        XCTAssertNil(workspace.review)
+
+        let realIDs = workspace.pages.map(\.id)
+        let realPage = try XCTUnwrap(workspace.pages.last)
+        workspace.selectedPageID = realPage.id
+        workspace.addMask(.init(x: 0.2, y: 0.2, width: 0.2, height: 0.2), pageID: realPage.id)
+        workspace.searchQuery = "real query"
+        workspace.importURLs([source], currentIsPro: { true })
+        await workspace.runningTask?.value
+        XCTAssertEqual(Array(workspace.pages.prefix(3).map(\.id)), realIDs)
+        XCTAssertEqual(workspace.pages.count, 4, "Later imports still append to a real workspace.")
+        XCTAssertEqual(workspace.selectedPageID, realPage.id)
+        XCTAssertEqual(workspace.redactionCount, 1)
+        XCTAssertEqual(workspace.searchQuery, "real query")
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
+    func testPageRemovalKeepsCurrentPageOrSelectsNearestRemainingPage() async throws {
+        let source = try makeSource("pages.png")
+        let workspace = makeWorkspace()
+        workspace.importURLs(Array(repeating: source, count: 3))
+        await workspace.runningTask?.value
+        let ids = workspace.pages.map(\.id)
+        guard ids.count == 3 else { XCTFail("The three real test pages must import."); return }
+        workspace.selectedPageID = ids[1]
+        workspace.addMask(.init(x: 0, y: 0, width: 0.2, height: 0.2), pageID: ids[1])
+        workspace.searchQuery = "private search"
+        workspace.prepareReview(); await workspace.runningTask?.value
+        let reviewID = try XCTUnwrap(workspace.review?.id)
+
+        workspace.removePage(UUID())
+        XCTAssertEqual(workspace.review?.id, reviewID, "An absent page is a no-op.")
+        workspace.removePage(ids[0])
+        XCTAssertEqual(workspace.selectedPageID, ids[1], "Removing another page must not move selection.")
+        XCTAssertEqual(workspace.redactionCount, 1)
+        XCTAssertNil(workspace.review, "A changed batch requires a new final review.")
+        workspace.removePage(ids[1])
+        XCTAssertEqual(workspace.selectedPageID, ids[2], "Removing the selected page moves to its next neighbor.")
+        XCTAssertEqual(workspace.searchQuery, "private search")
+        workspace.removePage(ids[2])
+        XCTAssertTrue(workspace.pages.isEmpty)
+        XCTAssertNil(workspace.selectedPageID)
+        XCTAssertEqual(workspace.searchQuery, "", "Removing the last page also ends its search session.")
+    }
+
+    func testRemovingLastSelectedPageMovesBackAndClearErasesQuery() async throws {
+        let source = try makeSource("pages.png")
+        let workspace = makeWorkspace()
+        workspace.importURLs([source, source])
+        await workspace.runningTask?.value
+        let first = try XCTUnwrap(workspace.pages.first)
+        let last = try XCTUnwrap(workspace.pages.last)
+        workspace.selectedPageID = last.id
+        workspace.removePage(last.id)
+        XCTAssertEqual(workspace.selectedPageID, first.id)
+        workspace.searchQuery = "private@example.invalid"
+        workspace.clear()
+        workspace.loadDemo()
+        XCTAssertEqual(workspace.searchQuery, "", "A new session must not reveal the old search.")
+        XCTAssertTrue(workspace.isSynthetic)
+    }
+
     func testClearCancelsImportWithoutPublishingLatePages() async throws {
         let source = try makeSource("source.png")
         let workspace = makeWorkspace()
