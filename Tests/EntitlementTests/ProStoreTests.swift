@@ -336,6 +336,11 @@ final class ProStoreTests: XCTestCase {
         session.disableDialogs = true
         tracePhase("session.disableDialogs", "end")
         do {
+            // A session reset is not an app-facing observation barrier. Require
+            // both histories to be empty before creating this case's purchase.
+            tracePhase("waitForCleanStoreKitSession", "begin")
+            try await waitForLocalEntitlement(present: false, resetSession: session)
+            tracePhase("waitForCleanStoreKitSession", "end")
             // SKTestSession can control the Xcode service while an app that
             // queried StoreKit before test setup is still routed to Sandbox.
             // Verify local history before exercising the app. This detects
@@ -358,7 +363,7 @@ final class ProStoreTests: XCTestCase {
             session.clearTransactions()
             tracePhase("session.clearTransactions", "end")
             tracePhase("waitForLocalEntitlement.absent", "begin")
-            try await waitForLocalEntitlement(present: false)
+            try await waitForLocalEntitlement(present: false, resetSession: session)
             tracePhase("waitForLocalEntitlement.absent", "end")
             return session
         } catch {
@@ -367,7 +372,7 @@ final class ProStoreTests: XCTestCase {
         }
     }
 
-    private func waitForLocalEntitlement(present: Bool) async throws {
+    private func waitForLocalEntitlement(present: Bool, resetSession: SKTestSession? = nil) async throws {
         var lastSummary = "No query completed."
         for _ in 0..<100 {
             var found = false
@@ -398,14 +403,18 @@ final class ProStoreTests: XCTestCase {
                 }
             }
             tracePhase("Transaction.currentEntitlements", "end")
-            lastSummary = "verified=\(verifiedCount), unverified=\(unverifiedCount), matchingActiveProduct=\(found)"
-            if found == present { return }
+            let ledgerCount = resetSession?.allTransactions().count
+            let resetIsObserved = ledgerCount.map {
+                $0 == 0 && verifiedCount == 0 && unverifiedCount == 0
+            } ?? true
+            lastSummary = "verified=\(verifiedCount), unverified=\(unverifiedCount), matchingActiveProduct=\(found), resetLedgerCount=\(ledgerCount.map(String.init) ?? "not requested")"
+            if found == present && resetIsObserved { return }
             tracePhase("Task.sleep100ms", "begin")
             try await Task.sleep(for: .milliseconds(100))
             tracePhase("Task.sleep100ms", "end")
         }
         throw NSError(domain: "CleanSendStoreKitTests", code: 1, userInfo: [
-            NSLocalizedDescriptionKey: "The app is not receiving clean verified Xcode StoreKit history (\(lastSummary)). Activate the StoreKit configuration in the test plan before host app launch; never sign in to fix local tests."
+            NSLocalizedDescriptionKey: "The app-facing entitlement sequence and requested session ledger did not reach the expected state (\(lastSummary)). Local tests must not sign in to the App Store."
         ])
     }
 

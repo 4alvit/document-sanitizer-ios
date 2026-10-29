@@ -162,6 +162,25 @@ def save_installed_runner(path,value,check):
  check()
 
 
+def wait_for_package_boot(run,resources,uid):
+ # One cold-readiness command shares the original startup budget with all
+ # remaining work. The full300s XCTest plus4s stop reserve stays unavailable.
+ previous_end=run.end;run.end=min(previous_end,560-304)
+ try:
+  resources.check(run.end)
+  run.command(['xcrun','simctl','bootstatus',uid,'-b'],'bootstatus.log',120)
+ finally:run.end=previous_end
+
+
+def cleanup_device_commands(run,uid,lifecycle):
+ cleanup={}
+ for action,limit,deadline in [('shutdown',45,lifecycle.SHUTDOWN_END),('delete',25,lifecycle.DELETE_END)]:
+  run.end=deadline
+  try:cleanup[action]=run.command(['xcrun','simctl',action,uid],'cleanup-'+action+'.log',limit,False)
+  except BaseException as error:cleanup[action]=repr(error)
+ return cleanup
+
+
 def worker(start,grant):
  b,e,l,c=load('window_budget'),load('evidence'),load('bounded_lifecycle'),load('prepare_config')
  l.OUT=SCOPE;l.ROOT=HERE;l.CONFIGURATION='Release'
@@ -233,7 +252,7 @@ def worker(start,grant):
   uid=output(['xcrun','simctl','create',name,grant['device_type'],grant['runtime_id']],'create.txt');uuid.UUID(uid)
   run.meta['owned_uuid']=uid;resources.device=Path.home()/'Library/Developer/CoreSimulator/Devices'/uid;run.persist()
   command(['xcrun','simctl','boot',uid],'boot.log',20)
-  command(['xcrun','simctl','bootstatus',uid,'-b'],'bootstatus.log',90)
+  wait_for_package_boot(run,resources,uid)
   assert run.remaining()>=304,'insufficient test admission after boot'
   command(['xcrun','simctl','ui',uid,'content_size',l.AX5],'set-ax5.log',60)
   assert output(['xcrun','simctl','ui',uid,'content_size'],'ax5-readback.txt',60)==l.AX5
@@ -289,11 +308,7 @@ def worker(start,grant):
     assert len(matches)<=1;uid=matches[0] if matches else None;run.meta['owned_uuid']=uid
    except BaseException as error:failures.append('device recovery: '+repr(error))
   if uid:
-   cleanup={}
-   for action,limit,deadline in [('shutdown',30,l.SHUTDOWN_END),('delete',12,l.DELETE_END)]:
-    run.end=deadline
-    try:cleanup[action]=run.command(['xcrun','simctl',action,uid],'cleanup-'+action+'.log',limit,False)
-    except BaseException as error:cleanup[action]=repr(error)
+   cleanup=cleanup_device_commands(run,uid,l)
    run.end=l.CLEANUP_END
    try:
     devices=json.loads(run.output(['xcrun','simctl','list','devices','--json'],'devices-after.json'))['devices']

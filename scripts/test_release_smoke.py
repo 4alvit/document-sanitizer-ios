@@ -613,4 +613,65 @@ class PackageResourceScanTests(unittest.TestCase):
         self.assertIs(caught.exception,primary);self.assertIsNone(resources.first_failure)
 
 
+class PackageReadinessBudgetTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name);self.m=load('package_boot_budget',SMOKE/'run.py');self.l=load('package_boot_lifecycle',SMOKE/'lifecycle.py');self.l.OUT=self.root
+        self.clock=[58.0]
+    def actual_run(self):
+        run=self.l.Run();run.start=0;run.persist=mock.Mock();return run
+    def test_observed_93s_can_finish_with_full_test_reserve_and_no_renewal(self):
+        with mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]):
+            run=self.actual_run();proc=SimpleNamespace(pid=123,returncode=None)
+            def wait(timeout):
+                self.assertEqual(timeout,120);self.clock[0]+=93;proc.returncode=0
+            proc.wait=wait;resources=SimpleNamespace(check=mock.Mock())
+            with mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(self.l,'stop_group',side_effect=lambda p,r:r.update(owned_group_absent=True)):
+                self.m.wait_for_package_boot(run,resources,'fixture-owned')
+            resources.check.assert_called_once_with(256);spawn.assert_called_once();self.assertEqual(run.start,0);self.assertEqual(run.end,560);self.assertGreaterEqual(run.remaining(),304);self.assertTrue(run.meta['commands'][0]['owned_group_absent'])
+    def test_late_persist_or_open_cannot_spawn_from_stale_120s_allowance(self):
+        original_open=Path.open
+        for stage in ('persist','open'):
+            with self.subTest(stage=stage),mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]):
+                self.clock[0]=200;run=self.actual_run()
+                def persisted():
+                    if stage=='persist':self.clock[0]=252
+                run.persist=persisted
+                def opened(path,*args,**kwargs):
+                    stream=original_open(path,*args,**kwargs)
+                    if stage=='open':self.clock[0]=252
+                    return stream
+                with mock.patch.object(Path,'open',opened),mock.patch.object(subprocess,'Popen') as spawn:
+                    with self.assertRaises(TimeoutError):self.m.wait_for_package_boot(run,SimpleNamespace(check=lambda phase:None),'fixture-owned')
+                spawn.assert_not_called();self.assertEqual(run.end,560);self.assertEqual(run.start,0)
+    def test_late_boot_clips_to_original256_and_timeout_closes_one_child(self):
+        with mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]):
+            self.clock[0]=200;run=self.actual_run();proc=SimpleNamespace(pid=123,returncode=None)
+            def wait(timeout):
+                self.assertEqual(timeout,52);self.clock[0]+=timeout;raise subprocess.TimeoutExpired('fixture',timeout)
+            proc.wait=wait
+            def stopped(p,row):p.returncode=-15;row['owned_group_absent']=True
+            with mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(self.l,'stop_group',side_effect=stopped) as stop:
+                with self.assertRaises(subprocess.TimeoutExpired):self.m.wait_for_package_boot(run,SimpleNamespace(check=lambda phase:None),'fixture-owned')
+            spawn.assert_called_once();stop.assert_called_once();self.assertTrue(run.meta['commands'][0]['owned_group_absent']);self.assertEqual(run.end,560);self.assertEqual(run.start,0)
+    def test_scan_expiry_prevents_native_spawn_and_restores_original_work_end(self):
+        with mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]):
+            run=self.actual_run()
+            def scan(phase):self.clock[0]=256;raise AssertionError('original phase deadline')
+            with mock.patch.object(subprocess,'Popen') as spawn:
+                with self.assertRaises(AssertionError):self.m.wait_for_package_boot(run,SimpleNamespace(check=scan),'fixture-owned')
+            spawn.assert_not_called();self.assertEqual(run.end,560);self.assertEqual(run.start,0)
+    def test_cleanup_uses_existing_absolute_ends_and_attempts_delete_after_timeout(self):
+        for elapsed,expected in ((560,[45,25]),(610,[5,19])):
+            with self.subTest(elapsed=elapsed),mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]):
+                self.clock[0]=elapsed;run=self.actual_run();waits=[]
+                def spawn(*args,**kwargs):
+                    proc=SimpleNamespace(pid=123,returncode=None)
+                    def wait(timeout):waits.append(timeout);self.clock[0]+=timeout;raise subprocess.TimeoutExpired('fixture',timeout)
+                    proc.wait=wait;return proc
+                def stopped(p,row):p.returncode=-15;row['owned_group_absent']=True
+                with mock.patch.object(subprocess,'Popen',side_effect=spawn) as spawned,mock.patch.object(self.l,'stop_group',side_effect=stopped):
+                    cleanup=self.m.cleanup_device_commands(run,'fixture-owned',self.l)
+                self.assertEqual(waits,expected);self.assertEqual(spawned.call_count,2);self.assertTrue(all('TimeoutExpired' in v for v in cleanup.values()));self.assertTrue(all(c['owned_group_absent'] for c in run.meta['commands']));self.assertNotEqual(cleanup,{'shutdown':0,'delete':0});self.assertNotIn('device_removed',run.meta)
+
 if __name__=='__main__':unittest.main()
