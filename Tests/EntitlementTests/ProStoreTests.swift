@@ -158,8 +158,17 @@ final class ProStoreTests: XCTestCase {
         tracePhase("makeSession", "end")
         defer { clean(session) }
         tracePhase("session.buyProduct.body", "begin")
-        _ = try await session.buyProduct(identifier: ProStore.productID)
+        let purchase = try await session.buyProduct(identifier: ProStore.productID)
         tracePhase("session.buyProduct.body", "end")
+        XCTAssertEqual(purchase.environment, .xcode)
+        XCTAssertEqual(purchase.productID, ProStore.productID)
+        XCTAssertEqual(purchase.productType, .nonConsumable)
+        XCTAssertEqual(purchase.appBundleID, Bundle.main.bundleIdentifier)
+        // makeSession cleared its preflight purchase. Establish this purchase
+        // in the app-facing verified history before testing a catalog failure.
+        tracePhase("waitForLocalEntitlement.body", "begin")
+        try await waitForLocalEntitlement(present: true)
+        tracePhase("waitForLocalEntitlement.body", "end")
         tracePhase("setSimulatedError.loadProducts", "begin")
         try await session.setSimulatedError(.generic(.networkError(URLError(.notConnectedToInternet))), forAPI: .loadProducts)
         tracePhase("setSimulatedError.loadProducts", "end")
