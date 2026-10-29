@@ -210,6 +210,7 @@ class FakeBackend:
                        'maxRuntimeVersionString': '99.0'}]}
         elif step == 'create':
             self.created, self.device_name = True, a[3]
+            (f.root / 'Library/Developer/CoreSimulator/Devices' / UID).mkdir(parents=True, exist_ok=True)
             output = UID
         elif step == 'bootstatus':
             pass
@@ -925,18 +926,21 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertFalse(any(p.step in ('readback', 'test') for p in self.f.backend.processes))
         self.f.assert_cleanup(meta)
 
-    def test_ax5_setter_over_60_seconds_stops_without_readback_or_retry(self):
+    def test_ax5_setter_timeout_requires_closed_group_and_one_exact_readback(self):
         self.f.backend.set_ax5_seconds = 60.001
         rc, meta = self.f.run()
-        self.assertEqual(rc, 1)
-        self.assert_failed(meta, 'TimeoutExpired')
+        self.assertEqual(rc, 0)
         setters = [p for p in self.f.backend.processes if p.step == 'set_ax5']
         self.assertEqual(len(setters), 1)
         self.assertEqual(setters[0].wait_calls, [60])
-        self.assertFalse(any(p.step in ('readback', 'test') for p in self.f.backend.processes))
+        self.assertEqual(sum(p.step == 'readback' for p in self.f.backend.processes), 1)
+        self.assertEqual(sum(p.step == 'test' for p in self.f.backend.processes), 1)
         record = next(c for c in meta['commands'] if c.get('owned_process_group') == setters[0].pid)
         self.assertTrue(record['interrupted'])
         self.assertTrue(record['owned_group_absent'])
+        self.assertIn('TimeoutExpired', record['command_error'])
+        self.assertEqual(meta['ax5_postcondition'], {'setter_timed_out': True,
+                         'readback': self.f.module.AX5, 'owned_device_identity_unchanged': True})
         self.f.assert_cleanup(meta)
 
     def test_ax5_readback_over_60_seconds_does_not_start_test_or_retry(self):
@@ -1131,6 +1135,108 @@ BASE_STOP_GROUP_SOURCE = 'def stop_group(proc, record=None):\n    """Require bot
 
 
 STOP_OPERATIONS = ('leader_poll', 'group_probe', 'SIGTERM', 'SIGKILL', 'sleep')
+
+
+class AX5PostconditionTests(unittest.TestCase):
+    def test_unknown_closure_or_secondary_error_never_reads_back(self):
+        faults = ('group', 'leader', 'probe', 'cleanup_error', 'secondary', 'args', 'operation')
+        for fault in faults:
+            with self.subTest(fault=fault):
+                f = Fixture(self)
+                try:
+                    f.backend.set_ax5_seconds = 60.001
+                    original = f.module.stop_group
+                    def stopped(proc, row):
+                        original(proc, row)
+                        if proc.step != 'set_ax5':return
+                        if fault == 'group':row['owned_group_absent'] = False
+                        elif fault == 'leader':row['cleanup_observation']['last_probe']['leader_reaped'] = False
+                        elif fault == 'probe':row['cleanup_observation']['last_probe']['group'] = 'UNKNOWN'
+                        elif fault == 'cleanup_error':row['cleanup_error'] = 'synthetic'
+                        elif fault == 'secondary':row['secondary_errors'] = {'final_persist': {'exception_type': 'OSError'}}
+                        elif fault == 'args':row['args'] = ['different-owned-command']
+                        else:row['command_error_operation'] = 'body'
+                    with mock.patch.object(f.module, 'stop_group', stopped):rc, meta = f.run()
+                    self.assertEqual(rc, 1)
+                    self.assertFalse(any(p.step in ('readback', 'test') for p in f.backend.processes))
+                    self.assertEqual(sum(p.step == 'set_ax5' for p in f.backend.processes), 1)
+                finally:f.stack.close()
+
+    def test_nonzero_or_cancellation_is_not_postcondition_recovery(self):
+        for fault in ('nonzero', 'signal'):
+            with self.subTest(fault=fault):
+                f = Fixture(self)
+                try:
+                    f.backend.fault_step, f.backend.fault = 'set_ax5', fault
+                    rc, meta = f.run()
+                    self.assertEqual(rc, 1)
+                    self.assertFalse(any(p.step in ('readback', 'test') for p in f.backend.processes))
+                    f.assert_cleanup(meta)
+                finally:f.stack.close()
+
+    def test_wrong_or_timed_out_readback_cannot_accept_setter_timeout(self):
+        for fault in ('value', 'timeout'):
+            with self.subTest(fault=fault):
+                f = Fixture(self)
+                try:
+                    f.backend.set_ax5_seconds = 60.001
+                    f.backend.bad_ax5 = fault == 'value'
+                    f.backend.readback_seconds = 60.001 if fault == 'timeout' else 0
+                    rc, meta = f.run()
+                    self.assertEqual(rc, 1);self.assertEqual(f.test_processes(), [])
+                    self.assertEqual(sum(p.step == 'set_ax5' for p in f.backend.processes), 1)
+                    self.assertEqual(sum(p.step == 'readback' for p in f.backend.processes), 1)
+                    setter = next(c for c in meta['commands'] if c['args'][-1] == f.module.AX5)
+                    self.assertIn('TimeoutExpired', setter['command_error'])
+                    f.assert_cleanup(meta)
+                finally:f.stack.close()
+
+    def test_device_replacement_or_late_identity_sample_prevents_readback(self):
+        for fault in ('inode', 'uuid', 'late'):
+            with self.subTest(fault=fault):
+                f = Fixture(self)
+                try:
+                    f.backend.set_ax5_seconds = 60.001
+                    device = f.root / 'Library/Developer/CoreSimulator/Devices' / UID
+                    original = Path.lstat;observations = []
+                    def observed(path, *args, **kwargs):
+                        info = original(path, *args, **kwargs)
+                        if path != device:return info
+                        observations.append(1)
+                        if len(observations) == 2:
+                            if fault == 'late':f.clock.value = 376
+                            elif fault == 'inode':return SimpleNamespace(st_mode=info.st_mode, st_dev=info.st_dev, st_ino=info.st_ino+1)
+                        return info
+                    original_stop = f.module.stop_group
+                    def stopped(proc, row):
+                        original_stop(proc, row)
+                        if fault == 'uuid' and proc.step == 'set_ax5':
+                            # The helper must reject the changed owner before readback.
+                            row['args'][3] = 'changed-owner'
+                    with mock.patch.object(Path, 'lstat', observed), mock.patch.object(f.module, 'stop_group', stopped):rc, meta = f.run()
+                    self.assertEqual(rc, 1);self.assertEqual(f.test_processes(), [])
+                    self.assertFalse(any(p.step == 'readback' for p in f.backend.processes))
+                finally:f.stack.close()
+
+    def test_late_recovery_readback_persist_or_open_cannot_spawn(self):
+        for stage in ('persist', 'open'):
+            with self.subTest(stage=stage):
+                f = Fixture(self)
+                try:
+                    f.backend.set_ax5_seconds = 60.001
+                    original_persist = f.module.Run.persist;original_open = Path.open
+                    def persisted(run):
+                        original_persist(run)
+                        if stage == 'persist' and run.meta['commands'][-1]['args'][-1] == 'content_size':f.clock.value = 372
+                    def opened(path, *args, **kwargs):
+                        stream = original_open(path, *args, **kwargs)
+                        if stage == 'open' and path.name == 'ax5-readback.txt':f.clock.value = 372
+                        return stream
+                    with mock.patch.object(f.module.Run, 'persist', persisted), mock.patch.object(Path, 'open', opened):rc, meta = f.run()
+                    self.assertEqual(rc, 1);self.assertEqual(f.test_processes(), [])
+                    self.assertFalse(any(p.step == 'readback' for p in f.backend.processes))
+                    f.assert_cleanup(meta)
+                finally:f.stack.close()
 
 
 class StartupPolicyBoundaryTests(unittest.TestCase):

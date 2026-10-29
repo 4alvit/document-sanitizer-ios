@@ -650,14 +650,50 @@ def collect(run):
 
 
 def configure_system_ax5(run, uid):
-    # The phase end is absolute relative to the existing run.start. The second
-    # command recalculates remaining time after the first; no budget is renewed.
+    # A timed-out setter is not success. Only the existing exact readback can
+    # establish its postcondition, after complete owned-process closure.
     previous_end = run.end
     assert previous_end == STARTUP_END
     run.end = min(previous_end, STARTUP_END)
     try:
-        run.command(['xcrun', 'simctl', 'ui', uid, 'content_size', AX5], 'set-ax5.log', AX5_SET_LIMIT)
-        return run.output(['xcrun', 'simctl', 'ui', uid, 'content_size'], 'ax5-readback.txt', AX5_READ_LIMIT)
+        device = Path(ENV['HOME']) / 'Library/Developer/CoreSimulator/Devices' / uid
+        def identity():
+            run.check()
+            assert run.meta.get('owned_uuid') == uid, 'Owned AX5 UUID changed'
+            info = device.lstat()
+            run.check()
+            assert stat.S_ISDIR(info.st_mode), 'Owned AX5 device is not a directory'
+            return (info.st_dev, info.st_ino)
+        original_identity = identity()
+        args = ['xcrun', 'simctl', 'ui', uid, 'content_size', AX5]
+        index = len(run.meta['commands'])
+        timed_out = False
+        try:
+            run.command(args, 'set-ax5.log', AX5_SET_LIMIT)
+        except subprocess.TimeoutExpired as error:
+            rows = run.meta['commands']
+            row = rows[index] if len(rows) == index + 1 else {}
+            probe = row.get('cleanup_observation', {}).get('last_probe', {})
+            if not (error.cmd == args and row.get('args') == args
+                    and row.get('command_error_operation') == 'wait'
+                    and type(row.get('owned_process_group')) is int
+                    and row['owned_process_group'] > 1
+                    and type(row.get('returncode')) is int
+                    and row.get('owned_group_absent') is True
+                    and probe.get('leader_reaped') is True and probe.get('group') == 'ABSENT'
+                    and not row.get('cleanup_error') and not row.get('secondary_errors')
+                    and not any(c.get('owned_group_absent') is False for c in rows)):
+                raise
+            if run.remaining() <= 4:
+                raise
+            timed_out = True
+        assert identity() == original_identity, 'Owned AX5 device identity changed'
+        observed = run.output(['xcrun', 'simctl', 'ui', uid, 'content_size'], 'ax5-readback.txt', AX5_READ_LIMIT)
+        unchanged = identity() == original_identity
+        run.meta['ax5_postcondition'] = {'setter_timed_out': timed_out, 'readback': observed,
+                                       'owned_device_identity_unchanged': unchanged}
+        assert unchanged and observed == AX5, 'Exact owned-device AX5 postcondition not established'
+        return observed
     finally:
         run.end = previous_end
 

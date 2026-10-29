@@ -326,6 +326,11 @@ final class ProStoreTests: XCTestCase {
         tracePhase("SKTestSession.init", "begin")
         let session = try SKTestSession(contentsOf: XCTUnwrap(url, "Copy App/CleanSend.storekit into the test bundle."))
         tracePhase("SKTestSession.init", "end")
+        // Observe the app-facing sequence before reset, then retain both strict
+        // clean-history barriers below. This ordering does not establish routing.
+        tracePhase("Transaction.currentEntitlements.beforeReset", "begin")
+        for await _ in Transaction.currentEntitlements {}
+        tracePhase("Transaction.currentEntitlements.beforeReset", "end")
         tracePhase("session.resetToDefaultState", "begin")
         session.resetToDefaultState()
         tracePhase("session.resetToDefaultState", "end")

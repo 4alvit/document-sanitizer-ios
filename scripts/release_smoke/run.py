@@ -181,6 +181,43 @@ def cleanup_device_commands(run,uid,lifecycle):
  return cleanup
 
 
+def configure_package_ax5(run,resources,uid,lifecycle):
+ # Preserve the full300s test plus4s stop admission. The one existing readback
+ # may establish AX5 after a setter timeout only with proved owned closure.
+ previous_end=run.end;run.end=min(previous_end,560-304)
+ try:
+  device=Path(lifecycle.ENV['HOME'])/'Library/Developer/CoreSimulator/Devices'/uid
+  def identity():
+   assert time.monotonic()<run.start+run.end,'Original AX5 startup deadline'
+   assert run.meta.get('owned_uuid')==uid,'Owned AX5 UUID changed'
+   info=device.lstat()
+   assert time.monotonic()<run.start+run.end,'Original AX5 startup deadline'
+   assert stat.S_ISDIR(info.st_mode),'Owned AX5 device is not a directory'
+   return info.st_dev,info.st_ino
+  original_identity=identity();args=['xcrun','simctl','ui',uid,'content_size',lifecycle.AX5]
+  resources.check(run.end);index=len(run.meta['commands']);timed_out=False
+  try:run.command(args,'set-ax5.log',60)
+  except subprocess.TimeoutExpired as error:
+   rows=run.meta['commands'];row=rows[index] if len(rows)==index+1 else {}
+   probe=row.get('cleanup_observation',{}).get('last_probe',{})
+   if not (error.cmd==args and row.get('args')==args and row.get('command_error_operation')=='wait'
+           and type(row.get('owned_process_group')) is int and row['owned_process_group']>1
+           and type(row.get('returncode')) is int and row.get('owned_group_absent') is True
+           and probe.get('leader_reaped') is True and probe.get('group')=='ABSENT'
+           and not row.get('cleanup_error') and not row.get('secondary_errors')
+           and not any(c.get('owned_group_absent') is False for c in rows)):raise
+   if run.remaining()<=4:raise
+   timed_out=True
+  assert identity()==original_identity,'Owned AX5 device identity changed'
+  resources.check(run.end)
+  observed=run.output(['xcrun','simctl','ui',uid,'content_size'],'ax5-readback.txt',60)
+  unchanged=identity()==original_identity
+  run.meta['ax5_postcondition']={'setter_timed_out':timed_out,'readback':observed,'owned_device_identity_unchanged':unchanged}
+  assert unchanged and observed==lifecycle.AX5,'Exact owned-device AX5 postcondition not established'
+  return observed
+ finally:run.end=previous_end
+
+
 def worker(start,grant):
  b,e,l,c=load('window_budget'),load('evidence'),load('bounded_lifecycle'),load('prepare_config')
  l.OUT=SCOPE;l.ROOT=HERE;l.CONFIGURATION='Release'
@@ -254,8 +291,7 @@ def worker(start,grant):
   command(['xcrun','simctl','boot',uid],'boot.log',20)
   wait_for_package_boot(run,resources,uid)
   assert run.remaining()>=304,'insufficient test admission after boot'
-  command(['xcrun','simctl','ui',uid,'content_size',l.AX5],'set-ax5.log',60)
-  assert output(['xcrun','simctl','ui',uid,'content_size'],'ax5-readback.txt',60)==l.AX5
+  assert configure_package_ax5(run,resources,uid,l)==l.AX5
   command(['xcrun','simctl','install',uid,BUNDLE],'install.log',30)
   command(['xcrun','simctl','install',uid,Path(frozen['runner'])],'install-runner.log',30)
   installed('installed-before.json',initial_install=True)

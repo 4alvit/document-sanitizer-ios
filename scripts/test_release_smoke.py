@@ -674,4 +674,108 @@ class PackageReadinessBudgetTests(unittest.TestCase):
                     cleanup=self.m.cleanup_device_commands(run,'fixture-owned',self.l)
                 self.assertEqual(waits,expected);self.assertEqual(spawned.call_count,2);self.assertTrue(all('TimeoutExpired' in v for v in cleanup.values()));self.assertTrue(all(c['owned_group_absent'] for c in run.meta['commands']));self.assertNotEqual(cleanup,{'shutdown':0,'delete':0});self.assertNotIn('device_removed',run.meta)
 
+class PackageAX5PostconditionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name);self.m=load('package_ax5_postcondition',SMOKE/'run.py');self.l=load('package_ax5_lifecycle',SMOKE/'lifecycle.py')
+        self.l.OUT=self.root;self.l.ENV={'HOME':str(self.root)};self.clock=[50.0]
+        self.uid='A09F18F8-31EF-372D-A426-0197E73D75E8'
+        self.device=self.root/'Library/Developer/CoreSimulator/Devices'/self.uid;self.device.mkdir(parents=True)
+        self.calls=[];self.scans=[];self.mode='timeout';self.closure_fault=None;self.after_set=None;self.before_read_scan=None;self.read_value=self.l.AX5
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]).start()
+        self.run=self.l.Run();self.run.start=0;self.run.meta['owned_uuid']=self.uid;self.run.persist=mock.Mock()
+        mock.patch.object(subprocess,'Popen',side_effect=self.spawn).start()
+        mock.patch.object(self.l,'stop_group',side_effect=self.stop).start()
+        self.resources=SimpleNamespace(check=self.scan)
+    def scan(self,phase):
+        self.scans.append(phase)
+        if len(self.scans)==2 and self.before_read_scan:self.before_read_scan()
+        self.assertLess(self.clock[0],phase)
+    def spawn(self,args,**kwargs):
+        self.calls.append(args);self.assertEqual(args[:3],['xcrun','simctl','ui'])
+        setter=len(args)==6;proc=SimpleNamespace(pid=500+len(self.calls),returncode=None)
+        def wait(timeout):
+            self.clock[0]+=min(60 if setter else 1,timeout)
+            if setter and self.mode=='timeout':raise subprocess.TimeoutExpired(args,timeout)
+            if setter and self.mode=='interrupt':raise InterruptedError('synthetic cancellation')
+            if setter and self.mode=='nonzero':proc.returncode=7;return 7
+            if not setter and self.mode=='read_timeout':raise subprocess.TimeoutExpired(args,timeout)
+            if not setter:kwargs['stdout'].write(self.read_value.encode());kwargs['stdout'].flush()
+            proc.returncode=0
+        proc.wait=wait;return proc
+    def stop(self,proc,row):
+        if proc.returncode is None:proc.returncode=-15
+        row['owned_group_absent']=True;row['cleanup_observation']={'last_probe':{'leader_reaped':True,'group':'ABSENT'}}
+        if len(row['args'])==6:
+            if self.closure_fault=='group':row['owned_group_absent']=False
+            elif self.closure_fault=='leader':row['cleanup_observation']['last_probe']['leader_reaped']=False
+            elif self.closure_fault=='probe':row['cleanup_observation']['last_probe']['group']='UNKNOWN'
+            elif self.closure_fault=='secondary':row['secondary_errors']={'final_persist':{'exception_type':'OSError'}}
+            elif self.closure_fault=='cleanup':row['cleanup_error']='synthetic'
+            if self.after_set:self.after_set()
+    def invoke(self):return self.m.configure_package_ax5(self.run,self.resources,self.uid,self.l)
+    def test_timeout_closed_then_exact_readback_preserves_scans_error_and_budget(self):
+        self.assertEqual(self.invoke(),self.l.AX5)
+        self.assertEqual(len(self.calls),2);self.assertEqual(self.scans,[256,256])
+        self.assertEqual(self.run.end,560);self.assertEqual(self.run.start,0)
+        self.assertGreaterEqual(self.run.remaining(),304)
+        self.assertIn('TimeoutExpired',self.run.meta['commands'][0]['command_error'])
+        self.assertTrue(self.run.meta['ax5_postcondition']['setter_timed_out'])
+    def test_normal_setter_uses_the_same_single_readback(self):
+        self.mode='success';self.assertEqual(self.invoke(),self.l.AX5)
+        self.assertEqual(len(self.calls),2);self.assertEqual(self.scans,[256,256])
+        self.assertFalse(self.run.meta['ax5_postcondition']['setter_timed_out'])
+    def test_unknown_group_leader_secondary_and_cleanup_never_read(self):
+        for fault in ('group','leader','probe','secondary','cleanup'):
+            with self.subTest(fault=fault):
+                self.calls.clear();self.scans.clear();self.clock[0]=50;self.run.meta['commands']=[];self.closure_fault=fault
+                with self.assertRaises(subprocess.TimeoutExpired):self.invoke()
+                self.assertEqual(len(self.calls),1);self.assertEqual(self.run.end,560)
+    def test_nonzero_cancellation_and_readback_failure_remain_fatal(self):
+        for mode,count in (('nonzero',1),('interrupt',1),('read_timeout',2)):
+            with self.subTest(mode=mode):
+                self.calls.clear();self.scans.clear();self.clock[0]=50;self.run.meta['commands']=[];self.mode=mode
+                with self.assertRaises((RuntimeError,InterruptedError,subprocess.TimeoutExpired)):self.invoke()
+                self.assertEqual(len(self.calls),count);self.assertEqual(self.run.end,560)
+    def test_wrong_readback_and_changed_owner_or_directory_fail(self):
+        self.read_value='large'
+        with self.assertRaises(AssertionError):self.invoke()
+        self.assertEqual(self.run.meta['ax5_postcondition']['readback'],'large')
+        for fault in ('uuid','directory'):
+            with self.subTest(fault=fault):
+                self.calls.clear();self.scans.clear();self.clock[0]=50;self.run.meta['commands']=[];self.run.meta['owned_uuid']=self.uid
+                def changed():
+                    if fault=='uuid':self.run.meta['owned_uuid']='different-owner'
+                    else:self.device.rename(self.device.with_name('old-device'));self.device.mkdir()
+                self.after_set=changed
+                with self.assertRaises(AssertionError):self.invoke()
+                self.assertEqual(len(self.calls),1);self.assertEqual(self.run.end,560)
+    def test_symlink_device_is_rejected_before_any_child(self):
+        self.device.rmdir();self.device.symlink_to(self.root,target_is_directory=True)
+        with self.assertRaises(AssertionError):self.invoke()
+        self.assertEqual(self.calls,[])
+    def test_original_startup_clips_setter_and_blocks_readback_when_reserve_spent(self):
+        self.clock[0]=200
+        with self.assertRaises(subprocess.TimeoutExpired):self.invoke()
+        self.assertEqual(len(self.calls),1);self.assertEqual(self.clock[0],252)
+        self.assertEqual(self.run.meta['commands'][0]['timeout_seconds'],52)
+        self.assertEqual(self.run.end,560);self.assertEqual(self.run.start,0)
+    def test_blocking_scan_persist_or_open_cannot_start_late_readback(self):
+        original_open=Path.open
+        for stage in ('scan','persist','open'):
+            with self.subTest(stage=stage):
+                self.calls.clear();self.scans.clear();self.clock[0]=50;self.run.meta['commands']=[]
+                self.before_read_scan=(lambda:self.clock.__setitem__(0,256)) if stage=='scan' else None
+                def persisted():
+                    if stage=='persist' and self.run.meta['commands'][-1]['args'][-1]=='content_size':self.clock[0]=252
+                self.run.persist=persisted
+                def opened(path,*args,**kwargs):
+                    stream=original_open(path,*args,**kwargs)
+                    if stage=='open' and path.name=='ax5-readback.txt':self.clock[0]=252
+                    return stream
+                with mock.patch.object(Path,'open',opened):
+                    with self.assertRaises((AssertionError,TimeoutError)):self.invoke()
+                self.assertEqual(len(self.calls),1);self.assertEqual(self.run.end,560);self.assertEqual(self.run.start,0)
+
 if __name__=='__main__':unittest.main()
