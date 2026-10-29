@@ -326,11 +326,6 @@ final class ProStoreTests: XCTestCase {
         tracePhase("SKTestSession.init", "begin")
         let session = try SKTestSession(contentsOf: XCTUnwrap(url, "Copy App/CleanSend.storekit into the test bundle."))
         tracePhase("SKTestSession.init", "end")
-        // Observe the app-facing sequence before reset, then retain both strict
-        // clean-history barriers below. This ordering does not establish routing.
-        tracePhase("Transaction.currentEntitlements.beforeReset", "begin")
-        for await _ in Transaction.currentEntitlements {}
-        tracePhase("Transaction.currentEntitlements.beforeReset", "end")
         tracePhase("session.resetToDefaultState", "begin")
         session.resetToDefaultState()
         tracePhase("session.resetToDefaultState", "end")
@@ -341,6 +336,14 @@ final class ProStoreTests: XCTestCase {
         session.disableDialogs = true
         tracePhase("session.disableDialogs", "end")
         do {
+            // Observe the reset ledger independently before the app-facing query.
+            tracePhase("session.allTransactions.afterClear", "begin")
+            let resetTransactionCount = session.allTransactions().count
+            tracePhase("session.allTransactions.afterClear", "end")
+            guard resetTransactionCount == 0 else {
+                XCTFail("The local StoreKit ledger is not empty after reset and clear: \(resetTransactionCount) transactions.")
+                throw NSError(domain: "CleanSendStoreKitTests", code: 6)
+            }
             // A session reset is not an app-facing observation barrier. Require
             // both histories to be empty before creating this case's purchase.
             tracePhase("waitForCleanStoreKitSession", "begin")
