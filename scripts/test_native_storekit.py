@@ -559,27 +559,46 @@ class ExplicitUnitHostBindingTests(unittest.TestCase):
         self.target={'BlueprintName':'CleanSendTests','IsAppHostedTestBundle':True,
             'TestHostPath':'__TESTROOT__/Debug-iphonesimulator/CleanSend.app',
             'TestBundlePath':'__TESTHOST__/PlugIns/CleanSendTests.xctest','TestHostBundleIdentifier':self.m.APP_ID,
-            'EnvironmentVariables':{'APP_DISTRIBUTOR_ID_OVERRIDE':'com.apple.AppStore'},
+            'EnvironmentVariables':{'APP_DISTRIBUTOR_ID_OVERRIDE':'com.apple.AppStore','OS_ACTIVITY_DT_MODE':'YES','SQLITE_ENABLE_THREAD_ASSERTIONS':'1','TERM':'dumb'},
             'TestingEnvironmentVariables':{'DYLD_FRAMEWORK_PATH':'__TESTROOT__/Debug-iphonesimulator','DYLD_INSERT_LIBRARIES':'__TESTHOST__/Frameworks/libXCTestBundleInject.dylib'},
-            'CommandLineArguments':[],'DefaultTestExecutionTimeAllowance':120,'MaximumTestExecutionTimeAllowance':180}
+            'CommandLineArguments':[],'DefaultTestExecutionTimeAllowance':120,'MaximumTestExecutionTimeAllowance':180,
+            'ProductModuleName':'CleanSendTests','InProcessParallelizationEnabled':False,
+            'ClangProfileDataDirectoryPath':'__DERIVEDDATA__/Build/ProfileData',
+            'DependentProductPaths':['__TESTROOT__/Debug-iphonesimulator/CleanSend.app',
+                '__TESTROOT__/Debug-iphonesimulator/CleanSend.app/PlugIns/CleanSendTests.xctest']}
         self.ui={'BlueprintName':'CleanSendUITests','IsUITestBundle':True,'UITargetAppEnvironmentVariables':{},'EnvironmentVariables':{}}
-        self.data={'__xctestrun_metadata__':{'FormatVersion':2},'TestConfigurations':[{'TestTargets':[self.target,self.ui]}]}
+        self.data={'__xctestrun_metadata__':{'FormatVersion':2},'ContainerInfo':{'ContainerName':'CleanSend','SchemeName':'CleanSend'},
+            'TestPlan':{'IsDefault':True,'Name':'CleanSend'},'TestConfigurations':[{'Name':'Local Testing','TestTargets':[self.target,self.ui]}]}
     def bind(self,check=lambda:None):
         self.original.write_bytes(plistlib.dumps(self.data));return self.m.bind_unit_test_host(self.products,self.host,self.unit,self.output,check)
     def test_actual_generated_shape_bound_only_to_host_with_all_eight_cases(self):
         before=copy.deepcopy(self.data);receipt=self.bind();bound=plistlib.loads(self.output.read_bytes())
         self.assertEqual(plistlib.loads(self.original.read_bytes()),before)
         targets=bound['TestConfigurations'][0]['TestTargets'];self.assertEqual(len(targets),1);selected=targets[0]
-        expected=copy.deepcopy(self.target);expected['TestHostPath']=str(self.host)
+        expected=copy.deepcopy(self.target);del expected['TestHostPath']
+        expected['TestBundleDestinationRelativePath']=expected.pop('TestBundlePath')
+        expected['UseDestinationArtifacts']=True
+        expected['DependentProductPaths']=[value.replace('__TESTROOT__',str(self.products)) for value in expected['DependentProductPaths']]
         expected['TestingEnvironmentVariables']['DYLD_FRAMEWORK_PATH']=str(self.products/'Debug-iphonesimulator')
         expected['EnvironmentVariables'][self.m.NATIVE_HOST_MARKER]='1'
         expected.update(OnlyTestIdentifiers=sorted(self.m.CASES),SkipTestIdentifiers=[],TestTimeoutsEnabled=True)
         self.assertEqual(selected,expected);self.assertEqual(receipt['original_sha256'],hashlib.sha256(self.original.read_bytes()).hexdigest())
         self.assertEqual(receipt['bound_sha256'],hashlib.sha256(self.output.read_bytes()).hexdigest())
         self.assertNotIn(self.m.NATIVE_HOST_MARKER,self.ui['EnvironmentVariables']);self.assertNotIn('UITargetAppEnvironmentVariables',selected)
+        self.assertEqual(bound['ContainerInfo'],before['ContainerInfo']);self.assertEqual(bound['TestPlan'],before['TestPlan'])
+        self.assertEqual(bound['TestConfigurations'][0]['Name'],'Local Testing')
+        self.assertEqual(receipt['destination_artifacts'],{'UseDestinationArtifacts':True,
+            'TestHostBundleIdentifier':self.m.APP_ID,'TestBundleDestinationRelativePath':'__TESTHOST__/PlugIns/CleanSendTests.xctest',
+            'excluded_keys':['TestHostPath','TestBundlePath','UITargetAppPath']})
+        for key in receipt['destination_artifacts']['excluded_keys']:self.assertNotIn(key,selected)
     def test_wrong_host_target_ui_and_preexisting_ui_marker_are_rejected(self):
         for mutate in (lambda:setitem(self.target,'TestHostPath','__TESTROOT__/Release-iphonesimulator/CleanSend.app'),
                        lambda:setitem(self.target,'BlueprintName','OtherTests'),
+                       lambda:setitem(self.target,'TestHostBundleIdentifier','io.example.wrong-host'),
+                       lambda:setitem(self.target,'TestBundlePath','__TESTHOST__/PlugIns/OtherTests.xctest'),
+                       lambda:setitem(self.target,'UseDestinationArtifacts',True),
+                       lambda:setitem(self.target,'TestBundleDestinationRelativePath','__TESTHOST__/PlugIns/Unexpected.xctest'),
+                       lambda:setitem(self.target,'UITargetAppPath','__TESTROOT__/UI.app'),
                        lambda:setitem(self.target,'IsUITestBundle',True),
                        lambda:self.ui['EnvironmentVariables'].update({self.m.NATIVE_HOST_MARKER:'1'}),
                        lambda:setitem(self.target,'StoreKitConfigurationFilePath','unexpected.storekit'),

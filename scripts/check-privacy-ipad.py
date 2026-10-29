@@ -34,11 +34,13 @@ CASE = 'PrivacySupportUITests/testRussianOfflineInformationAtSystemAX5OnLandscap
 AX5 = 'accessibility-extra-extra-extra-large'
 # Cold hosted AX5 requests can exhaust 30s after bootstatus succeeds.
 # Each finite 60s cap is clipped to the original work deadline while preserving
-# the full 300s XCTest body plus 4s stop reservation.
+# the full 360s XCTest command plus 4s stop reservation.
 AX5_SET_LIMIT, AX5_READ_LIMIT = 60, 60
-# Runner startup and selected-case execution share this finite outer cap.
-# Run.command still clips this maximum to remaining work minus its 4s reserve.
-XCTEST_COMMAND_LIMIT = 300
+# Reserve launch and result completion around the unchanged240s selected case.
+# Planning allowances90+240+30 share one finite command cap, not renewed phases.
+# This transfers60s from startup; original work/cleanup/evidence endpoints remain.
+# Run.command rechecks the full360+4 admission immediately before spawning.
+XCTEST_COMMAND_LIMIT = 360
 TOTAL = 960
 WORK_END = 740
 TEST_ADMISSION = XCTEST_COMMAND_LIMIT + 4

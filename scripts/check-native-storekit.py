@@ -119,6 +119,7 @@ def bind_unit_test_host(products,host,unit,output,check):
  assert target.get('DefaultTestExecutionTimeAllowance',120)==120 and target.get('MaximumTestExecutionTimeAllowance',180)==180
  assert target.get('TestTimeoutsEnabled',True) is True
  assert not target.get('CommandLineArguments',[]) and not target.get('UseDestinationArtifacts',False)
+ assert 'TestBundleDestinationRelativePath' not in target
  assert isinstance(target.get('EnvironmentVariables',{}),dict) and isinstance(target.get('TestingEnvironmentVariables'),dict)
  assert all(isinstance(k,str) and isinstance(v,str) for key in ('EnvironmentVariables','TestingEnvironmentVariables') for k,v in target.get(key,{}).items())
  def resolve(value):
@@ -131,6 +132,14 @@ def bind_unit_test_host(products,host,unit,output,check):
   DefaultTestExecutionTimeAllowance=120,MaximumTestExecutionTimeAllowance=180)
  bound=resolve(copy.deepcopy(data));bound['TestConfigurations'][0]['TestTargets']=[selected]
  assert selected['TestHostPath']==str(host) and selected['TestBundlePath']=='__TESTHOST__/PlugIns/CleanSendTests.xctest'
+ # xcodebuild.xctestrun(5): run from the checked, already installed unit host.
+ # The driver still installs once and verifies the complete bundle before launch;
+ # destination mode prevents xcodebuild from replacing that installed bundle.
+ selected['UseDestinationArtifacts']=True
+ selected['TestBundleDestinationRelativePath']=selected.pop('TestBundlePath')
+ del selected['TestHostPath']
+ assert selected['TestHostBundleIdentifier']==APP_ID
+ assert not any(key.startswith('UITargetApp') for key in selected)
  encoded=plistlib.dumps(bound);assert len(encoded)<=1024*1024 and b'__TESTROOT__' not in encoded
  check()
  with output.open('xb') as stream:
@@ -138,7 +147,10 @@ def bind_unit_test_host(products,host,unit,output,check):
  return {'original_path':str(original),'original_sha256':hashlib.sha256(raw).hexdigest(),'bound_path':str(output),
   'bound_sha256':hashlib.sha256(encoded).hexdigest(),'host':str(host),'unit_bundle':str(unit),
   'host_marker':{NATIVE_HOST_MARKER:'1'},'selected_cases':sorted(CASES),'default_case_seconds':120,'maximum_case_seconds':180,
-  'changes':['original TESTROOT resolved','only compiled CleanSendTests selected','fixed host-only marker','same eight selected cases and120/180 policy'],'no_StoreKit_configuration_override':True}
+  'changes':['original TESTROOT resolved','only compiled CleanSendTests selected','fixed host-only marker','same eight selected cases and120/180 policy','documented destination artifacts: no xcodebuild reinstall'],'no_StoreKit_configuration_override':True,
+   'destination_artifacts':{'UseDestinationArtifacts':True,'TestHostBundleIdentifier':APP_ID,
+    'TestBundleDestinationRelativePath':selected['TestBundleDestinationRelativePath'],
+    'excluded_keys':['TestHostPath','TestBundlePath','UITargetAppPath']}}
 
 def test_arguments(uid,result,config):
  uuid.UUID(uid)
