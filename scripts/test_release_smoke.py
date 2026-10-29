@@ -502,6 +502,121 @@ class InstalledRunnerLoaderPolicyTests(unittest.TestCase):
         with self.assertRaises(AssertionError):self.e.verify_installed_runner(root,expected,self.b,lambda:None,receipts.append)
         self.assertFalse(receipts[-1]['accepted_payload']);self.assertIsNone(receipts[-1]['loader_headers'])
 
+class PackageRunnerReadmissionTests(unittest.TestCase):
+    START=b"Test Case '-[CleanSendUITests.ShareExtensionEntryTests testPDFReceivedByExtensionThenImported]' started."
+    UID='11111111-1111-4111-8111-111111111111'
+    FIRST='22222222-2222-4222-8222-222222222222'
+    SECOND='33333333-3333-4333-8333-333333333333'
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.home=Path(self.temp.name).resolve();self.device=self.home/'Devices'/self.UID
+        self.applications=self.device/'data/Containers/Bundle/Application'
+        self.root=self.applications/self.FIRST/'CleanSendUITests-Runner.app'
+        self.root.mkdir(parents=True);(self.root/'PlugIns').mkdir()
+        (self.root/'Runner').write_bytes(b'unchanged signed runner fixture');(self.root/'Runner').chmod(0o755)
+        (self.root/'PlugIns/test').write_bytes(b'unchanged compiled case fixture')
+        self.r=load('readmission_run',SMOKE/'run.py');self.e=load('readmission_evidence',SMOKE/'evidence.py');self.b=load('readmission_window',SMOKE/'window.py')
+        self.rows=[];self.expired=False
+        entries=self.e.payload_inventory(self.root,self.b,self.check)
+        self.before=self.call(self.root,entries)
+        self.new=self.applications/self.SECOND/self.root.name;shutil.copytree(self.root,self.new)
+    def check(self):
+        if self.expired:raise TimeoutError('original phase deadline')
+    def call(self,root,entries=None,*,baseline=None,log=None,device=None,uid=None):
+        return self.r.verify_package_runner(root,device or self.device,uid or self.UID,
+            entries if entries is not None else baseline['files'],self.b,self.e,self.check,self.rows.append,
+            baseline=baseline,started_log=log)
+    def during(self,root=None):return self.call(root or self.new,baseline=self.before,log=self.START)
+    def test_exact_new_container_admitted_once_then_same_identity_required(self):
+        during=self.during();transition=during['case_start_readmission']
+        self.assertTrue(during['exact_payload']);self.assertEqual(during['differences'],[])
+        self.assertTrue(transition['accepted']);self.assertTrue(transition['identity_changed'])
+        self.assertEqual(transition['prior_identity']['path'],str(self.root))
+        self.assertEqual(transition['current_identity']['path'],str(self.new))
+        self.assertEqual(during['files'],self.before['files']);self.assertEqual(during['accepted_install_transitions'],[])
+        after=self.call(self.new,baseline=during);self.assertTrue(after['installed_identity_matches'])
+        with self.assertRaises(AssertionError):self.call(self.new,baseline=during,log=self.START)
+    def test_unchanged_container_is_valid_first_during_without_claiming_relocation(self):
+        during=self.during(self.root)
+        self.assertFalse(during['case_start_readmission']['identity_changed'])
+        self.assertTrue(self.call(self.root,baseline=during)['installed_identity_matches'])
+    def test_split_start_line_waits_for_full_case_marker_before_admission(self):
+        # First64KiB read ends after 'started'; the final period arrives next.
+        first=b'x'*(65536-len(self.START)+1)+self.START[:-1]
+        self.assertEqual(len(first),65536)
+        tail=first[-131072:];observed=[]
+        if self.r.selected_case_started(tail):observed.append(self.call(self.new,baseline=self.before,log=tail))
+        self.assertEqual(observed,[])
+        tail=(tail+b'.\n    t = 0.00s Start Test')[-131072:]
+        if self.r.selected_case_started(tail):observed.append(self.call(self.new,baseline=self.before,log=tail))
+        self.assertEqual(len(observed),1);self.assertTrue(observed[0]['case_start_readmission']['accepted'])
+        self.assertFalse(self.r.selected_case_started(self.START.replace(b'ShareExtensionEntryTests',b'OtherTests')))
+    def test_no_case_wrong_class_truncated_or_overlong_marker_never_readmits(self):
+        for log in (b'',self.START.replace(b'ShareExtensionEntryTests',b'OtherTests'),self.START[:-1],b'x'*131073):
+            with self.subTest(log=log[:80]),self.assertRaises(AssertionError):self.call(self.new,baseline=self.before,log=log)
+        with self.assertRaises(AssertionError):self.call(self.new,baseline=self.before)
+        with self.assertRaises(AssertionError):self.call(self.new,self.before['files'],log=self.START)
+    def test_changed_bytes_mode_type_added_or_missing_file_cannot_readmit(self):
+        def replace_with_directory(root):
+            (root/'PlugIns/test').unlink();(root/'PlugIns/test').mkdir()
+        mutations=[lambda r:(r/'Runner').write_bytes(b'changed'),lambda r:(r/'Runner').chmod(0o644),
+            lambda r:(r/'PlugIns').chmod(0o711),lambda r:(r/'extra').write_bytes(b'added'),
+            lambda r:(r/'PlugIns/test').unlink(),replace_with_directory]
+        for index,mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                root=self.applications/f'44444444-4444-4444-8444-{index:012d}'/self.root.name
+                shutil.copytree(self.root,root);mutate(root)
+                with self.assertRaises(AssertionError):self.during(root)
+                self.assertFalse(self.rows[-1]['exact_payload']);self.assertFalse(self.rows[-1]['case_start_readmission']['accepted'])
+    def test_wrong_uuid_noncanonical_container_and_wrong_runner_rejected(self):
+        for path in (self.device/'data/elsewhere'/self.root.name,
+                     self.applications/'not-a-uuid'/self.root.name,self.new.with_name('OtherRunner.app')):
+            with self.subTest(path=str(path)),self.assertRaises((ValueError,AssertionError)):self.during(path)
+        with self.assertRaises(AssertionError):self.call(self.new,baseline=self.before,log=self.START,uid=self.SECOND)
+        outside=self.home/'Elsewhere'/self.SECOND/'data/Containers/Bundle/Application'/self.FIRST/self.root.name
+        shutil.copytree(self.root,outside)
+        with self.assertRaises(AssertionError):self.call(outside,baseline=self.before,log=self.START,device=outside.parents[5],uid=self.SECOND)
+    def test_root_or_ancestor_symlink_never_followed(self):
+        original=self.new.with_name('original');self.new.rename(original);self.new.symlink_to(original,target_is_directory=True)
+        with self.assertRaises(OSError):self.during()
+        self.new.unlink();original.rename(self.new)
+        moved=self.new.parent.with_name('moved');self.new.parent.rename(moved);self.new.parent.symlink_to(moved,target_is_directory=True)
+        with self.assertRaises(OSError):self.during()
+    def test_owned_device_replacement_is_rejected_even_with_exact_payload(self):
+        prior=self.device.with_name('prior-device');self.device.rename(prior);shutil.copytree(prior,self.device)
+        with self.assertRaises(AssertionError):self.during()
+    def test_runner_replaced_during_inventory_is_saved_and_rejected(self):
+        inventory=self.e.payload_inventory
+        def replace(*args,**kwargs):
+            value=inventory(*args,**kwargs);old=self.new.with_name('old-runner')
+            self.new.rename(old);shutil.copytree(old,self.new);return value
+        with mock.patch.object(self.e,'payload_inventory',side_effect=replace),self.assertRaises(AssertionError):self.during()
+        self.assertTrue(self.rows[-1]['exact_payload']);self.assertFalse(self.rows[-1]['location_stable'])
+        self.assertFalse(self.rows[-1]['case_start_readmission']['accepted'])
+    def test_after_changed_container_or_same_path_replaced_inode_is_fatal(self):
+        during=self.during()
+        with self.assertRaises(AssertionError):self.call(self.root,baseline=during)
+        old=self.new.with_name('previous');self.new.rename(old);shutil.copytree(old,self.new)
+        with self.assertRaises(AssertionError):self.call(self.new,baseline=during)
+        self.assertTrue(self.rows[-1]['exact_payload']);self.assertFalse(self.rows[-1]['installed_identity_matches'])
+    def test_expiry_after_inventory_does_not_save_or_renew_admission(self):
+        inventory=self.e.payload_inventory;prior=len(self.rows)
+        def expire(*args,**kwargs):
+            value=inventory(*args,**kwargs);self.expired=True;return value
+        with mock.patch.object(self.e,'payload_inventory',side_effect=expire),self.assertRaises(TimeoutError):self.during()
+        self.assertEqual(len(self.rows),prior)
+    def test_receipt_failure_stays_fatal(self):
+        def fail(_):raise OSError('owned evidence failure')
+        with self.assertRaises(OSError):
+            self.r.verify_package_runner(self.new,self.device,self.UID,self.before['files'],self.b,self.e,self.check,fail,baseline=self.before,started_log=self.START)
+    def test_replacement_while_recording_cannot_return_an_admitted_baseline(self):
+        def replace(value):
+            self.rows.append(value);old=self.new.with_name('old-at-receipt')
+            self.new.rename(old);shutil.copytree(old,self.new)
+        with self.assertRaisesRegex(AssertionError,'while recording evidence'):
+            self.r.verify_package_runner(self.new,self.device,self.UID,self.before['files'],self.b,self.e,self.check,replace,baseline=self.before,started_log=self.START)
+
+
 class PackageResourceScanTests(unittest.TestCase):
     def setUp(self):
         self.m=load('package_resource_scan',SMOKE/'run.py');self.clock=[101.0]

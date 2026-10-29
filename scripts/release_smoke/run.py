@@ -8,6 +8,7 @@ CONTEXT=None
 SCOPE=OWNED_ROOT=ASSETS=ZIP=BUNDLE=BINDING=TEMPLATE=None
 ZIP_SHA=PAYLOAD_SHA=HEAD=None
 CASE='CleanSendUITests/ShareExtensionEntryTests/testPDFReceivedByExtensionThenImported'
+CASE_STARTED=b"Test Case '-[CleanSendUITests.ShareExtensionEntryTests testPDFReceivedByExtensionThenImported]' started."
 APP_ID='io.github.4alvit.cleansend';GROUP='group.io.github.4alvit.cleansend'
 CAP=2*2**30;FLOOR=12*2**30
 
@@ -162,6 +163,56 @@ def save_installed_runner(path,value,check):
  check()
 
 
+def selected_case_started(tail):return CASE_STARTED in tail
+
+
+def verify_package_runner(root,device,uid,entries,budget,evidence,check,record,*,baseline=None,started_log=None):
+ # XCTest may install the identical runner in a fresh bundle container. Admit
+ # that transition once, only after the selected case starts; pin it thereafter.
+ check();root,device=Path(root),Path(device)
+ assert device.is_absolute() and str(device)==os.path.normpath(str(device))
+ assert str(uuid.UUID(uid)).upper()==uid and device.name==uid and device.parent.name=='Devices'
+ relative=root.relative_to(device).parts
+ assert len(relative)==6 and relative[:4]==('data','Containers','Bundle','Application')
+ assert str(uuid.UUID(relative[4])).upper()==relative[4] and relative[5]=='CleanSendUITests-Runner.app'
+ assert root==device.joinpath(*relative) and str(root)==os.path.normpath(str(root))
+ first=baseline is None;readmit=started_log is not None
+ assert not (first and readmit)
+ if readmit:
+  assert type(started_log) is bytes and len(started_log)<=131072
+  assert selected_case_started(started_log)
+  assert baseline.get('accepted_payload') is True and 'case_start_readmission' not in baseline
+ elif not first:
+  assert baseline.get('case_start_readmission',{}).get('accepted') is True
+ def identity(fd):
+  check();info=os.fstat(fd);check()
+  assert stat.S_ISDIR(info.st_mode)
+  return [info.st_dev,info.st_ino]
+ with budget.directory(device) as device_fd,budget.directory(root) as root_fd:
+  device_identity={'path':str(device),'root_device_inode':identity(device_fd)}
+  root_identity={'path':str(root),'root_device_inode':identity(root_fd)}
+  if not first:assert baseline['owned_device_identity']==device_identity
+  def save(value):
+   check()
+   # Reopen through no-follow ancestors to reject replacement during inventory.
+   with budget.directory(device) as current_device,budget.directory(root) as current_root:
+    stable=(identity(current_device)==device_identity['root_device_inode']
+      and identity(current_root)==root_identity['root_device_inode']
+      and value['root_device_inode']==root_identity['root_device_inode'])
+   value['owned_device_identity']=device_identity;value['location_stable']=stable
+   if readmit:
+    prior={key:baseline[key] for key in ('path','root_device_inode')}
+    value['case_start_readmission']={'selected_case_start_observed':True,'prior_identity':prior,
+      'current_identity':root_identity,'identity_changed':prior!=root_identity,
+      'accepted':stable and value['exact_payload'] and value['accepted_payload']}
+   check();record(value);check()
+   assert stable,'installed runner location changed during inventory'
+   with budget.directory(device) as current_device,budget.directory(root) as current_root:
+    assert identity(current_device)==device_identity['root_device_inode'] and identity(current_root)==root_identity['root_device_inode'], 'installed runner location changed while recording evidence'
+  return evidence.verify_installed_runner(root,entries,budget,check,save,initial_install=first,
+   installed_identity=None if first or readmit else {key:baseline[key] for key in ('path','root_device_inode')})
+
+
 def wait_for_package_boot(run,resources,uid):
  # One cold-readiness command shares the original startup budget with all
  # remaining work. The full300s XCTest plus4s stop reserve stays unavailable.
@@ -238,7 +289,7 @@ def worker(start,grant):
   assert path.is_absolute() and str(path)==str(path.resolve()) and path.is_relative_to(resources.device/'data')
   with b.directory(path):pass
   return path
- def installed(name,*,initial_install=False):
+ def installed(name,*,initial_install=False,started_log=None):
   nonlocal installed_runner_baseline
   runner=c.verify_runner(json.loads(BINDING.read_bytes()))
   l.save(SCOPE/(name+'.runner.json'),runner)
@@ -249,10 +300,10 @@ def worker(start,grant):
   phase=run.end
   def check_runner():resources.check(phase)
   assert initial_install or installed_runner_baseline is not None
-  receipt=e.verify_installed_runner(actual_runner,frozen['runner_entries'] if initial_install else installed_runner_baseline['files'],b,check_runner,
-   lambda value:save_installed_runner(SCOPE/(name+'.installed-runner.json'),value,check_runner),initial_install=initial_install,
-   installed_identity=None if initial_install else {k:installed_runner_baseline[k] for k in ('path','root_device_inode')})
-  if initial_install:installed_runner_baseline=receipt
+  receipt=verify_package_runner(actual_runner,resources.device,uid,frozen['runner_entries'] if initial_install else installed_runner_baseline['files'],b,e,check_runner,
+   lambda value:save_installed_runner(SCOPE/(name+'.installed-runner.json'),value,check_runner),
+   baseline=None if initial_install else installed_runner_baseline,started_log=started_log)
+  if initial_install or started_log is not None:installed_runner_baseline=receipt
   return path
  try:
   assert CONTEXT['head']==HEAD and CONTEXT['tree'] and CONTEXT['checkout']
@@ -317,8 +368,8 @@ def worker(start,grant):
        resources.check();assert time.monotonic()<end,'XCTest outer300s limit'
        chunk=reader.read(65536);log_read+=len(chunk);assert log_read<=16*2**20,'test log read cap'
        tail=(tail+chunk)[-131072:]
-       if not during and b"testPDFReceivedByExtensionThenImported]' started" in tail:
-        installed('installed-during.json');during=True
+       if not during and selected_case_started(tail):
+        installed('installed-during.json',started_log=tail);during=True
        sampler.event(group/'SharedInbox',data/'tmp/CleanSend',events)
        time.sleep(min(.25,max(0,end-time.monotonic())))
     run.meta['xcodebuild_returncode']=proc.returncode;assert proc.returncode==0
