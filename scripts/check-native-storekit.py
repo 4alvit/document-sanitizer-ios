@@ -13,11 +13,11 @@ TOTAL=1200;WORK_END=980
 RECOVERY_END=1002;SHUTDOWN_END=1039;DELETE_END=1058;CLEANUP_END=1080
 EVIDENCE_END=TOTAL-8
 COLD_BOOT_LIMIT=300
-INSTALL_END=376;INSTALLED_BEFORE_END=526
+STARTUP_END=376;TEST_LATEST_START=526
 TEST_BODY_END=826;TEST_STOP_END=830;FINAL_VERIFY_END=WORK_END
 TEST_ADMISSION=454
 SHUTDOWN_LIMIT=45;DELETE_LIMIT=25
-NATIVE_PHASES={'install':INSTALL_END,'installed_before':INSTALLED_BEFORE_END,
+NATIVE_PHASES={'startup':STARTUP_END,'test_latest_start':TEST_LATEST_START,
  'test_body':TEST_BODY_END,'test_stop':TEST_STOP_END,'final_verification':FINAL_VERIFY_END,
  'work':WORK_END,'recovery':RECOVERY_END,'shutdown':SHUTDOWN_END,'delete':DELETE_END,
  'absence':CLEANUP_END,'evidence':EVIDENCE_END,'whole':TOTAL}
@@ -132,14 +132,10 @@ def bind_unit_test_host(products,host,unit,output,check):
   DefaultTestExecutionTimeAllowance=120,MaximumTestExecutionTimeAllowance=180)
  bound=resolve(copy.deepcopy(data));bound['TestConfigurations'][0]['TestTargets']=[selected]
  assert selected['TestHostPath']==str(host) and selected['TestBundlePath']=='__TESTHOST__/PlugIns/CleanSendTests.xctest'
- # xcodebuild.xctestrun(5): run from the checked, already installed unit host.
- # The driver still installs once and verifies the complete bundle before launch;
- # destination mode prevents xcodebuild from replacing that installed bundle.
- selected['UseDestinationArtifacts']=True
- selected['TestBundleDestinationRelativePath']=selected.pop('TestBundlePath')
- del selected['TestHostPath']
- assert selected['TestHostBundleIdentifier']==APP_ID
- assert not any(key.startswith('UITargetApp') for key in selected)
+ # Xcode16.4 rejects UseDestinationArtifacts for iOS Simulator. Retain the
+ # compiler-produced ordinary Simulator host/bundle paths and host-only marker.
+ assert not selected.get('UseDestinationArtifacts',False)
+ assert 'TestBundleDestinationRelativePath' not in selected
  encoded=plistlib.dumps(bound);assert len(encoded)<=1024*1024 and b'__TESTROOT__' not in encoded
  check()
  with output.open('xb') as stream:
@@ -147,10 +143,7 @@ def bind_unit_test_host(products,host,unit,output,check):
  return {'original_path':str(original),'original_sha256':hashlib.sha256(raw).hexdigest(),'bound_path':str(output),
   'bound_sha256':hashlib.sha256(encoded).hexdigest(),'host':str(host),'unit_bundle':str(unit),
   'host_marker':{NATIVE_HOST_MARKER:'1'},'selected_cases':sorted(CASES),'default_case_seconds':120,'maximum_case_seconds':180,
-  'changes':['original TESTROOT resolved','only compiled CleanSendTests selected','fixed host-only marker','same eight selected cases and120/180 policy','documented destination artifacts: no xcodebuild reinstall'],'no_StoreKit_configuration_override':True,
-   'destination_artifacts':{'UseDestinationArtifacts':True,'TestHostBundleIdentifier':APP_ID,
-    'TestBundleDestinationRelativePath':selected['TestBundleDestinationRelativePath'],
-    'excluded_keys':['TestHostPath','TestBundlePath','UITargetAppPath']}}
+  'changes':['original TESTROOT resolved','only compiled CleanSendTests selected','fixed host-only marker','same eight selected cases and120/180 policy','generated Simulator host/bundle paths retained'],'no_StoreKit_configuration_override':True}
 
 def test_arguments(uid,result,config):
  uuid.UUID(uid)
@@ -323,15 +316,10 @@ def work_phase(run,resources,deadline):
  finally:run.end=previous
 
 def wait_ready_once(run,resources,uid):
- # Cold migration shares the original startup phase with installation; the300s
- # ceiling never extends INSTALL_END or the4s owned-process stop reserve.
- with work_phase(run,resources,INSTALL_END):
+ # Cold migration keeps the original startup phase; the300s ceiling never
+ # extends STARTUP_END or the4s owned-process stop reserve.
+ with work_phase(run,resources,STARTUP_END):
   return run.command(['xcrun','simctl','bootstatus',uid,'-b'],'bootstatus.log',COLD_BOOT_LIMIT)
-
-def install_once(run,resources,uid,host):
- with work_phase(run,resources,INSTALL_END):
-  # Existing command lifecycle clips to the original phase minus its4s stop reserve.
-  return run.command(['xcrun','simctl','install',uid,host],'install.log',INSTALL_END)
 
 def phase_payload_inventory(run,resources,evidence,budget,path):
  phase=run.end
@@ -339,7 +327,7 @@ def phase_payload_inventory(run,resources,evidence,budget,path):
  check();result=evidence.payload_inventory(path,budget,check);check()
  return result
 
-def persist_installed_payload(run,resources,path,files,expected,receipt_path,*,initial_install=False):
+def persist_installed_payload(run,resources,path,files,expected,receipt_path,*,initial_install=False,expected_path=None):
  differences=[]
  for name in sorted(set(files)|set(expected)):
   actual,wanted=files.get(name),expected.get(name)
@@ -353,6 +341,7 @@ def persist_installed_payload(run,resources,path,files,expected,receipt_path,*,i
    if set(actual)!=set(wanted):fields.append('entry_fields')
   differences.append({'path':name,'change':kind,'fields':fields,'expected':wanted,'actual':actual})
  exact=files==expected
+ exact_container=expected_path is None or str(path)==str(expected_path)
  # This policy is used only between compiled bytes and the first installed snapshot.
  # Later observations compare every field against that frozen installed baseline.
  accepted_transitions=(initial_install and {row['path'] for row in differences}==INSTALL_MODE_PATHS
@@ -363,14 +352,25 @@ def persist_installed_payload(run,resources,path,files,expected,receipt_path,*,i
    and row['expected']['sha256']==row['actual']['sha256'] for row in differences))
  receipt={'path':str(path),'exact_payload':exact,'files':files,'differences':differences,
           'expected_entries':len(expected),'actual_entries':len(files),
-          'comparison_basis':'compiled_host' if initial_install else 'exact_expected_inventory',
+          'comparison_basis':'compiled_host' if initial_install else ('first_installed_snapshot' if expected_path is not None else 'exact_expected_inventory'),
+          'expected_container_path':None if expected_path is None else str(expected_path),'exact_container_path':exact_container,
+          'observation':'first_after_actual_test_start' if initial_install else 'subsequent_installed_snapshot',
           'accepted_install_transitions':differences if accepted_transitions else [],
-          'accepted_payload':bool(exact or accepted_transitions)}
+          'accepted_payload':bool(exact or accepted_transitions),'accepted_identity':bool((exact or accepted_transitions) and exact_container)}
  resources.check(run.end)
  write_small(receipt_path,receipt,run.start,deadline=run.start+run.end)
  resources.check(run.end)
- assert exact or accepted_transitions,'installed payload differs from admitted inventory; bounded inventory saved'
+ assert (exact or accepted_transitions) and exact_container,'installed identity differs from admitted inventory or container path; bounded inventory saved'
  return receipt
+
+def observed_native_case_start(tail):
+ # Match a complete actual XCTest start row for an admitted case, not a suite,
+ # command-line selector, completion row or an unrelated test target.
+ for line in tail.splitlines():
+  for name in CASE_NAMES:
+   if line==("Test Case '-[CleanSendTests.ProStoreTests "+name+"]' started.").encode():
+    return 'ProStoreTests/'+name
+ return None
 
 def native_test_end(run,now):
  assert run.remaining()>=TEST_ADMISSION,'300s XCTest and final verification admission unavailable'
@@ -379,8 +379,8 @@ def native_test_end(run,now):
 def worker(start,context):
  b,e,l=load('window'),load('evidence'),load('lifecycle')
  l.OUT=SCOPE;l.ROOT=ROOT;l.CONFIGURATION='Debug'
- run=l.Run();run.start=start;run.end=INSTALL_END
- run.meta.update(native_phase_deadlines_seconds=dict(NATIVE_PHASES),owner_worker_pid=os.getpid(),head=context['head'],binary_kind='same-host existing Debug application and hosted unit-test products',build_configuration='Debug',build_scheme='CleanSend',test_plan='CleanSend',native_storekit_tests=0,native_storekit_selected_cases=sorted(CASES),job_admission=context['job_admission'],context_sha256=sha(SCOPE/'context.json'))
+ run=l.Run();run.start=start;run.end=STARTUP_END
+ run.meta.update(installation_contract={'installer':'xcodebuild test-without-building','explicit_simctl_install':False,'prelaunch_installed_snapshot':False,'compiled_before':'compiled-host-before.json','first_installed_snapshot':'installed-during.json','first_snapshot_trigger':'actual admitted XCTest case start','after_snapshot':'installed-after.json','after_comparison':'exact first installed container path and full inventory'},native_phase_deadlines_seconds=dict(NATIVE_PHASES),owner_worker_pid=os.getpid(),head=context['head'],binary_kind='same-host existing Debug application and hosted unit-test products',build_configuration='Debug',build_scheme='CleanSend',test_plan='CleanSend',native_storekit_tests=0,native_storekit_selected_cases=sorted(CASES),job_admission=context['job_admission'],context_sha256=sha(SCOPE/'context.json'))
  resources=Resources(start);uid=None;failures=[];sources={};expected=None;installed_baseline=None;host=ROOT/'.derivedData/Build/Products/Debug-iphonesimulator/CleanSend.app';during=False
  def interrupted(*_):
   if run.meta.get('cleanup_phase'):return
@@ -409,8 +409,11 @@ def worker(start,context):
   path=Path(value);assert path.is_absolute() and str(path)==str(path.resolve()) and path.is_relative_to(resources.device/'data')
   resources.check(run.end)
   files=phase_payload_inventory(run,resources,e,b,path)
-  persist_installed_payload(run,resources,path,files,expected if initial_install else installed_baseline,SCOPE/name,initial_install=initial_install)
-  if initial_install:installed_baseline={key:dict(row) for key,row in files.items()}
+  persist_installed_payload(run,resources,path,files,expected if initial_install else installed_baseline['files'],SCOPE/name,initial_install=initial_install,expected_path=None if initial_install else installed_baseline['path'])
+  if initial_install:
+   installed_baseline={'path':str(path),'files':{key:dict(row) for key,row in files.items()}}
+   run.meta['first_installed_snapshot']={'name':name,'path':str(path),'after_case_start':run.meta['first_started_native_case']}
+  else:run.meta['installed_after_exact_baseline']=True
   return path
  try:
   names=output(['git','ls-files'],'tracked-files.txt').splitlines();assert 0<len(names)<=1000
@@ -445,9 +448,9 @@ def worker(start,context):
   run.meta['owned_uuid']=uid;resources.device=Path.home()/'Library/Developer/CoreSimulator/Devices'/uid;run.persist()
   command(['xcrun','simctl','boot',uid],'boot.log',20)
   wait_ready_once(run,resources,uid)
-  install_once(run,resources,uid,host)
+  # Xcodebuild is the only installation authority. No prelaunch installed
+  # snapshot is claimed; compilation/signature/config proofs above remain.
   run.end=WORK_END
-  with work_phase(run,resources,INSTALLED_BEFORE_END):installed('installed-before.json',initial_install=True)
   assert run.remaining()>=TEST_ADMISSION,'full300s XCTest and final verification admission unavailable'
   argv=test_arguments(uid,SCOPE/'result.xcresult',SCOPE/'native-unit-host.xctestrun');item={'args':argv,'started_at':l.now(),'timeout_seconds':300};run.meta['commands'].append(item);run.persist()
   proc=None;tail=b'';log_read=0;previous_end=run.end;inert_host_observed=False
@@ -462,8 +465,10 @@ def worker(start,context):
       chunk=reader.read(65536);log_read+=len(chunk);assert log_read<=16*2**20
       tail=(tail+chunk)[-131072:]
       inert_host_observed=inert_host_observed or observed_inert_unit_host(tail)
-      if not during and b'ProStoreTests test' in tail and b"' started" in tail:
-       installed('installed-during.json');during=True
+      started_case=observed_native_case_start(tail)
+      if not during and started_case:
+       run.meta['first_started_native_case']=started_case
+       installed('installed-during.json',initial_install=True);during=True
       time.sleep(min(.25,max(0,end-time.monotonic())))
    resources.check(run.end);assert time.monotonic()<end,'native StoreKit outer300s completion limit'
    run.meta['xcodebuild_returncode']=proc.returncode

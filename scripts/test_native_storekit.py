@@ -147,44 +147,22 @@ class NativeStartupBudgetTests(unittest.TestCase):
             self.phases.append(phase)
             assert self.clock[0]<self.start+phase,'original phase deadline'
         self.resources=SimpleNamespace(check=check)
-    def test_readiness_and_install_share_original_startup_phase_without_renewal(self):
-        waits=[]
-        def spawn(args,**kwargs):
-            proc=SimpleNamespace(pid=77+len(waits),returncode=None)
-            def wait(timeout):
-                waits.append((args,timeout));self.clock[0]+=70 if args[2]=='bootstatus' else 10;proc.returncode=0
-            proc.wait=wait
-            return proc
-        with mock.patch.object(subprocess,'Popen',side_effect=spawn) as popen,mock.patch.object(self.l,'stop_group',side_effect=lambda p,row:row.update(owned_group_absent=True)):
-            self.assertEqual(self.m.wait_ready_once(self.run,self.resources,'owned'),0)
-            self.assertEqual(self.m.install_once(self.run,self.resources,'owned','/fixture/app'),0)
-        self.assertEqual(popen.call_count,2)
-        self.assertEqual([args[2] for args,_ in waits],['bootstatus','install'])
-        self.assertEqual([limit for _,limit in waits],[289,219])
-        self.assertEqual(self.m.COLD_BOOT_LIMIT,300)
-        self.assertEqual(self.phases,[376,376,376,376])
-        self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
-
-    def test_cold_readiness_install_and_repeated_full_checks_share_original376(self):
-        self.clock[0]=116;costs=iter((1,60,0,60));checks=[];waits=[]
+    def test_cold_readiness_retains_original376_with_full_pre_and_post_checks(self):
+        self.clock[0]=116;costs=iter((1,60));checks=[];waits=[]
         def check(phase):
             checks.append(phase);self.clock[0]+=next(costs)
             self.assertLess(self.clock[0],self.start+phase)
-        def spawn(args,**kwargs):
-            proc=SimpleNamespace(pid=77+len(waits),returncode=None)
-            def wait(timeout):
-                waits.append((args[2],timeout));self.clock[0]+=145 if args[2]=='bootstatus' else 61;proc.returncode=0
-            proc.wait=wait;return proc
-        with mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(self.l,'stop_group',side_effect=lambda proc,row:row.update(owned_group_absent=True)):
+        proc=SimpleNamespace(pid=77,returncode=None)
+        def wait(timeout):waits.append(timeout);self.clock[0]+=145;proc.returncode=0
+        proc.wait=wait
+        with mock.patch.object(subprocess,'Popen',return_value=proc),mock.patch.object(self.l,'stop_group',side_effect=lambda p,row:row.update(owned_group_absent=True)):
             self.m.wait_ready_once(self.run,SimpleNamespace(check=check),'owned')
-            self.m.install_once(self.run,SimpleNamespace(check=check),'owned','/fixture/app')
-        self.assertEqual(checks,[376]*4);self.assertEqual(self.clock[0]-self.start,343)
-        self.assertEqual(waits,[('bootstatus',300),('install',150)])
-        self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
+        self.assertEqual(checks,[376,376]);self.assertEqual(self.clock[0]-self.start,222)
+        self.assertEqual(waits,[300]);self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
     def test_late_native_persistence_cannot_use_stale_startup_allowance(self):
         self.run.persist=lambda:self.clock.__setitem__(0,472)
         with mock.patch.object(subprocess,'Popen') as spawn:
-            with self.assertRaises(TimeoutError):self.m.install_once(self.run,self.resources,'owned','/fixture/app')
+            with self.assertRaises(TimeoutError):self.m.wait_ready_once(self.run,self.resources,'owned')
         spawn.assert_not_called();self.assertEqual(self.run.start,100)
     def test_owned_cleanup_maxima_stay_inside_original100_reserve(self):
         self.clock[0]=self.start+980;calls=[]
@@ -219,9 +197,9 @@ class NativeStartupBudgetTests(unittest.TestCase):
         self.assertTrue(record['owned_group_absent']);self.assertEqual(record['returncode'],-15)
         self.assertEqual(self.clock[0],472);self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
         self.assertEqual(self.l.CLEANUP_END,1080);self.assertEqual(self.l.TOTAL,1200)
-        # Exhausted startup cannot launch installation even though work remains.
+        # Exhausted startup cannot relaunch readiness even though work remains.
         with mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')) as late:
-            with self.assertRaises(TimeoutError):self.m.install_once(self.run,self.resources,'owned','/fixture/app')
+            with self.assertRaises(TimeoutError):self.m.wait_ready_once(self.run,self.resources,'owned')
         late.assert_not_called()
 
     def test_late_readiness_does_not_spawn_or_extend_an_earlier_phase(self):
@@ -241,38 +219,13 @@ class NativeStartupBudgetTests(unittest.TestCase):
                 self.m.wait_ready_once(self.run,self.resources,'owned')
         spawn.assert_not_called();self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
 
-    def test_actual_install_command_uses_remaining_original_phase_once(self):
-        proc=SimpleNamespace(pid=77,returncode=None)
-        def wait(timeout):
-            self.assertEqual(timeout,289);self.clock[0]+=10;proc.returncode=0
-        proc.wait=wait
-        with mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(self.l,'stop_group',side_effect=lambda p,row:row.update(owned_group_absent=True)):
-            self.assertEqual(self.m.install_once(self.run,self.resources,'owned','/fixture/app'),0)
-        self.assertEqual(spawn.call_count,1);self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
-        self.assertEqual(self.run.meta['commands'][0]['timeout_seconds'],289)
-        self.assertEqual(self.phases,[376,376])
-    def test_install_timeout_preserves_closure_and_original_cleanup_clock(self):
-        proc=SimpleNamespace(pid=77,returncode=None)
-        proc.wait=lambda **_:(_ for _ in ()).throw(subprocess.TimeoutExpired('install',289))
-        def close(p,row):p.returncode=-15;row['owned_group_absent']=True
-        with mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(self.l,'stop_group',side_effect=close):
-            with self.assertRaises(subprocess.TimeoutExpired):self.m.install_once(self.run,self.resources,'owned','/fixture/app')
-        self.assertEqual(spawn.call_count,1);self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
-        self.assertTrue(self.run.meta['commands'][0]['owned_group_absent'])
-        self.assertEqual(self.run.meta['commands'][0]['returncode'],-15)
-        self.assertEqual(self.l.CLEANUP_END,1080)
-    def test_late_install_does_not_spawn_and_does_not_reset_clock(self):
-        self.clock[0]=472
-        with mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')) as spawn:
-            with self.assertRaises(TimeoutError):self.m.install_once(self.run,self.resources,'owned','/fixture/app')
-        spawn.assert_not_called();self.assertEqual(self.run.start,100);self.assertEqual(self.run.end,980)
     def test_phase_never_extends_an_earlier_deadline_and_restores_after_failure(self):
         self.run.end=150;self.clock[0]=249
         with self.assertRaises(AssertionError):
             with self.m.work_phase(self.run,self.resources,376):
                 self.assertEqual(self.run.end,150);self.clock[0]=250
         self.assertEqual(self.run.end,150);self.assertEqual(self.run.start,100)
-    def test_before_inventory_checks_during_and_after_hashing(self):
+    def test_inventory_checks_during_and_after_hashing(self):
         self.run.end=526;self.clock[0]=625
         def inventory(path,budget,check):
             check();self.clock[0]=626
@@ -312,7 +265,7 @@ class NativePolicyWindowTests(unittest.TestCase):
         run=native.Run()
         self.assertEqual(run.end,980);self.assertEqual(run.meta['total_seconds'],1200)
         self.assertEqual(run.meta['phase_deadlines_seconds'],{'work':980,'recovery':1002,'shutdown':1039,'delete':1058,'absence':1080,'evidence':1192})
-        self.assertEqual(self.m.NATIVE_PHASES,{'install':376,'installed_before':526,'test_body':826,'test_stop':830,'final_verification':980,'work':980,'recovery':1002,'shutdown':1039,'delete':1058,'absence':1080,'evidence':1192,'whole':1200})
+        self.assertEqual(self.m.NATIVE_PHASES,{'startup':376,'test_latest_start':526,'test_body':826,'test_stop':830,'final_verification':980,'work':980,'recovery':1002,'shutdown':1039,'delete':1058,'absence':1080,'evidence':1192,'whole':1200})
     def test_cleanup_ack_uses1080_and_rejects_old660_identity(self):
         for correct in (True,False):
             with self.subTest(correct=correct):
@@ -337,7 +290,7 @@ class InstalledInventoryReceiptTests(unittest.TestCase):
     def setUp(self):
         self.m=load('native_inventory_receipt',DRIVER)
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
-        self.path=Path(self.temp.name).resolve()/'installed-before.json'
+        self.path=Path(self.temp.name).resolve()/'installed-during.json'
         self.clock=[100.0];self.run=SimpleNamespace(start=100.0,end=526)
         self.patch=mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]);self.patch.start();self.addCleanup(self.patch.stop)
         self.resources=SimpleNamespace(check=lambda phase:self.assertLess(self.clock[0],self.run.start+phase))
@@ -575,9 +528,7 @@ class ExplicitUnitHostBindingTests(unittest.TestCase):
         before=copy.deepcopy(self.data);receipt=self.bind();bound=plistlib.loads(self.output.read_bytes())
         self.assertEqual(plistlib.loads(self.original.read_bytes()),before)
         targets=bound['TestConfigurations'][0]['TestTargets'];self.assertEqual(len(targets),1);selected=targets[0]
-        expected=copy.deepcopy(self.target);del expected['TestHostPath']
-        expected['TestBundleDestinationRelativePath']=expected.pop('TestBundlePath')
-        expected['UseDestinationArtifacts']=True
+        expected=copy.deepcopy(self.target);expected['TestHostPath']=str(self.host)
         expected['DependentProductPaths']=[value.replace('__TESTROOT__',str(self.products)) for value in expected['DependentProductPaths']]
         expected['TestingEnvironmentVariables']['DYLD_FRAMEWORK_PATH']=str(self.products/'Debug-iphonesimulator')
         expected['EnvironmentVariables'][self.m.NATIVE_HOST_MARKER]='1'
@@ -587,10 +538,11 @@ class ExplicitUnitHostBindingTests(unittest.TestCase):
         self.assertNotIn(self.m.NATIVE_HOST_MARKER,self.ui['EnvironmentVariables']);self.assertNotIn('UITargetAppEnvironmentVariables',selected)
         self.assertEqual(bound['ContainerInfo'],before['ContainerInfo']);self.assertEqual(bound['TestPlan'],before['TestPlan'])
         self.assertEqual(bound['TestConfigurations'][0]['Name'],'Local Testing')
-        self.assertEqual(receipt['destination_artifacts'],{'UseDestinationArtifacts':True,
-            'TestHostBundleIdentifier':self.m.APP_ID,'TestBundleDestinationRelativePath':'__TESTHOST__/PlugIns/CleanSendTests.xctest',
-            'excluded_keys':['TestHostPath','TestBundlePath','UITargetAppPath']})
-        for key in receipt['destination_artifacts']['excluded_keys']:self.assertNotIn(key,selected)
+        # Actual Xcode16.4 rc70 establishes destination-artifact mode is device-only.
+        self.assertFalse(selected.get('UseDestinationArtifacts',False))
+        self.assertNotIn('TestBundleDestinationRelativePath',selected)
+        self.assertEqual(selected['TestHostPath'],str(self.host))
+        self.assertEqual(selected['TestBundlePath'],'__TESTHOST__/PlugIns/CleanSendTests.xctest')
     def test_wrong_host_target_ui_and_preexisting_ui_marker_are_rejected(self):
         for mutate in (lambda:setitem(self.target,'TestHostPath','__TESTROOT__/Release-iphonesimulator/CleanSend.app'),
                        lambda:setitem(self.target,'BlueprintName','OtherTests'),
@@ -627,6 +579,121 @@ class ExplicitUnitHostBindingTests(unittest.TestCase):
         for key,value in [('event','host.classification'),('explicitUnitHost',False),('firstSessionInert',False),('xctestLoaded',False),('rootConstructions',1),('storeConstructions',1),('rootConstructions',False)]:
             row=dict(event);row[key]=value;self.assertFalse(self.m.observed_inert_unit_host(line(row)))
         self.assertFalse(self.m.observed_inert_unit_host(b'NATIVE_STOREKIT_HOST {partial'))
+
+class SingleInstallerWorkerTests(unittest.TestCase):
+    """Run the actual worker with inert command/process and tiny filesystem fixtures."""
+    def setUp(self):
+        self.m=load('native_single_installer_worker',DRIVER)
+        self.temp=tempfile.TemporaryDirectory(prefix='native-single-installer-');self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name).resolve();self.scope=self.root/'evidence';self.scope.mkdir()
+        self.m.ROOT=self.root;self.m.SCOPE=self.scope;self.m.OWNED_ROOT=self.scope
+        self.uid='A09F18F8-31EF-432D-A426-0197E73D75E8'
+        self.device=self.root/'home/Library/Developer/CoreSimulator/Devices'/self.uid
+        self.host=self.root/'.derivedData/Build/Products/Debug-iphonesimulator/CleanSend.app'
+        self.unit=self.host/'PlugIns/CleanSendTests.xctest';self.unit.mkdir(parents=True)
+        (self.host/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':self.m.APP_ID,'DTXcodeBuild':'16F6','MinimumOSVersion':'17.0'}))
+        (self.unit/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'io.github.4alvit.cleansend.tests'}))
+        self.names=('App/CleanSend.storekit','CleanSend.xctestplan','Tests/EntitlementTests/ProStoreTests.swift')
+        for name,raw in zip(self.names,(b'fixed configuration',(ROOT/'CleanSend.xctestplan').read_bytes(),b'unchanged real cases fixture')):
+            file=self.root/name;file.parent.mkdir(parents=True,exist_ok=True);file.write_bytes(raw)
+        (self.unit/'CleanSend.storekit').write_bytes((self.root/self.names[0]).read_bytes())
+        self.scheme=self.root/'CleanSend.xcodeproj/xcshareddata/xcschemes/CleanSend.xcscheme';self.scheme.parent.mkdir(parents=True);self.scheme.write_bytes(b'fixed scheme')
+        (self.scope/'context.json').write_bytes(b'{}')
+        self.expected={'.':{'directory':True,'mode':'0755'},'CleanSend':{'mode':'0755','sha256':'a'*64},'PlugIns/CleanSendTests.xctest/CleanSendTests':{'mode':'0755','sha256':'b'*64}}
+        self.commands=[];self.inventories=[];self.lookup_count=0;self.lifecycle=self.m.load('lifecycle')
+    def exercise(self,*,start_case=True,changed_container=False,changed_bytes=False):
+        m=self.m;clock=[100.0];phase_checks=[]
+        def check(phase):
+            phase_checks.append(phase);assert clock[0]<90+phase
+        resource=SimpleNamespace(device=None,maximum=0,first_failure=None,check=check)
+        def payload(path,budget,guard):
+            guard();self.inventories.append(str(path));result=copy.deepcopy(self.expected)
+            if changed_bytes and path!=self.host and self.lookup_count==2:result['CleanSend']['sha256']='c'*64
+            guard();return result
+        evidence=SimpleNamespace(payload_inventory=payload)
+        budget=SimpleNamespace(safe=lambda name:None)
+        def bind(products,host,unit,output,guard):
+            guard();original=products/'generated.xctestrun';original.write_bytes(b'generated same-host config');output.write_bytes(b'ordinary simulator config')
+            return {'original_path':str(original),'original_sha256':m.sha(original),'bound_path':str(output),'bound_sha256':m.sha(output)}
+        def command(run,args,name,limit=15,required=True):
+            self.commands.append([str(value) for value in args]);value=''
+            if args[:2]==['git','ls-files']:value='\n'.join(self.names)
+            elif args[:2]==['git','rev-parse']:value='b'*40 if str(args[2]).endswith('^{tree}') else 'a'*40
+            elif args==['xcodebuild','-version']:value='Xcode 16.4\nBuild version 16F6'
+            elif args[:4]==['xcrun','simctl','list','runtimes']:
+                value=json.dumps({'runtimes':[{'identifier':m.RUNTIME,'isAvailable':True,'version':'18.5','supportedArchitectures':['arm64'],'supportedDeviceTypes':[{'identifier':m.DEVICE}]}]})
+            elif args[:4]==['xcrun','simctl','list','devicetypes']:
+                value=json.dumps({'devicetypes':[{'identifier':m.DEVICE,'minRuntimeVersionString':'17.0','maxRuntimeVersionString':'99.0'}]})
+            elif args[:3]==['xcrun','simctl','create']:value=self.uid
+            elif args[:3]==['xcrun','simctl','get_app_container']:
+                self.lookup_count+=1
+                slot='second' if changed_container and self.lookup_count==2 else 'first'
+                value=str(self.device/'data/Containers/Bundle/Application'/slot/'CleanSend.app')
+            elif args[:4]==['xcrun','simctl','list','devices']:value=json.dumps({'devices':{m.RUNTIME:[]}})
+            elif args[:4]==['xcrun','xcresulttool','get','test-results']:
+                value=json.dumps({'passedTests':8,'failedTests':0,'skippedTests':0,'totalTestCount':8} if args[4]=='summary' else {'nodes':[{'nodeType':'Test Case','nodeIdentifier':name+'()','result':'Passed'} for name in sorted(m.CASES)]})
+            (self.scope/name).write_text(value)
+            run.meta['commands'].append({'args':[str(v) for v in args],'returncode':0,'owned_group_absent':True})
+            return 0
+        def spawn(args,**kwargs):
+            self.commands.append(list(args));self.assertEqual(args[:2],['xcodebuild','test-without-building'])
+            self.assertEqual(kwargs['start_new_session'],True)
+            (self.scope/'result.xcresult').mkdir()
+            marker={'event':'first.session','explicitUnitHost':True,'firstSessionInert':True,'xctestLoaded':True,'rootConstructions':0,'storeConstructions':0}
+            text=b'NATIVE_STOREKIT_HOST '+json.dumps(marker).encode()+b'\n'
+            if start_case:text+=("Test Case '-[CleanSendTests.ProStoreTests "+m.CASE_NAMES[0]+"]' started.\n").encode()
+            else:text+=b"Test Suite 'ProStoreTests' started.\n"
+            kwargs['stdout'].write(text);kwargs['stdout'].flush()
+            process=SimpleNamespace(pid=99,returncode=None);polls=[0]
+            def poll():
+                polls[0]+=1
+                if polls[0]>1:process.returncode=0
+                return process.returncode
+            process.poll=poll;return process
+        def close(process,row):process.returncode=0;row['owned_group_absent']=True
+        context={'head':'a'*40,'checkout':'a'*40,'run':'123','attempt':'1','job_admission':{'fixture':True}}
+        with mock.patch.object(m,'load',side_effect=lambda name:{'window':budget,'evidence':evidence,'lifecycle':self.lifecycle}[name]),mock.patch.object(m,'Resources',return_value=resource),mock.patch.object(m,'bind_unit_test_host',side_effect=bind),mock.patch.object(self.lifecycle.Run,'command',new=command),mock.patch.object(self.lifecycle,'stop_group',side_effect=close),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(signal,'signal'),mock.patch.object(time,'monotonic',side_effect=lambda:clock[0]),mock.patch.object(time,'sleep'),mock.patch.object(Path,'home',return_value=self.root/'home'),mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='arm64')):
+            result=m.worker(90,context)
+        metadata=json.loads((self.scope/'metadata.json').read_bytes())
+        self.assertFalse(any(row[:3]==['xcrun','simctl','install'] for row in self.commands))
+        self.assertEqual(sum(row[:2]==['xcodebuild','test-without-building'] for row in self.commands),1)
+        self.assertFalse((self.scope/'installed-before.json').exists())
+        self.assertTrue((self.scope/'compiled-host-before.json').exists())
+        self.assertEqual(metadata['installation_contract']['installer'],'xcodebuild test-without-building')
+        self.assertFalse(metadata['installation_contract']['prelaunch_installed_snapshot'])
+        self.assertEqual(metadata['cleanup'],{'shutdown':0,'delete':0});self.assertTrue(metadata['device_removed'])
+        self.assertEqual(metadata['native_phase_deadlines_seconds'],m.NATIVE_PHASES)
+        return result,metadata
+    def test_one_install_authority_first_capture_after_real_start_and_exact_after(self):
+        result,metadata=self.exercise();self.assertEqual(result,0)
+        during=json.loads((self.scope/'installed-during.json').read_bytes());after=json.loads((self.scope/'installed-after.json').read_bytes())
+        self.assertEqual(during['comparison_basis'],'compiled_host');self.assertEqual(during['observation'],'first_after_actual_test_start')
+        self.assertEqual(after['comparison_basis'],'first_installed_snapshot');self.assertEqual(after['expected_container_path'],during['path'])
+        self.assertTrue(after['exact_container_path']);self.assertTrue(after['accepted_identity'])
+        self.assertEqual(after['files'],during['files']);self.assertEqual(metadata['first_started_native_case'],'ProStoreTests/'+self.m.CASE_NAMES[0])
+        self.assertTrue(metadata['explicit_inert_unit_host_observed']);self.assertEqual(metadata['native_storekit_tests'],8)
+        self.assertTrue(metadata['compiled_host_unchanged']);self.assertTrue(metadata['source_and_compiled_host_unchanged'])
+    def test_missing_actual_case_start_cannot_capture_or_accept(self):
+        result,metadata=self.exercise(start_case=False);self.assertEqual(result,1)
+        self.assertEqual(self.lookup_count,0);self.assertNotIn('first_installed_snapshot',metadata)
+        self.assertFalse((self.scope/'installed-during.json').exists());self.assertFalse((self.scope/'installed-after.json').exists())
+        self.assertEqual(metadata['result'],'failed');self.assertTrue(metadata['failures'])
+    def test_changed_container_with_identical_files_is_saved_and_rejected(self):
+        result,metadata=self.exercise(changed_container=True);self.assertEqual(result,1)
+        after=json.loads((self.scope/'installed-after.json').read_bytes())
+        self.assertTrue(after['exact_payload']);self.assertFalse(after['exact_container_path']);self.assertFalse(after['accepted_identity'])
+        self.assertNotIn('installed_after_exact_baseline',metadata)
+    def test_changed_bytes_after_first_capture_are_saved_and_rejected(self):
+        result,metadata=self.exercise(changed_bytes=True);self.assertEqual(result,1)
+        after=json.loads((self.scope/'installed-after.json').read_bytes())
+        self.assertTrue(after['exact_container_path']);self.assertFalse(after['exact_payload']);self.assertFalse(after['accepted_identity'])
+        self.assertEqual(after['differences'][0]['fields'],['sha256'])
+    def test_actual_case_start_parser_rejects_suite_completion_unknown_and_partial_rows(self):
+        name=self.m.CASE_NAMES[0];line=("Test Case '-[CleanSendTests.ProStoreTests "+name+"]' started.").encode()
+        self.assertEqual(self.m.observed_native_case_start(line),'ProStoreTests/'+name)
+        for raw in (b"Test Suite 'ProStoreTests' started.",line.replace(b'started',b'passed'),line.replace(name.encode(),b'testUnknown'),line.replace(b'CleanSendTests',b'OtherTests'),line[:-1],b'command selector '+line):
+            self.assertIsNone(self.m.observed_native_case_start(raw))
+
 
 def setitem(mapping,key,value):mapping[key]=value
 
