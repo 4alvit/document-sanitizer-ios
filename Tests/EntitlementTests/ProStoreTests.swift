@@ -227,6 +227,8 @@ final class ProStoreTests: XCTestCase {
     // At most 2048 lines of 512 bytes per case, within the existing 16 MiB test log cap.
     private var phaseCase = "unassigned"
     private var phaseSequence = 0
+    private static var schedulingProbeClaimed = false
+    private var schedulingProbe: FirstEntitlementSchedulingProbe?
     private let phaseClock = ContinuousClock()
     private var phaseStarted = ContinuousClock().now
 
@@ -238,6 +240,10 @@ final class ProStoreTests: XCTestCase {
     }
 
     private func tracePhase(_ phase: StaticString, _ boundary: StaticString) {
+        if String(describing: phase) == "test" && String(describing: boundary) == "exit" {
+            schedulingProbe?.disarm()
+            schedulingProbe = nil
+        }
         guard phaseSequence < 2048 else {
             if phaseSequence == 2048 {
                 phaseSequence += 1
@@ -356,7 +362,7 @@ final class ProStoreTests: XCTestCase {
             // A session reset is not an app-facing observation barrier. Require
             // both histories to be empty before creating this case's purchase.
             tracePhase("waitForCleanStoreKitSession", "begin")
-            try await waitForLocalEntitlement(present: false, resetSession: session)
+            try await waitForLocalEntitlement(present: false, resetSession: session, probeFirstIterator: true)
             tracePhase("waitForCleanStoreKitSession", "end")
             // SKTestSession can control the Xcode service while an app that
             // queried StoreKit before test setup is still routed to Sandbox.
@@ -389,13 +395,24 @@ final class ProStoreTests: XCTestCase {
         }
     }
 
-    private func waitForLocalEntitlement(present: Bool, resetSession: SKTestSession? = nil) async throws {
+    private func waitForLocalEntitlement(present: Bool, resetSession: SKTestSession? = nil, probeFirstIterator: Bool = false) async throws {
         var lastSummary = "No query completed."
         for _ in 0..<100 {
             var found = false
             var verifiedCount = 0
             var unverifiedCount = 0
             tracePhase("Transaction.currentEntitlements", "begin")
+            let probe: FirstEntitlementSchedulingProbe?
+            if probeFirstIterator && !Self.schedulingProbeClaimed &&
+                phaseCase == "testCachedEntitlementSurvivesProductNetworkFailure()" {
+                Self.schedulingProbeClaimed = true
+                probe = FirstEntitlementSchedulingProbe(started: phaseStarted, iteratorSequence: phaseSequence)
+                schedulingProbe = probe
+                probe?.start()
+            } else {
+                probe = nil
+            }
+            defer { probe?.disarm() }
             for await result in Transaction.currentEntitlements {
                 let transaction: Transaction
                 switch result {
@@ -419,6 +436,7 @@ final class ProStoreTests: XCTestCase {
                     found = true
                 }
             }
+            probe?.disarm()
             tracePhase("Transaction.currentEntitlements", "end")
             let ledgerCount = resetSession?.allTransactions().count
             let resetIsObserved = ledgerCount.map {
@@ -452,5 +470,77 @@ final class ProStoreTests: XCTestCase {
             tracePhase("Task.sleep100ms", "end")
         }
         XCTFail("StoreKit update was not delivered within 10 seconds.")
+    }
+}
+
+/// Diagnostic only: one voluntary scheduler observation, not a StoreKit timeout.
+/// No await/join on the test path, no StoreKit calls, and no process attachment.
+/// Mutable state is protected by lock; encoding/output and cancellation occur outside it.
+private final class FirstEntitlementSchedulingProbe: @unchecked Sendable {
+    private enum Event: String { case armed, backgroundFired, mainActorCallback }
+    private let lock = NSLock()
+    private var open = true
+    private var nextEvent = 0
+    private var task: Task<Void, Never>?
+    private let started: ContinuousClock.Instant
+    private let iteratorSequence: Int
+    private let observationEnd: ContinuousClock.Instant
+    private let processID = ProcessInfo.processInfo.processIdentifier
+
+    init(started: ContinuousClock.Instant, iteratorSequence: Int) {
+        self.started = started
+        self.iteratorSequence = iteratorSequence
+        observationEnd = min(ContinuousClock().now.advanced(by: .seconds(20)), started.advanced(by: .seconds(120)))
+    }
+
+    func start() {
+        guard record(.armed) else { disarm(); return }
+        let scheduled = Task.detached { [weak self] in
+            do { try await Task.sleep(for: .seconds(10)) } catch { return }
+            guard !Task.isCancelled, let self, self.record(.backgroundFired) else { return }
+            await MainActor.run {
+                guard !Task.isCancelled else { return }
+                _ = self.record(.mainActorCallback)
+            }
+        }
+        lock.lock()
+        if open { task = scheduled }
+        let cancelImmediately = !open
+        lock.unlock()
+        if cancelImmediately { scheduled.cancel() }
+    }
+
+    func disarm() {
+        lock.lock()
+        open = false
+        let scheduled = task
+        task = nil
+        lock.unlock()
+        scheduled?.cancel()
+    }
+
+    private func record(_ event: Event) -> Bool {
+        let expected: Int
+        switch event { case .armed: expected = 0; case .backgroundFired: expected = 1; case .mainActorCallback: expected = 2 }
+        lock.lock()
+        guard open && nextEvent == expected && ContinuousClock().now < observationEnd else { lock.unlock(); return false }
+        nextEvent += 1
+        let elapsed = started.duration(to: ContinuousClock().now).components
+        lock.unlock()
+        // A background event already claimed can finish output after disarm.
+        // The saved-log interpreter rejects all events outside the open phase.
+        let eventData: [String: Any] = [
+            "case": "testCachedEntitlementSurvivesProductNetworkFailure()",
+            "scope": "firstCleanIterator", "probe": 1,
+            "processIdentifier": processID, "iteratorBeginSequence": iteratorSequence,
+            "event": event.rawValue,
+            "elapsedMilliseconds": elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: eventData, options: [.sortedKeys]) else { return false }
+        var line = Data("NATIVE_STOREKIT_SCHEDULING ".utf8)
+        line.append(data); line.append(10)
+        guard line.count <= 512 else { return false }
+        let written = line.withUnsafeBytes { fwrite($0.baseAddress, 1, $0.count, stdout) }
+        return written == line.count && fflush(stdout) == 0
     }
 }
