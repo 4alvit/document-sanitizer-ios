@@ -87,14 +87,36 @@ def inspect_bundle_paths(app):
         assert executable.stat().st_mode & stat.S_IXUSR, 'Bundle executable lost its execute mode'
 
 
+BOOTSTRAP_SETTING = 'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) REDACT_BOOTSTRAP_OBSERVATION'
+BOOTSTRAP_BUILDS = []
+
+def bootstrap_diagnostic_enabled():
+    value = os.environ.get('REDACT_BOOTSTRAP_DIAGNOSTIC')
+    assert value in (None, '1'), 'Unexpected bootstrap diagnostic activation'
+    if value == '1':
+        assert not os.environ.get('XCODE_XCCONFIG_FILE'), 'Diagnostic command flags must not be overridden'
+    return value == '1'
+
+def bootstrap_build_record():
+    if not bootstrap_diagnostic_enabled():
+        return None
+    assert len(BOOTSTRAP_BUILDS) == 2 and [b['signed'] for b in BOOTSTRAP_BUILDS] == [False, True]
+    return {'mode': 'root-onAppear-only', 'compile_setting': BOOTSTRAP_SETTING,
+            'diagnostic_only': True, 'exact_release_acceptance': False, 'builds': BOOTSTRAP_BUILDS}
+
+
 def build_simulator(derived, *, signed):
     signing = ['CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-', 'DEVELOPMENT_TEAM='] if signed else ['CODE_SIGNING_ALLOWED=NO']
-    command('xcodebuild', '-project', 'CleanSend.xcodeproj', '-scheme', 'CleanSend',
+    diagnostic = bootstrap_diagnostic_enabled()
+    argv = ['xcodebuild', '-project', 'CleanSend.xcodeproj', '-scheme', 'CleanSend',
             '-configuration', 'Release', '-sdk', 'iphonesimulator',
             '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', derived,
             'ENABLE_CODE_COVERAGE=NO', 'CLANG_COVERAGE_MAPPING=NO',
             'CLANG_COVERAGE_MAPPING_LINKER_ARGS=NO',
-            *signing, 'build')
+            *signing, *([BOOTSTRAP_SETTING] if diagnostic else []), 'build']
+    command(*argv)
+    if diagnostic:
+        BOOTSTRAP_BUILDS.append({'signed': signed, 'argv': list(map(str, argv)), 'returncode': 0})
     return derived / 'Build/Products/Release-iphonesimulator/CleanSend.app'
 
 
@@ -260,6 +282,9 @@ def main():
         'app_group_note': 'Use RedactLeaf-adhoc-simulator.zip for the shared App Group. Runtime extension smoke is recorded separately; packaging alone does not prove runtime behavior.',
         'tests_note': 'Packaging checks archives and identity; separate QA evidence records executed tests.'
     }
+    diagnostic = bootstrap_build_record()
+    if diagnostic is not None:
+        metadata['bootstrap_observation'] = diagnostic
     manifest = destination / 'preview-build.json'
     manifest.write_text(json.dumps(metadata, indent=2) + '\n')
     payload_manifest = destination / 'payload-sha256.json'
@@ -269,6 +294,7 @@ def main():
     scan_manifest.write_text(json.dumps(metadata_scans, indent=2) + '\n')
     readme = destination / 'PREVIEW-README.txt'
     readme.write_text(
+        ('DIAGNOSTIC ONLY: bootstrap observation enabled; not release acceptance.\n\n' if diagnostic else '') +
         f'RedactLeaf {version} development preview\n'
         f'Source checkout commit: {revision}\n'
         f"Source tree: {provenance['source_tree']}\n"

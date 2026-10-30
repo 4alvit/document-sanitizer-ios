@@ -1,4 +1,8 @@
 import SwiftUI
+#if REDACT_BOOTSTRAP_OBSERVATION && targetEnvironment(simulator)
+import Foundation
+import Darwin
+#endif
 #if DEBUG && targetEnvironment(simulator)
 import Darwin
 #endif
@@ -52,7 +56,12 @@ private struct CleanSendRootView: View {
             .environmentObject(workspace)
             .environmentObject(store)
             .environmentObject(presetStore)
-            .onAppear { _ = privacyShield }
+            .onAppear {
+                #if REDACT_BOOTSTRAP_OBSERVATION && targetEnvironment(simulator)
+                BootstrapReadyObservation.record()
+                #endif
+                _ = privacyShield
+            }
             .task {
                 #if DEBUG && targetEnvironment(simulator)
                 workspace.importCommitDiagnostic = { [weak store] added, total, liveIsPro in
@@ -128,6 +137,54 @@ enum NativeUnitTestHost {
         guard line.count <= 512 else { return }
         _ = line.withUnsafeBytes { fwrite($0.baseAddress, 1, $0.count, stdout) }
         _ = fflush(stdout)
+    }
+}
+#endif
+
+#if REDACT_BOOTSTRAP_OBSERVATION && targetEnvironment(simulator)
+/// Diagnostic simulator build only. Never an entitlement or release-acceptance signal.
+@MainActor
+private enum BootstrapReadyObservation {
+    private static var attempted = false
+
+    static func record() {
+        guard !attempted else { return }
+        attempted = true
+        let env = ProcessInfo.processInfo.environment
+        guard env["REDACT_BOOTSTRAP_OBSERVATION"] == "1",
+              Bundle.main.bundleIdentifier == "io.github.4alvit.cleansend",
+              let nonce = env["REDACT_BOOTSTRAP_NONCE"],
+              UUID(uuidString: nonce)?.uuidString.lowercased() == nonce,
+              let installation = env["REDACT_BOOTSTRAP_INSTALLATION"],
+              UUID(uuidString: installation)?.uuidString == installation,
+              Bundle.main.bundleURL.lastPathComponent == "CleanSend.app",
+              Bundle.main.bundleURL.deletingLastPathComponent().lastPathComponent == installation,
+              let source = env["REDACT_BOOTSTRAP_SOURCE"],
+              source.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil,
+              let run = env["REDACT_BOOTSTRAP_RUN"], run.count <= 20,
+              let runNumber = UInt64(run), runNumber > 0, String(runNumber) == run,
+              let attempt = env["REDACT_BOOTSTRAP_ATTEMPT"], attempt.count <= 6,
+              let attemptNumber = UInt64(attempt), attemptNumber > 0, String(attemptNumber) == attempt else { return }
+        var stamp = timespec()
+        guard clock_gettime(CLOCK_MONOTONIC_RAW, &stamp) == 0,
+              stamp.tv_sec >= 0, stamp.tv_nsec >= 0 else { return }
+        let rawNanoseconds = UInt64(stamp.tv_sec) * 1_000_000_000 + UInt64(stamp.tv_nsec)
+        let value: [String: Any] = ["schema": 1, "event": "root.onAppear", "nonce": nonce,
+            "installation": installation, "source": source, "run": run, "attempt": attempt,
+            "bundle": "io.github.4alvit.cleansend", "raw_nanoseconds": rawNanoseconds,
+            "processIdentifier": Int(getpid())]
+        guard let bytes = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              bytes.count <= 1024 else { return }
+        let directory = FileManager.default.temporaryDirectory
+        let final = directory.appendingPathComponent("bootstrap-" + nonce + ".json")
+        let staging = directory.appendingPathComponent("bootstrap-" + nonce + ".writing")
+        let fd = open(staging.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { return }
+        defer { _ = close(fd); _ = unlink(staging.path) }
+        let count = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+        guard count == bytes.count else { return }
+        // Publish complete bytes without replacing any existing file. No fsync or retry.
+        _ = link(staging.path, final.path)
     }
 }
 #endif

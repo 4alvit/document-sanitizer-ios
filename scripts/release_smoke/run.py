@@ -11,6 +11,9 @@ CASE='CleanSendUITests/ShareExtensionEntryTests/testPDFReceivedByExtensionThenIm
 CASE_STARTED=b"Test Case '-[CleanSendUITests.ShareExtensionEntryTests testPDFReceivedByExtensionThenImported]' started."
 WORKSPACE_READY=b"REDACT_PACKAGE_WORKSPACE_READY format=PDF\n"
 APP_ID='io.github.4alvit.cleansend';GROUP='group.io.github.4alvit.cleansend'
+
+class DiagnosticOnlyStop(Exception):
+ pass
 CAP=2*2**30;FLOOR=12*2**30
 
 def version(text):
@@ -29,6 +32,14 @@ def validate_grant(path):
  assert os.uname().machine=='arm64','reviewed ARM host profile required'
  raw=path.read_bytes();assert len(raw)<=1024*1024 and hashlib.sha256(raw).hexdigest()==os.environ['RELEASE_SMOKE_CONTEXT_SHA']
  grant=json.loads(raw)
+ diagnostic=grant.get('bootstrap_observation')
+ if diagnostic is not None:
+  assert os.environ.get('REDACT_BOOTSTRAP_DIAGNOSTIC')=='1'
+  assert set(diagnostic)=={'mode','nonce','producer_preview_sha256'}
+  assert diagnostic['mode']=='root-onAppear-only'
+  assert str(uuid.UUID(diagnostic['nonce']))==diagnostic['nonce']
+  assert re.fullmatch(r'[0-9a-f]{64}',diagnostic['producer_preview_sha256'])
+ else:assert os.environ.get('REDACT_BOOTSTRAP_DIAGNOSTIC') is None
  assert grant['host_architecture']==os.uname().machine=='arm64'
  assert grant['repository']==os.environ['GITHUB_REPOSITORY']=='4alvit/document-sanitizer-ios'
  assert grant['head']==os.environ['EXPECTED_HEAD_SHA'] and grant['run']==os.environ['GITHUB_RUN_ID'] and grant['attempt']==os.environ['GITHUB_RUN_ATTEMPT'] and grant['checkout']==os.environ['GITHUB_SHA']
@@ -383,7 +394,43 @@ def worker(start,grant):
   assert configure_package_ax5(run,resources,uid,l)==l.AX5
   command(['xcrun','simctl','install',uid,BUNDLE],'install.log',30)
   command(['xcrun','simctl','install',uid,Path(frozen['runner'])],'install-runner.log',30)
-  installed('installed-before.json',initial_install=True)
+  installed_path=installed('installed-before.json',initial_install=True)
+  if grant.get('bootstrap_observation') is not None:
+   # The diagnostic build/manifest is reviewed separately; never release acceptance.
+   diagnostic=grant['bootstrap_observation']
+   run.meta.update(diagnostic_only=True,exact_release_acceptance=False)
+   run.meta['binary_kind']='diagnostic-only Release simulator build; not unmodified shipped Release acceptance'
+   manifest_path=ASSETS/'preview-build.json'
+   resources.check()
+   with b.directory(ASSETS) as manifest_dir:
+    manifest_fd=os.open(manifest_path.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=manifest_dir)
+    try:
+     info=os.fstat(manifest_fd);assert stat.S_ISREG(info.st_mode) and info.st_size<=512*1024
+     manifest_raw=os.read(manifest_fd,512*1024+1);assert len(manifest_raw)==info.st_size
+    finally:os.close(manifest_fd)
+   resources.check()
+   assert hashlib.sha256(manifest_raw).hexdigest()==diagnostic['producer_preview_sha256']
+   build=json.loads(manifest_raw)
+   github=build['provenance']['github']
+   assert build['provenance']['published_head']==HEAD and github['run_id']==grant['run'] and github['run_attempt']==grant['attempt']
+   assert build['configuration']=='Release' and build['bootstrap_observation']['mode']=='root-onAppear-only'
+   assert build['bootstrap_observation']['diagnostic_only'] is True and build['bootstrap_observation']['exact_release_acceptance'] is False
+   data=container('data','bootstrap-data-container.txt')
+   binding={'nonce':diagnostic['nonce'],'installation':installed_path.parent.name,
+            'source':HEAD,'run':grant['run'],'attempt':grant['attempt']}
+   observer=load('bootstrap_observation').Observation(data,resources.device,binding)
+   try:
+    resources.check()
+    run.command(['xcrun','simctl','launch',uid,APP_ID],'initial-launch.log',20,bootstrap_observer=observer)
+   finally:
+    run.meta['bootstrap_observation']=observer.result
+    try:observer.close()
+    except OSError as error:run.meta['bootstrap_observation']['close_error']=type(error).__name__
+    try:run.persist()
+    except BaseException as error:run.meta['bootstrap_observation']['persist_error']=type(error).__name__
+   # The existing finally performs owned-device, group and payload cleanup checks.
+   # A diagnostic-only completed observation deliberately does not pass this gate.
+   raise DiagnosticOnlyStop('observation complete; no XCTest or release acceptance')
   # The app creates its own state; the driver never seeds a workspace or queue.
   command(['xcrun','simctl','launch',uid,APP_ID],'initial-launch.log',20)
   data=container('data','data-container.txt');group=container(GROUP,'group-container.txt')

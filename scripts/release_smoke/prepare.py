@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Bounded same-run artifact preparation for the exact Release package smoke."""
-import hashlib, importlib.util, io, json, os, plistlib, re, shutil, stat, sys, time, zipfile
+import hashlib, importlib.util, io, json, os, plistlib, re, shutil, stat, sys, time, uuid, zipfile
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[1]
@@ -60,6 +60,25 @@ def failure_detail(error):
   result['ledger_row']={key:row[key] for key in ('kind','logical','allocated','logical_charge','allocated_charge')}
   result['ledger_row']['name']=row['name'][:256]
  return result
+
+def bootstrap_context(preview, preview_sha256):
+ value=os.environ.get('REDACT_BOOTSTRAP_DIAGNOSTIC');assert value in (None,'1')
+ diagnostic=preview.get('bootstrap_observation')
+ if value is None:
+  assert diagnostic is None,'Diagnostic producer cannot pass normal Release acceptance'
+  return None
+ assert diagnostic is not None and diagnostic['mode']=='root-onAppear-only'
+ setting='SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) REDACT_BOOTSTRAP_OBSERVATION'
+ assert diagnostic['compile_setting']==setting and diagnostic['diagnostic_only'] is True and diagnostic['exact_release_acceptance'] is False
+ builds=diagnostic['builds'];assert len(builds)==2 and [b['signed'] for b in builds]==[False,True]
+ for build in builds:
+  argv=build['argv'];assert build['returncode']==0 and argv[0]=='xcodebuild' and argv[-1]=='build'
+  assert argv.count(setting)==1 and '-xcconfig' not in argv
+  assert argv[argv.index('-configuration')+1]=='Release' and argv[argv.index('-sdk')+1]=='iphonesimulator'
+  assert argv[argv.index('-scheme')+1]=='CleanSend'
+  assert ('CODE_SIGNING_ALLOWED=YES' if build['signed'] else 'CODE_SIGNING_ALLOWED=NO') in argv
+ return {'mode':'root-onAppear-only','nonce':str(uuid.uuid4()),'producer_preview_sha256':preview_sha256}
+
 
 def main():
  if not __debug__:raise SystemExit('Assertions must be enabled')
@@ -161,6 +180,7 @@ def main():
   assert preview['source_commit']==checkout and preview['source_tree']==tree and preview['configuration']=='Release' and preview['platform']=='iPhoneSimulator' and preview['app_store_release'] is False
   assert provenance['published_head']==head and provenance['published_head_tree']==tree and provenance['checkout_tree_matches_published_head'] is True
   assert provenance['github']['run_id']==run and provenance['github']['run_attempt']==attempt and provenance['github']['repository']==REPO
+  bootstrap=bootstrap_context(preview,checksums['preview-build.json'])
   with w.reader('release-assets/RedactLeaf-source.zip') as stream,zipfile.ZipFile(stream) as archive:
    contents=index(archive,w,16*2**20);files={n.removeprefix('RedactLeaf-source/'):r for n,r in contents.items() if not r.is_dir()}
    assert set(files)==set(names)
@@ -212,6 +232,7 @@ def main():
   saved_binding=save('runner-binding.json',binding)
   report['stage']='native_context'
   context={'host_architecture':os.uname().machine,'repository':REPO,'run':run,'attempt':attempt,'head':head,'tree':tree,'checkout':checkout,'base':str(base),'scope':str(base/'native'),'assets':str(base/'release-assets'),'runner_binding':str(base/'runner-binding.json'),'runner_binding_sha256':saved_binding['sha256'],'runner_template':str(base/'privacy-inputs/generated-original.xctestrun'),'adhoc_zip_sha256':checksums['RedactLeaf-adhoc-simulator.zip'],'adhoc_zip_bytes':(base/'release-assets/RedactLeaf-adhoc-simulator.zip').stat().st_size,'payload_manifest_sha256':checksums['payload-sha256.json'],'runtime_id':meta['runtime']['identifier'],'device_type':meta['device_type']['identifier'],'runtime_version':'18.5','xcode_build':'16F6','seconds':780,'owned_cap_bytes':2*2**30,'free_floor_bytes':12*2**30,'get_count':0,'native_worker_count':1,'retry_authorized':False,'pipeline_deadline':start+1080,'expires_unix':time.time()+300,'source_files':privacy['source_files']}
+  if bootstrap is not None:context['bootstrap_observation']=bootstrap
   assert context['runtime_id']=='com.apple.CoreSimulator.SimRuntime.iOS-18-5'
   assert context['device_type']=='com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4-16GB'
   assert time.monotonic()<start+300 and shutil.disk_usage(base).free>=14*2**30

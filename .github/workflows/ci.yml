@@ -36,7 +36,9 @@ jobs:
           .venv/bin/python -m pip install -r requirements-qa.txt
       - name: Verify Release packages
         id: release-packages
+        timeout-minutes: 10
         env:
+          REDACT_BOOTSTRAP_DIAGNOSTIC: '1'
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 scripts/package-prerelease.py
       - name: Save verified Release simulator packages
@@ -169,12 +171,14 @@ jobs:
         id: prepare
         timeout-minutes: 6
         env:
+          REDACT_BOOTSTRAP_DIAGNOSTIC: '1'
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ github.token }}
         run: python3 -B scripts/release_smoke/prepare.py
       - name: Run one bounded exact-package Share Extension case
         timeout-minutes: 14
         env:
+          REDACT_BOOTSTRAP_DIAGNOSTIC: '1'
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RELEASE_SMOKE_CONTEXT_SHA: ${{ steps.prepare.outputs.context_sha256 }}
           RELEASE_SMOKE_CONTEXT: ${{ steps.prepare.outputs.context }}

@@ -134,7 +134,7 @@ class Run:
         save(OUT / 'metadata.json', self.meta)
         assert time.monotonic() < self.start + TOTAL, 'whole deadline after worker metadata write'
 
-    def command(self, args, name, limit=15, required=True):
+    def command(self, args, name, limit=15, required=True, *, bootstrap_observer=None):
         assert not any(c.get('owned_group_absent') is False for c in self.meta['commands']), 'Prior owned child group unresolved; no additional native child work'
         command_args = list(map(str, args))
         observe = command_args == ['xcrun', 'simctl', 'list', 'runtimes', '--json']
@@ -181,7 +181,13 @@ class Run:
                             raise TimeoutError('No phase budget before ' + name)
                         command_end = spawn_time + allowance
                         item.update(timeout_seconds=allowance, command_deadline_monotonic=command_end)
-                        proc = subprocess.Popen(item['args'], cwd=ROOT, env=ENV, stdout=log,
+                        child_env = ENV
+                        if bootstrap_observer is not None:
+                            bootstrap_observer.begin(command_end)
+                            child_env = bootstrap_observer.environment(ENV)
+                            if time.monotonic() >= command_end:
+                                raise TimeoutError('No launch budget after diagnostic setup')
+                        proc = subprocess.Popen(item['args'], cwd=ROOT, env=child_env, stdout=log,
                                                 stderr=subprocess.STDOUT, start_new_session=True)
                     except BaseException as error:
                         failed(error, 'spawn')
@@ -204,7 +210,10 @@ class Run:
                                 if allowance <= 0:
                                     raise TimeoutError('No phase budget before wait ' + name)
                                 item['wait_timeout_seconds'] = allowance
-                                proc.wait(timeout=allowance)
+                                if bootstrap_observer is None:
+                                    proc.wait(timeout=allowance)
+                                else:
+                                    bootstrap_observer.wait(proc, command_end)
                                 assert self.remaining() > 0, 'Original phase deadline after command'
                             except BaseException as error:
                                 # Capture before sampling: a later diagnostic cannot replace wait().
