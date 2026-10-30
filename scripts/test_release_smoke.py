@@ -850,6 +850,84 @@ class PackageResourceScanTests(unittest.TestCase):
         self.assertIs(caught.exception,primary);self.assertIsNone(resources.first_failure)
 
 
+class PackageTestLaunchAdmissionTests(unittest.TestCase):
+    def setUp(self):
+        self.m=load('package_launch_admission',SMOKE/'run.py')
+        self.l=load('package_launch_lifecycle',SMOKE/'lifecycle.py')
+        worker=next(n for n in ast.parse((SMOKE/'run.py').read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='worker')
+        events=next(n for n in ast.walk(worker) if isinstance(n,ast.With) and any(isinstance(i.optional_vars,ast.Name) and i.optional_vars.id=='events' for i in n.items))
+        launch_index=next(i for i,n in enumerate(events.body) if isinstance(n,ast.Try))
+        admission_index=max(i for i,n in enumerate(events.body[:launch_index]) if isinstance(n,ast.Assert))
+        launch=events.body[launch_index];log=launch.body[0]
+        reader_index=next(i for i,n in enumerate(log.body) if isinstance(n,ast.With))
+        # Execute the actual worker admission, persistence, log open and Popen,
+        # including its finally. Only the later native observation loop is omitted.
+        boundary=ast.Try(body=[ast.With(items=log.items,body=log.body[:reader_index],type_comment=None)],
+                         handlers=launch.handlers,orelse=launch.orelse,finalbody=launch.finalbody)
+        self.boundary=compile(ast.fix_missing_locations(ast.Module(body=events.body[admission_index:launch_index]+[boundary],type_ignores=[])),str(SMOKE/'run.py'),'exec')
+
+    def launch(self,*,elapsed=250,persist_delay=0,open_delay=0):
+        clock=[100.0+elapsed];opened=[];observed=[];original_open=Path.open
+        with tempfile.TemporaryDirectory() as temporary,mock.patch.object(time,'monotonic',side_effect=lambda:clock[0]):
+            run=self.l.Run();run.start=100.0
+            deadlines=dict(run.meta['phase_deadlines_seconds']);persist_count=0
+            def persist():
+                nonlocal persist_count
+                persist_count+=1
+                if persist_count==1:clock[0]+=persist_delay
+            run.persist=persist
+            def open_log(path,*args,**kwargs):
+                stream=original_open(path,*args,**kwargs);opened.append(stream);clock[0]+=open_delay
+                return stream
+            state=dict(vars(self.m),run=run,l=self.l,start=run.start,SCOPE=Path(temporary),uid='fixture-owned')
+            process=SimpleNamespace(pid=123,returncode=0)
+            def spawn(*args,**kwargs):
+                observed.append({'time':clock[0],'end':state['end'],'run_end':run.end})
+                return process
+            def stopped(proc,row):row['owned_group_absent']=True
+            with mock.patch.object(Path,'open',open_log),mock.patch.object(subprocess,'Popen',side_effect=spawn) as popen,mock.patch.object(self.l,'stop_group',side_effect=stopped) as stop,mock.patch.object(os,'killpg',side_effect=AssertionError('signals forbidden')):
+                error=None
+                try:exec(self.boundary,state)
+                except AssertionError as caught:error=caught
+            self.assertTrue(all(stream.closed for stream in opened))
+            self.assertEqual(run.start,100.0);self.assertEqual(run.end,560)
+            self.assertEqual(run.meta['phase_deadlines_seconds'],deadlines)
+            self.assertEqual(deadlines['absence'],660);self.assertEqual(run.meta['total_seconds'],780)
+            if 'end' in state:self.assertLessEqual(state['end'],run.start+560-4)
+            for launch in observed:self.assertEqual(launch['end']-launch['time'],300)
+            return error,popen.call_count,stop.call_count,observed,state.get('end')
+
+    def test_slow_metadata_write_rejects_stale_admission_without_spawn(self):
+        error,spawns,stops,_,end=self.launch(persist_delay=7)
+        self.assertIsInstance(error,AssertionError);self.assertEqual(spawns,0);self.assertEqual(stops,0)
+        self.assertIsNone(end)
+
+    def test_slow_log_open_rejects_insufficient_original_work_before_test_end_exists(self):
+        for delay in (7,301):
+            with self.subTest(delay=delay):
+                error,spawns,stops,_,end=self.launch(open_delay=delay)
+                self.assertIsInstance(error,AssertionError);self.assertEqual(spawns,0);self.assertEqual(stops,0)
+                self.assertIsNone(end)
+
+    def test_fast_open_spawns_once_with_full_window_and_original_work_cleanup_deadlines(self):
+        error,spawns,stops,observed,end=self.launch(open_delay=1)
+        self.assertIsNone(error);self.assertEqual(spawns,1);self.assertEqual(stops,1)
+        self.assertEqual(observed,[{'time':351.0,'end':651.0,'run_end':551.0}])
+        self.assertEqual(end,651.0)
+
+    def test_early_long_open_establishes_single_full_window_after_io(self):
+        error,spawns,stops,observed,end=self.launch(elapsed=100,open_delay=150)
+        self.assertIsNone(error);self.assertEqual(spawns,1);self.assertEqual(stops,1)
+        self.assertEqual(observed,[{'time':350.0,'end':650.0,'run_end':550.0}])
+        self.assertEqual(end,650.0)
+
+    def test_exact_original_work_reserve_can_spawn_with_no_io_delay(self):
+        error,spawns,stops,observed,end=self.launch(elapsed=256)
+        self.assertIsNone(error);self.assertEqual(spawns,1);self.assertEqual(stops,1)
+        self.assertEqual(observed,[{'time':356.0,'end':656.0,'run_end':556.0}])
+        self.assertEqual(end,656.0)
+
+
 class PackageReadinessBudgetTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)

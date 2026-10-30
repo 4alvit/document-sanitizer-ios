@@ -400,10 +400,15 @@ def worker(start,grant):
    assert run.remaining()>=304,'insufficient full300s XCTest admission'
    argv=['xcodebuild','test-without-building','-xctestrun',str(SCOPE/'config/exact-package-share.xctestrun'),'-destination','platform=iOS Simulator,id='+uid,'-parallel-testing-enabled','NO','-maximum-concurrent-test-simulator-destinations','1','-only-testing:'+CASE,'-test-timeouts-enabled','YES','-maximum-test-execution-time-allowance','240','-collect-test-diagnostics','never','-resultBundlePath',str(SCOPE/'result.xcresult')]
    item={'args':argv,'started_at':l.now(),'timeout_seconds':300};run.meta['commands'].append(item);run.persist()
-   proc=None;during=False;observation_roots=None;tail=b'';log_read=0;end=min(time.monotonic()+300,start+560-4)
-   previous_end=run.end;run.end=min(previous_end,end-start)
+   proc=None;during=False;observation_roots=None;tail=b'';log_read=0
+   previous_end=run.end
    try:
     with (SCOPE/'test.log').open('xb') as log:
+     # Preparation consumes the original work budget; establish the test end once.
+     spawn_time=time.monotonic()
+     assert start+previous_end-spawn_time>=304,'insufficient full300s XCTest admission after log open'
+     end=min(spawn_time+300,start+previous_end-4)
+     run.end=min(previous_end,end-start)
      proc=subprocess.Popen(argv,cwd=HERE,env=l.ENV,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
      item['owned_process_group']=proc.pid;run.persist()
      with (SCOPE/'test.log').open('rb') as reader:
