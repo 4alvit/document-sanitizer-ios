@@ -838,6 +838,140 @@ def stop_recorded_children(worker_pid, metadata, deadline):
     return outcomes
 
 
+
+# Diagnostics only: no native calls, retries, additional cleanup or deadline changes.
+# Exception strings, argv, paths and assertion messages are never copied to stdout.
+SUMMARY_INPUT_LIMIT = 1024 * 1024
+SUMMARY_ROW_LIMIT = 512
+SUMMARY_OUTPUT_LIMIT = 4096
+SUMMARY_ERRORS = frozenset(('AssertionError', 'TimeoutExpired', 'TimeoutError',
+    'InterruptedError', 'RuntimeError', 'PermissionError', 'FileNotFoundError',
+    'OSError', 'ValueError', 'JSONDecodeError'))
+
+
+def summary_error_kind(value):
+    if not isinstance(value, str):
+        return 'unknown'
+    # Worker failures optionally carry one of these source-owned stage prefixes.
+    text = value[:128]
+    for prefix in ('Device recovery: ', 'Cleanup: ', 'Result acceptance: ', 'Integrity: '):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    kind = text.split('(', 1)[0]
+    return kind if kind in SUMMARY_ERRORS else 'unknown'
+
+
+def summary_command_kind(args):
+    if not isinstance(args, list) or not args or len(args) > 128:
+        return 'unknown'
+    if args[:2] == ['xcrun', 'simctl'] and len(args) >= 3:
+        action = args[2]
+        if action in ('list', 'create', 'boot', 'bootstatus', 'ui', 'install',
+                      'launch', 'shutdown', 'delete', 'get_app_container', 'io'):
+            return 'simctl.' + action
+    if args[0] == 'xcodebuild':
+        if 'test-without-building' in args:
+            return 'xcodebuild.test-without-building'
+        if 'build-for-testing' in args:
+            return 'xcodebuild.build-for-testing'
+        return 'xcodebuild.other'
+    return 'unknown'
+
+
+def summary_exit_code(value):
+    return value if type(value) is int and -255 <= value <= 255 else None
+
+
+def privacy_failure_summary(invocation, metadata, metadata_status):
+    """Pure allowlisted projection, not a root-cause or release-acceptance verdict."""
+    summary = {'schema': 1, 'result': 'failed', 'metadata': metadata_status,
+               'supervisor_error_kind': summary_error_kind(invocation.get('error')),
+               'worker_returncode': summary_exit_code(invocation.get('worker_returncode'))}
+    if not isinstance(metadata, dict):
+        return summary
+    failures = metadata.get('failures')
+    if isinstance(failures, list):
+        summary['failure_count'] = min(len(failures), SUMMARY_ROW_LIMIT)
+        summary['failures_truncated'] = len(failures) > SUMMARY_ROW_LIMIT
+        summary['failure_kinds'] = sorted({summary_error_kind(row) for row in failures[:SUMMARY_ROW_LIMIT]})
+    commands = metadata.get('commands')
+    if isinstance(commands, list):
+        summary['command_count'] = min(len(commands), SUMMARY_ROW_LIMIT)
+        summary['commands_truncated'] = len(commands) > SUMMARY_ROW_LIMIT
+        # A recovered command issue is not necessarily the final failure's cause.
+        # Report it explicitly as an observation, without overriding failed status.
+        for index, row in enumerate(commands[:SUMMARY_ROW_LIMIT]):
+            if not isinstance(row, dict):
+                continue
+            code = summary_exit_code(row.get('returncode'))
+            if 'command_error' not in row and code in (None, 0):
+                continue
+            issue = {'index': index, 'command': summary_command_kind(row.get('args')),
+                     'error_kind': summary_error_kind(row.get('command_error')),
+                     'returncode': code}
+            operation = row.get('command_error_operation')
+            issue['operation'] = operation if operation in ('wait', 'spawn', 'log_open') else 'unknown'
+            allowance = row.get('timeout_seconds')
+            if type(allowance) in (int, float) and 0 <= allowance <= TOTAL:
+                issue['timeout_seconds'] = allowance
+            absent = row.get('owned_group_absent')
+            issue['owned_group_absent'] = absent if type(absent) is bool else None
+            summary['first_command_issue'] = issue
+            break
+    removed = metadata.get('device_removed')
+    summary['owned_device_removed'] = removed if type(removed) is bool else None
+    cleanup = metadata.get('cleanup')
+    if isinstance(cleanup, dict):
+        summary['cleanup_returncodes'] = {key: summary_exit_code(cleanup.get(key))
+                                          for key in ('shutdown', 'delete')}
+    return summary
+
+
+def read_summary_metadata(path, check):
+    """One small regular-file read; missing, malformed and changed evidence stay unknown."""
+    fd = None
+    try:
+        check()
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= SUMMARY_INPUT_LIMIT:
+            return None, 'invalid_file'
+        with os.fdopen(fd, 'rb', closefd=False) as stream:
+            raw = stream.read(SUMMARY_INPUT_LIMIT + 1)
+        check()
+        after = os.fstat(fd)
+        identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+        if identity(before) != identity(after) or len(raw) != before.st_size:
+            return None, 'changed'
+        value = json.loads(raw)
+        check()
+        return (value, 'available') if isinstance(value, dict) else (None, 'invalid_json')
+    except FileNotFoundError:
+        return None, 'missing'
+    except TimeoutError:
+        return None, 'deadline_exhausted'
+    except (OSError, ValueError, RecursionError):
+        return None, 'unavailable'
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def emit_failure_summary(invocation, path, check):
+    """Best-effort safe stdout summary; reporting must never change the exit result."""
+    try:
+        metadata, status = read_summary_metadata(path, check)
+        summary = privacy_failure_summary(invocation, metadata, status)
+        encoded = json.dumps(summary, ensure_ascii=True, sort_keys=True)
+        if len(encoded.encode()) > SUMMARY_OUTPUT_LIMIT:
+            encoded = '{"result":"failed","summary":"output_limit"}'
+        print('PRIVACY_FAILURE_SUMMARY ' + encoded, flush=True)
+    except Exception:
+        # No arbitrary exception text or retry if the diagnostics channel fails.
+        pass
+
+
 def supervise():
     identity = hosted_only()
     assert not os.path.lexists(DD), 'Attempt build directory already exists; no reuse'
@@ -891,6 +1025,8 @@ def supervise():
                 save(OUT / 'invocation.json', record, lambda: remaining(TOTAL))
             except TimeoutError:
                 record['result'] = 'failed'
+    if record['result'] != 'passed_pending_independent_review':
+        emit_failure_summary(record, OUT / 'metadata.json', lambda: remaining(TOTAL))
     return 0 if record['result'] == 'passed_pending_independent_review' else 1
 
 
