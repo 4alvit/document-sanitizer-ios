@@ -1,6 +1,14 @@
 # Product backlog
 
-## Before a public beta
+## Qualified development simulator preview
+
+CI run [41249291386](https://github.com/4alvit/document-sanitizer-ios/actions/runs/41249291386)
+at `d08d2ac` passed the separate eight-case native StoreKit cohort on
+Xcode 26.3/iOS 26.2, core/export checks, Russian iPad AX5 and exact Release-package
+Share Extension. This is scoped simulator evidence, not closure of the
+historical Xcode 27 P1 or the physical-device/Apple requirements below.
+
+## Before a broader public beta
 
 - Diagnose and close the observed early Pro unlock before Ask to Buy approval.
   The immutable-configuration control reproduced a four-page import during
@@ -8,9 +16,10 @@
   during a subsequent pending purchase after a refund. Keep this finding
   separate from controlled application defects and cold routing; see
   STOREKIT-TESTING.md for the recorded evidence and limits.
-- Resolve the reproducible fresh-simulator StoreKit routing issue and complete
-  the actual purchase/restore paths. Verified Xcode history alone did not prove
-  that a subsequent purchase used the local environment. See STOREKIT-TESTING.md.
+- Investigate the historical fresh-simulator routing failure on unqualified
+  toolchains. The actual purchase/restore paths now pass on the qualified
+  Xcode 26.3 cohort; that does not establish a universal routing fix.
+  See STOREKIT-TESTING.md.
 - Complete and inspect iPhone/iPad UI tests, including the largest text setting.
 - Verify Files providers and the Share Extension on a physical device, including
   interrupted copies, screen locking, full storage and low-memory conditions.

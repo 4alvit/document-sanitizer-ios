@@ -1,8 +1,19 @@
 # Payment validation and open findings
 
-Status as of 2026-10-21: **not passed**. The actual purchase and restore paths
-must pass before payment acceptance or a public beta. Export validation is
-separate evidence and does not establish payment correctness.
+Status as of 2026-10-31: **qualified native cohort passed; historical P1 remains open**.
+At `d08d2ac`, [CI run 41249291386](https://github.com/4alvit/document-sanitizer-ios/actions/runs/41249291386)
+passed all eight exact native cases with zero failures or skips on a fresh owned
+iOS 26.2 Simulator (23C54), Xcode 26.3 (17C529). This includes pending approval,
+purchase/new-store restore, refund, failed restore, empty restore, cancellation,
+unverified transactions and cached entitlement during product-network failure.
+Source and compiled host remained unchanged; the owned device was deleted and
+all process groups were absent. The separate Release Share and AX5 jobs passed.
+
+This supports a development simulator/source preview on the qualified profile.
+It does not establish the cause or closure of the historical Xcode 27 P1 below,
+prove every runtime correct, or satisfy live Sandbox, physical-device or App Store
+acceptance. The original observations and remaining broad-public-beta gates
+are retained; a local offer is not a live product.
 
 ## Early Pro unlock before approval: open P1
 
@@ -147,7 +158,7 @@ empty StoreKitTest ledger and zero verified or unverified app-facing
 entitlements before any real test case proceeds. A stale transaction cannot
 satisfy the identity check. The adapter adds no separate warm-up.
 
-This ordering is an explicit hypothesis, not a qualified native fix. In run
+The ordering alone was an explicit hypothesis, not an isolated native fix. In run
 `41239753264` at `f7287727`, the fresh iOS 18.5 host booted, but the first
 pre-purchase empty-history iterator never completed. The background and
 MainActor diagnostic callbacks both ran while it was suspended. The revised
@@ -200,8 +211,10 @@ change verification or permit early acceptance.
 
 The Xcode 16.4/iOS 18.5 runs from 2026-10-31 blocked before completing this
 iteration with either empty-first or synthetic-purchase-first setup. The ordering
-hypothesis has not resolved native acceptance. Controlled tests and a passing
-Share or privacy job do not substitute for the eight native purchase cases.
+change alone did not resolve those runs. The later Xcode 26.3 cohort passed all
+eight native cases; this does not establish which platform behavior caused the
+older stall. Controlled tests or a passing Share/privacy job remain insufficient
+substitutes for the dedicated native cases.
 
 ## Scoped Xcode 26.3 native cohort
 
@@ -213,10 +226,10 @@ Russian iPad privacy and exact-package Share jobs retain their Xcode 16.4
 profile and existing package metadata contracts. Their results must not be
 described as Xcode 26.3 acceptance.
 
-This cohort is a diagnostic response to the incomplete native entitlement
-iteration observed on Xcode 16.4, not proof of a platform fix. A separate
-project's eight native StoreKit cases passed on Xcode 26.3; that observation
-does not establish the cause or success of RedactLeaf's test setup. The fixed
+This cohort began as a diagnostic response to the incomplete native entitlement
+iteration observed on Xcode 16.4. RedactLeaf's own eight native cases now pass
+on Xcode 26.3 in the run recorded above; this is profile-specific acceptance,
+not proof of the older platform failure's cause. The fixed
 per-yield markers distinguish a missing first result from a later incomplete
 iteration. All eight native cases, exact transaction identity, verified results,
 strict empty-history barriers and original process/resource/time limits remain

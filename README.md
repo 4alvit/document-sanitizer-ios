@@ -2,7 +2,7 @@
 
 An original, local iPhone and iPad utility for making document copies with details hidden. Import PDF or a still image, draw black areas or find text, review every rendered page, and share a new PDF, PNG or JPEG.
 
-**Development prerelease. Not available on the App Store yet.** RedactLeaf is a working consumer name; App Store name reservation is still pending. Internal Xcode targets and bundle identifiers retain the original CleanSend names. The app includes a StoreKit implementation and local test offer. Payment validation remains blocked by fresh-simulator routing and a local pre-approval Pro unlock, reproduced on the first pending purchase without a previous refund as well as after a refund. Its root cause is unresolved. A local offer is not a live product. See the [findings and release gates](docs/STOREKIT-TESTING.md).
+**Development prerelease. Not available on the App Store yet.** RedactLeaf is a working consumer name; App Store name reservation is still pending. Internal Xcode targets and bundle identifiers retain the original CleanSend names. The app includes a StoreKit implementation and local test offer. The qualified Xcode 26.3/iOS 26.2 cohort passes all eight native purchase tests; the exact Release simulator package also passes Share Extension and AX5 checks. The historical Xcode 27 pre-approval unlock remains an open finding with no established cause. These results support a scoped development simulator preview, not payment validation on every toolchain or a live App Store product. See the [findings and release gates](docs/STOREKIT-TESTING.md).
 
 ## What it does
 
@@ -52,14 +52,15 @@ For deterministic application tests without StoreKit service calls, select
 `CleanSendTests/ProStoreControlledTests` and
 `CleanSendTests/ImportAuthorizationTests` with `-only-testing:` arguments.
 These cover event ordering and imports suspended during entitlement changes;
-passing them does not replace the blocked full payment suite.
+passing them does not replace the separate native payment suite.
 
 GitHub CI runs the core/corpus checks, builds all targets and runs hosted
-application tests with controlled purchase-service fixtures. It explicitly
-excludes `ProStoreTests`, whose native StoreKit prerequisites and unresolved
-payment findings are tracked in [StoreKit testing](docs/STOREKIT-TESTING.md).
-A green CI run does not satisfy the payment or App Store release gates. Native
-UI and StoreKit commands above remain separate, deliberate checks.
+application tests with controlled purchase-service fixtures. That step excludes
+`ProStoreTests`; a separate guarded Xcode 26.3 job runs all eight native cases.
+[CI run 41249291386](https://github.com/4alvit/document-sanitizer-ios/actions/runs/41249291386)
+passed both cohorts, Russian iPad privacy at AX5 and the exact Release-package
+Share Extension scenario at commit `d08d2ac`. Historical findings and live
+Sandbox/App Store gates remain separate in [StoreKit testing](docs/STOREKIT-TESTING.md).
 
 The dedicated accessibility commands require the largest system text size and
 exercise the native Files picker, multipage review and image exports. Simulator

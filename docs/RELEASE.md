@@ -4,17 +4,26 @@ Current product version: 0.1.0 development prerelease. A simulator build is not 
 
 The [App Store materials](app-store/README.md) include English and Russian listing
 and in-app purchase drafts, field-length checks, screenshot provenance, and
-prerelease privacy/support pages. They describe the reviewed `e40d693` application
-source. Documentation or screenshot updates do not supersede that simulator
-package or establish payment, physical-device, or App Store acceptance.
+prerelease privacy/support pages. These drafts originated with the reviewed
+`e40d693` application source. Current simulator-package evidence is recorded
+below; existing screenshots describe only their captured state and do not
+establish physical-device or App Store acceptance.
 
-Payment acceptance remains blocked by two distinct findings in
-[StoreKit testing](STOREKIT-TESTING.md): fresh-simulator purchase routing and an
-observed early Pro unlock before Ask to Buy approval. The latter has no proven
-root cause. An immutable-configuration control reproduced it on the first
-pending purchase without a previous refund, and again after a refund.
-Controlled application tests, export validation
-and interface tests do not satisfy the full payment acceptance gate.
+The qualified development preview at `d08d2ac` passed
+[all four CI jobs](https://github.com/4alvit/document-sanitizer-ios/actions/runs/41249291386):
+core/export corpus and Release builds; Russian iPad privacy at AX5; all eight
+native StoreKit cases on Xcode 26.3/iOS 26.2; and the exact Release-package Share
+Extension on Xcode 16.4/iOS 18.5. Six captured Share viewports were inspected:
+receive, Save/Cancel, copy completion, queue entry and import with queue removal.
+Both owned-device cleanup checks passed. AX5 succeeded on its first setter;
+this run does not claim to exercise the bounded retry branch.
+
+The historical Xcode 27 pre-approval P1 in [StoreKit testing](STOREKIT-TESTING.md)
+remains open without a proven cause. A scoped development simulator/source
+preview must retain that known limitation. It is not the broader public-beta,
+physical-device, live Sandbox or App Store acceptance listed below. Publish only
+the exact tested simulator packages/source and checksums; no new untested build
+or implication of an installable iPhone/TestFlight package.
 
 After regenerating the project with `xcodegen generate` and committing the tested
 sources, run `python3 scripts/package-prerelease.py`. The packager builds the
