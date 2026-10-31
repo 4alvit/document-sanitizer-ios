@@ -223,3 +223,15 @@ strict empty-history barriers and original process/resource/time limits remain
 required. The existing narrow installation-mode allowance is retained unchanged;
 new toolchain payload differences still fail for review rather than being
 automatically accepted.
+
+### Failed-restore precondition
+
+The failed-restore scenario first waits for the purchased entitlement to appear
+in the app-facing verified history using the same bounded native helper as the
+catalog-network-failure scenario. A completed `SKTestSession.buyProduct` call alone
+does not establish that precondition. The initial entitlement, failed-restore
+retention, idle state, and network-error-message assertions remain mandatory.
+The Xcode26.3 diagnostic executed all eight cases: seven passed, while this case
+failed at its initial entitlement assertion before the simulated restore error.
+The additional barrier addresses that setup race; native acceptance must still
+pass all eight cases after the change.

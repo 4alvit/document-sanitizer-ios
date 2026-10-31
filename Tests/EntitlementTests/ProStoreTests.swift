@@ -191,6 +191,11 @@ final class ProStoreTests: XCTestCase {
         tracePhase("session.buyProduct.body", "begin")
         _ = try await session.buyProduct(identifier: ProStore.productID)
         tracePhase("session.buyProduct.body", "end")
+        // SKTestSession purchase completion can precede app-facing history.
+        // Establish the verified entitlement before testing a failed restore.
+        tracePhase("waitForLocalEntitlement.body", "begin")
+        try await waitForLocalEntitlement(present: true)
+        tracePhase("waitForLocalEntitlement.body", "end")
         let store = ProStore()
         tracePhase("store.load", "begin")
         await store.load()

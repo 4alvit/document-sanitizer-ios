@@ -270,5 +270,105 @@ class NativeStoreKitSetupOrderTests(unittest.TestCase):
         self.assertIn('"scope": "firstPreflightIterator"', self.source)
 
 
+
+
+RESTORE_FIXTURE = r'''
+import Foundation
+
+enum FixtureError: Error { case unavailable }
+enum SimulatedError {
+    case generic(NetworkFailure)
+    enum NetworkFailure { case networkError(URLError) }
+}
+enum API { case appStoreSync }
+enum State {
+    static var events: [String] = []
+    static var visible = false
+    static var unavailable = false
+    static var syncFailed = false
+    static var assertionFailures = 0
+}
+final class SKTestSession {
+    func buyProduct(identifier: String) async throws -> Int {
+        State.events.append("purchase"); return 1
+    }
+    func setSimulatedError(_ error: SimulatedError, forAPI: API) async throws {
+        State.events.append("inject-sync-failure"); State.syncFailed = true
+    }
+}
+final class ProStore {
+    static let productID = "synthetic.pro"
+    var isPro = false
+    var isBusy = false
+    var message: String?
+    func load() async { State.events.append("load"); isPro = State.visible }
+    func restore() async {
+        State.events.append("restore")
+        if State.syncFailed { message = "could not reach" }
+        else { isPro = State.visible }
+    }
+}
+func XCTAssertTrue(_ value: Bool) { if !value { State.assertionFailures += 1 } }
+func XCTAssertFalse(_ value: Bool) { if value { State.assertionFailures += 1 } }
+@MainActor final class RestoreUnderTest {
+    func beginPhaseTrace(_ name: String) {}
+    func tracePhase(_ phase: String, _ boundary: String) {}
+    func makeSession() async throws -> SKTestSession { SKTestSession() }
+    func clean(_ session: SKTestSession) { State.events.append("clean") }
+    func waitForLocalEntitlement(present: Bool) async throws {
+        State.events.append("verify-history")
+        if State.unavailable { throw FixtureError.unavailable }
+        State.visible = present
+    }
+    // __ACTUAL_RESTORE_TEST__
+}
+@main struct Main {
+    @MainActor static func main() async throws {
+        State.unavailable = CommandLine.arguments[1] == "unavailable"
+        var returned = false
+        do { try await RestoreUnderTest().testFailedRestoreKeepsVerifiedEntitlement(); returned = true }
+        catch {}
+        let result: [String: Any] = ["events": State.events, "returned": returned,
+                                   "assertionFailures": State.assertionFailures]
+        print(String(data: try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]), encoding: .utf8)!)
+    }
+}
+'''
+
+
+class NativeFailedRestorePreconditionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        text = SOURCE.read_text()
+        begin = text.index("    func testFailedRestoreKeepsVerifiedEntitlement()")
+        end = text.index("\n    func ", begin + 8)
+        cls.directory = tempfile.TemporaryDirectory(prefix="storekit-restore-model-")
+        cls.addClassCleanup(cls.directory.cleanup)
+        root = Path(cls.directory.name)
+        source = root / "main.swift"
+        source.write_text(RESTORE_FIXTURE.replace("    // __ACTUAL_RESTORE_TEST__", text[begin:end]))
+        cls.binary = root / "restore-model"
+        subprocess.run(["swiftc", "-swift-version", "5", "-parse-as-library", str(source),
+                        "-o", str(cls.binary)], capture_output=True, check=True, timeout=60)
+
+    def exercise(self, scenario):
+        output = subprocess.run([str(self.binary), scenario], capture_output=True,
+                                check=True, text=True, timeout=5)
+        return json.loads(output.stdout)
+
+    def test_delayed_native_history_is_verified_before_initial_load(self):
+        result = self.exercise("delayed")
+        self.assertTrue(result["returned"])
+        self.assertEqual(result["assertionFailures"], 0)
+        self.assertEqual(result["events"], ["purchase", "verify-history", "load",
+                         "inject-sync-failure", "restore", "clean"])
+
+    def test_missing_history_stops_before_restore_injection_and_always_cleans(self):
+        result = self.exercise("unavailable")
+        self.assertFalse(result["returned"])
+        self.assertEqual(result["events"], ["purchase", "verify-history", "clean"])
+        self.assertEqual(result["assertionFailures"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
