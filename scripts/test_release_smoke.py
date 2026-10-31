@@ -997,6 +997,7 @@ class PackageAX5PostconditionTests(unittest.TestCase):
         self.uid='A09F18F8-31EF-372D-A426-0197E73D75E8'
         self.device=self.root/'Library/Developer/CoreSimulator/Devices'/self.uid;self.device.mkdir(parents=True)
         self.calls=[];self.scans=[];self.mode='timeout';self.closure_fault=None;self.after_set=None;self.before_read_scan=None;self.read_value=self.l.AX5
+        self.setter_modes=None;self.read_values=None;self.setter_delays=None
         self.addCleanup(mock.patch.stopall)
         mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]).start()
         self.run=self.l.Run();self.run.start=0;self.run.meta['owned_uuid']=self.uid;self.run.persist=mock.Mock()
@@ -1010,13 +1011,18 @@ class PackageAX5PostconditionTests(unittest.TestCase):
     def spawn(self,args,**kwargs):
         self.calls.append(args);self.assertEqual(args[:3],['xcrun','simctl','ui'])
         setter=len(args)==6;proc=SimpleNamespace(pid=500+len(self.calls),returncode=None)
+        index=sum(len(call)==6 for call in self.calls)-1
+        mode=self.setter_modes[index] if setter and self.setter_modes else self.mode
+        delay=self.setter_delays[index] if setter and self.setter_delays else (60 if setter else 1)
         def wait(timeout):
-            self.clock[0]+=min(60 if setter else 1,timeout)
-            if setter and self.mode=='timeout':raise subprocess.TimeoutExpired(args,timeout)
-            if setter and self.mode=='interrupt':raise InterruptedError('synthetic cancellation')
-            if setter and self.mode=='nonzero':proc.returncode=7;return 7
+            self.clock[0]+=min(delay,timeout)
+            if setter and mode=='timeout':raise subprocess.TimeoutExpired(args,timeout)
+            if setter and mode=='interrupt':raise InterruptedError('synthetic cancellation')
+            if setter and mode=='nonzero':proc.returncode=7;return 7
             if not setter and self.mode=='read_timeout':raise subprocess.TimeoutExpired(args,timeout)
-            if not setter:kwargs['stdout'].write(self.read_value.encode());kwargs['stdout'].flush()
+            if not setter:
+                value=self.read_values.pop(0) if self.read_values else self.read_value
+                kwargs['stdout'].write(value.encode());kwargs['stdout'].flush()
             proc.returncode=0
         proc.wait=wait;return proc
     def stop(self,proc,row):
@@ -1092,5 +1098,93 @@ class PackageAX5PostconditionTests(unittest.TestCase):
                 with mock.patch.object(Path,'open',opened):
                     with self.assertRaises((AssertionError,TimeoutError)):self.invoke()
                 self.assertEqual(len(self.calls),1);self.assertEqual(self.run.end,560);self.assertEqual(self.run.start,0)
+
+
+    def test_closed_timeout_default_readback_converges_once_without_renewing_budget(self):
+        self.setter_modes=['timeout','success'];self.setter_delays=[60,2]
+        self.read_values=['large',self.l.AX5]
+        self.assertEqual(self.invoke(),self.l.AX5)
+        self.assertEqual(len(self.calls),4);self.assertEqual(self.calls[0],self.calls[2])
+        self.assertEqual(self.scans,[256,256,242,256])
+        self.assertEqual(self.run.end,560);self.assertEqual(self.run.start,0)
+        self.assertIn('TimeoutExpired',self.run.meta['commands'][0]['command_error'])
+        self.assertEqual([a['readback'] for a in self.run.meta['ax5_convergence']['attempts']],['large',self.l.AX5])
+        self.assertTrue(all(c['owned_group_absent'] for c in self.run.meta['commands']))
+        self.assertLessEqual(self.run.meta['commands'][2]['timeout_seconds'],15)
+        self.assertLessEqual(self.run.meta['commands'][3]['timeout_seconds'],10)
+
+    def test_second_closed_timeout_can_only_pass_with_exact_readback(self):
+        self.setter_modes=['timeout','timeout'];self.read_values=['large',self.l.AX5]
+        self.assertEqual(self.invoke(),self.l.AX5)
+        self.assertEqual(len(self.calls),4)
+        self.assertTrue(self.run.meta['ax5_postcondition']['setter_timed_out'])
+        self.assertGreaterEqual(self.run.remaining(),304)
+
+    def test_persistent_default_stops_after_two_setters(self):
+        self.read_value='large'
+        with self.assertRaises(AssertionError):self.invoke()
+        self.assertEqual(len(self.calls),4)
+        self.assertEqual(len(self.run.meta['ax5_convergence']['attempts']),2)
+
+    def test_successful_setter_wrong_size_or_unknown_output_never_retries(self):
+        for mode,value in [('success','large'),('timeout','unknown'),('timeout','accessibility-large')]:
+            with self.subTest(mode=mode,value=value):
+                self.calls.clear();self.scans.clear();self.clock[0]=50;self.run.meta['commands']=[]
+                self.mode=mode;self.read_value=value
+                with self.assertRaises(AssertionError):self.invoke()
+                self.assertEqual(len(self.calls),2)
+
+    def test_insufficient_remaining_startup_budget_never_starts_second_setter(self):
+        self.clock[0]=165;self.read_value='large'
+        with self.assertRaises(AssertionError):self.invoke()
+        self.assertEqual(len(self.calls),2);self.assertEqual(self.run.end,560)
+        self.assertGreaterEqual(self.run.remaining(),304)
+
+    def test_changed_owner_during_retry_scan_rejects_before_second_setter(self):
+        self.read_value='large'
+        original_scan=self.resources.check
+        def scan(phase):
+            original_scan(phase)
+            if len(self.scans)==3:self.run.meta['owned_uuid']='other'
+        self.resources.check=scan
+        with self.assertRaises(AssertionError):self.invoke()
+        self.assertEqual(len(self.calls),2)
+
+    def test_retry_metadata_delay_does_not_spend_readback_or_test_reserve(self):
+        self.read_value='large'
+        def persist():
+            if len(self.run.meta['commands'])==3:self.clock[0]=240
+        self.run.persist=persist
+        with self.assertRaises(TimeoutError):self.invoke()
+        self.assertEqual(len(self.calls),2);self.assertEqual(self.run.end,560)
+        self.assertGreaterEqual(self.run.remaining(),304)
+
+
+    def test_retry_nonzero_and_cancellation_cannot_start_another_readback(self):
+        for mode in ('nonzero','interrupt'):
+            with self.subTest(mode=mode):
+                self.calls.clear();self.scans.clear();self.clock[0]=50;self.run.meta['commands']=[]
+                self.setter_modes=['timeout',mode];self.read_values=['large']
+                with self.assertRaises((RuntimeError,InterruptedError)):self.invoke()
+                self.assertEqual(len(self.calls),3);self.assertEqual(self.run.end,560)
+
+    def test_retry_unresolved_group_cannot_start_another_readback(self):
+        self.read_values=['large']
+        original_stop=self.l.stop_group
+        def stop(proc,row):
+            original_stop(proc,row)
+            if len(self.calls)==3:row['owned_group_absent']=False
+        with mock.patch.object(self.l,'stop_group',side_effect=stop):
+            with self.assertRaises(subprocess.TimeoutExpired):self.invoke()
+        self.assertEqual(len(self.calls),3);self.assertEqual(self.run.end,560)
+
+    def test_retry_readback_failure_remains_fatal_without_third_setter(self):
+        self.read_values=['large'];original_spawn=self.spawn
+        def spawn(args,**kwargs):
+            if len(self.calls)==3:self.mode='read_timeout'
+            return original_spawn(args,**kwargs)
+        with mock.patch.object(subprocess,'Popen',side_effect=spawn):
+            with self.assertRaises(subprocess.TimeoutExpired):self.invoke()
+        self.assertEqual(len(self.calls),4);self.assertEqual(self.run.end,560)
 
 if __name__=='__main__':unittest.main()

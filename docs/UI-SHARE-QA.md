@@ -141,3 +141,16 @@ The verification pipeline builds the committed Xcode project, matching Release
 packaging. Project regeneration is an authoring action performed before commit,
 not a CI build step. This keeps same-host unit-test products bound to the checked-in
 project and preserves the native gate's strict clean-source and hash checks.
+
+
+The exact-package smoke preserves its original 256-second startup boundary and
+reserves the full 300-second test window plus four-second stop allowance. If its
+initial system AX5 setter times out, the owned process group must be reaped and
+absent before a readback. An exact AX5 readback still suffices. A responsive
+`large` readback with the same owned device UUID and directory identity permits
+one additional idempotent setter, capped at 15 seconds, and a 10-second exact
+readback; admission requires 33 seconds including both command-stop reserves.
+No original phase deadline is extended. Other errors or sizes do not trigger
+convergence, and a second wrong result fails before launching the Share test.
+This is bounded setup convergence, not a native-test or session retry. Evidence
+retains both attempts, the first timeout and the final mandatory system value.

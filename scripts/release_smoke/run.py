@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One granted exact shipped-package smoke, no build/re-sign/network or retry."""
+"""One granted exact shipped-package smoke, no build/re-sign/network or native retry."""
 import hashlib, importlib.util, json, os, plistlib, re, shutil, signal, stat, subprocess, sys, time, uuid, zipfile
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
@@ -271,8 +271,8 @@ def cleanup_device_commands(run,uid,lifecycle):
 
 
 def configure_package_ax5(run,resources,uid,lifecycle):
- # Preserve the full300s test plus4s stop admission. The one existing readback
- # may establish AX5 after a setter timeout only with proved owned closure.
+ # Preserve the full300s test plus4s stop admission. A responsive default-size
+ # readback after one safely closed timeout permits one idempotent setup retry.
  previous_end=run.end;run.end=min(previous_end,560-304)
  try:
   device=Path(lifecycle.ENV['HOME'])/'Library/Developer/CoreSimulator/Devices'/uid
@@ -284,26 +284,45 @@ def configure_package_ax5(run,resources,uid,lifecycle):
    assert stat.S_ISDIR(info.st_mode),'Owned AX5 device is not a directory'
    return info.st_dev,info.st_ino
   original_identity=identity();args=['xcrun','simctl','ui',uid,'content_size',lifecycle.AX5]
-  resources.check(run.end);index=len(run.meta['commands']);timed_out=False
-  try:run.command(args,'set-ax5.log',60)
-  except subprocess.TimeoutExpired as error:
-   rows=run.meta['commands'];row=rows[index] if len(rows)==index+1 else {}
-   probe=row.get('cleanup_observation',{}).get('last_probe',{})
-   if not (error.cmd==args and row.get('args')==args and row.get('command_error_operation')=='wait'
-           and type(row.get('owned_process_group')) is int and row['owned_process_group']>1
-           and type(row.get('returncode')) is int and row.get('owned_group_absent') is True
-           and probe.get('leader_reaped') is True and probe.get('group')=='ABSENT'
-           and not row.get('cleanup_error') and not row.get('secondary_errors')
-           and not any(c.get('owned_group_absent') is False for c in rows)):raise
-   if run.remaining()<=4:raise
-   timed_out=True
-  assert identity()==original_identity,'Owned AX5 device identity changed'
-  resources.check(run.end)
-  observed=run.output(['xcrun','simctl','ui',uid,'content_size'],'ax5-readback.txt',60)
-  unchanged=identity()==original_identity
-  run.meta['ax5_postcondition']={'setter_timed_out':timed_out,'readback':observed,'owned_device_identity_unchanged':unchanged}
-  assert unchanged and observed==lifecycle.AX5,'Exact owned-device AX5 postcondition not established'
-  return observed
+  observations=[]
+  run.meta['ax5_convergence']={'maximum_setters':2,'attempts':observations}
+  for attempt in range(2):
+   # Retry admission includes15s setter +4s close +10s readback +4s close.
+   # Neither command may consume the original native-test reservation.
+   if attempt:assert run.remaining()>=33,'No original budget for bounded AX5 convergence'
+   setter_end=run.end;timed_out=False
+   try:
+    if attempt:run.end=setter_end-14  # Preserve10s readback and its4s close.
+    resources.check(run.end)
+    assert identity()==original_identity,'Owned AX5 device identity changed'
+    index=len(run.meta['commands'])
+    try:run.command(args,'set-ax5-retry.log' if attempt else 'set-ax5.log',15 if attempt else 60)
+    except subprocess.TimeoutExpired as error:
+     rows=run.meta['commands'];row=rows[index] if len(rows)==index+1 else {}
+     probe=row.get('cleanup_observation',{}).get('last_probe',{})
+     if not (error.cmd==args and row.get('args')==args and row.get('command_error_operation')=='wait'
+             and type(row.get('owned_process_group')) is int and row['owned_process_group']>1
+             and type(row.get('returncode')) is int and row.get('owned_group_absent') is True
+             and probe.get('leader_reaped') is True and probe.get('group')=='ABSENT'
+             and not row.get('cleanup_error') and not row.get('secondary_errors')
+             and not any(c.get('owned_group_absent') is False for c in rows)):raise
+     if setter_end-(time.monotonic()-run.start)<=4:raise
+     timed_out=True
+   finally:run.end=setter_end
+   assert identity()==original_identity,'Owned AX5 device identity changed'
+   resources.check(run.end)
+   assert identity()==original_identity,'Owned AX5 device identity changed'
+   observed=run.output(['xcrun','simctl','ui',uid,'content_size'],
+                       'ax5-retry-readback.txt' if attempt else 'ax5-readback.txt',10 if attempt else 60)
+   unchanged=identity()==original_identity
+   state={'attempt':attempt+1,'setter_timed_out':timed_out,'readback':observed,'owned_device_identity_unchanged':unchanged}
+   observations.append(state);run.meta['ax5_postcondition']=state
+   assert unchanged,'Owned AX5 device identity changed'
+   if observed==lifecycle.AX5:return observed
+   # Only the observed cold-start failure has a convergence path. Returned
+   # nonzero statuses, cancellation, unknown output and read errors remain fatal.
+   assert attempt==0 and timed_out and observed=='large','Exact owned-device AX5 postcondition not established'
+  raise AssertionError('Exact owned-device AX5 postcondition not established')
  finally:run.end=previous_end
 
 
