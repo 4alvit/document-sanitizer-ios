@@ -416,9 +416,11 @@ final class ProStoreTests: XCTestCase {
                 let transaction: Transaction
                 switch result {
                 case .verified(let value):
+                    tracePhase("Transaction.currentEntitlements.yield", "verified")
                     verifiedCount += 1
                     transaction = value
                 case .unverified(let value, let error):
+                    tracePhase("Transaction.currentEntitlements.yield", "unverified")
                     unverifiedCount += 1
                     guard value.productID == ProStore.productID else { continue }
                     throw NSError(domain: "CleanSendStoreKitTests", code: 3, userInfo: [

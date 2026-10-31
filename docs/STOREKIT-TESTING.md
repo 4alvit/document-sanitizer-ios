@@ -130,10 +130,10 @@ an undisclosed warm-up to turn this gate green.
 ## Bounded hosted native payment gate
 
 The dedicated job builds signed Debug test products from the committed Xcode
-project, with the iOS18.5 Simulator SDK, in a step limited to nine minutes. It
+project, with the iOS26.2 Simulator SDK, in a step limited to nine minutes. It
 uses one `test-without-building` invocation for all eight
-existing `ProStoreTests`, on a fresh owned iPhone 16 Pro Simulator with iOS 18.5
-and Xcode 16.4. It reuses the same job's Debug application and unit-test bundle;
+existing `ProStoreTests`, on a fresh owned iPhone 16 Pro Simulator with iOS 26.2
+and Xcode 26.3 (17C529). It reuses the same job's Debug application and unit-test bundle;
 the native test driver does not rebuild, re-sign or enter an Apple Account.
 Missing embedded test products, invalid signatures or changed source fail closed.
 The empty Debug unit-test host lets each case initialize its local StoreKit
@@ -186,3 +186,40 @@ privacy run first; native payment and packaged smoke can then run in parallel.
 This four-job graph permits at most two workers. Acceptance requires all four jobs,
 including the independent exact Release-package smoke; Debug payment evidence does
 not replace it. A local-service result cannot establish App Store purchase routing.
+
+### Distinguish native iterator progress
+
+The native setup trace records fixed `Transaction.currentEntitlements.yield`
+markers with only `verified` or `unverified` classification. The existing
+`Transaction.currentEntitlements` / `end` marker is emitted only after the
+entire iteration completes. A yield without an end identifies a later suspended
+iteration; absence of a yield alone does not establish why native iteration is
+blocked. These markers contain no transaction, product, receipt or account values
+and share the existing phase count and line-size caps. They do not add requests,
+change verification or permit early acceptance.
+
+The Xcode 16.4/iOS 18.5 runs from 2026-10-31 blocked before completing this
+iteration with either empty-first or synthetic-purchase-first setup. The ordering
+hypothesis has not resolved native acceptance. Controlled tests and a passing
+Share or privacy job do not substitute for the eight native purchase cases.
+
+## Scoped Xcode 26.3 native cohort
+
+The dedicated `native-storekit` job overrides the workflow's Xcode selection
+with Xcode 26.3 (17C529), builds its own Debug app and unit-test bundle against
+the iOS 26.2 SDK, and runs only on that exact available runtime. It does not
+download or reuse an app from a different job/toolchain. The Release build,
+Russian iPad privacy and exact-package Share jobs retain their Xcode 16.4
+profile and existing package metadata contracts. Their results must not be
+described as Xcode 26.3 acceptance.
+
+This cohort is a diagnostic response to the incomplete native entitlement
+iteration observed on Xcode 16.4, not proof of a platform fix. A separate
+project's eight native StoreKit cases passed on Xcode 26.3; that observation
+does not establish the cause or success of RedactLeaf's test setup. The fixed
+per-yield markers distinguish a missing first result from a later incomplete
+iteration. All eight native cases, exact transaction identity, verified results,
+strict empty-history barriers and original process/resource/time limits remain
+required. The existing narrow installation-mode allowance is retained unchanged;
+new toolchain payload differences still fail for review rather than being
+automatically accepted.

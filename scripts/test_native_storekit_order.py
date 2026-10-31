@@ -19,7 +19,7 @@ import Foundation
 
 enum Scenario: String {
     case success, staleID, wrongProduct, outsideXcode, unverified, revoked
-    case dirtyInitialLedger, dirtyFinalLedger, dirtyFinalEntitlements
+    case dirtyInitialLedger, dirtyFinalLedger, dirtyFinalEntitlements, stallAfterVerified
 }
 enum ProductType { case nonConsumable }
 enum Environment: String { case xcode, sandbox }
@@ -67,7 +67,11 @@ struct Entitlements: AsyncSequence {
     struct AsyncIterator: AsyncIteratorProtocol {
         var values: [Verification]
         mutating func next() async -> Verification? {
-            values.isEmpty ? nil : values.removeFirst()
+            if !values.isEmpty { return values.removeFirst() }
+            if State.scenario == .stallAfterVerified {
+                return await withCheckedContinuation { (_: CheckedContinuation<Verification?, Never>) in }
+            }
+            return nil
         }
     }
     func makeAsyncIterator() -> AsyncIterator { AsyncIterator(values: values) }
@@ -75,6 +79,7 @@ struct Entitlements: AsyncSequence {
 enum State {
     static var scenario = Scenario.success
     static var events: [String] = []
+    static var traces: [String] = []
     static var purchased = false
     static var clearedAfterPurchase = false
     static var finished = false
@@ -133,7 +138,13 @@ final class FirstEntitlementSchedulingProbe {
     var phaseSequence = 0
     static var schedulingProbeClaimed = false
     var schedulingProbe: FirstEntitlementSchedulingProbe?
-    func tracePhase(_ phase: String, _ boundary: String) {}
+    func tracePhase(_ phase: String, _ boundary: String) {
+        let marker = phase + ":" + boundary
+        State.traces.append(marker)
+        if State.scenario == .stallAfterVerified {
+            FileHandle.standardOutput.write(Data((marker + "\n").utf8))
+        }
+    }
     // __ACTUAL_METHODS__
     func exercise() async -> Bool {
         do { _ = try await makeSession(); return true }
@@ -144,7 +155,7 @@ final class FirstEntitlementSchedulingProbe {
     @MainActor static func main() async throws {
         State.scenario = Scenario(rawValue: CommandLine.arguments[1])!
         let returned = await SetupUnderTest().exercise()
-        let result: [String: Any] = ["returned": returned, "events": State.events,
+        let result: [String: Any] = ["returned": returned, "events": State.events, "traces": State.traces,
             "finished": State.finished, "earlyQuery": State.earlyQuery,
             "queries": State.queries, "assertionFailures": State.failures]
         print(String(data: try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]), encoding: .utf8)!)
@@ -225,6 +236,28 @@ class NativeStoreKitSetupOrderTests(unittest.TestCase):
         self.assertFalse(result["returned"])
         self.assertTrue(result["finished"])
         self.assertEqual(result["queries"], 101)
+
+    def test_native_yield_and_completion_are_distinct_fixed_markers(self):
+        result = self.exercise("success")
+        markers = [v for v in result["traces"] if v.startswith("Transaction.currentEntitlements")]
+        self.assertEqual(markers, ["Transaction.currentEntitlements:begin",
+                                  "Transaction.currentEntitlements.yield:verified",
+                                  "Transaction.currentEntitlements:end",
+                                  "Transaction.currentEntitlements:begin",
+                                  "Transaction.currentEntitlements:end"])
+        failure = self.exercise("unverified")
+        markers = [v for v in failure["traces"] if v.startswith("Transaction.currentEntitlements")]
+        self.assertEqual(markers, ["Transaction.currentEntitlements:begin",
+                                  "Transaction.currentEntitlements.yield:unverified"])
+        self.assertFalse(failure["returned"])
+
+    def test_yield_is_observable_when_the_next_iteration_never_completes(self):
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            subprocess.run([str(self.binary), "stallAfterVerified"], capture_output=True,
+                           check=True, timeout=2)
+        markers = caught.exception.stdout.decode().splitlines()
+        self.assertIn("Transaction.currentEntitlements.yield:verified", markers)
+        self.assertNotIn("Transaction.currentEntitlements:end", markers)
 
     def test_all_eight_case_bodies_enter_the_same_checked_setup(self):
         cases = re.findall(r"    func (test\w+)\(\) async throws \{(.*?)(?=\n    (?:func|private|static)|\n\})", self.source, re.S)

@@ -25,9 +25,10 @@ APP_ID='io.github.4alvit.cleansend'
 REPO='4alvit/document-sanitizer-ios'
 CASE_NAMES=('testPurchaseAndNewStoreRestoreFromVerifiedHistory','testRefundRevokesThroughListenerAndOnNextLaunch','testUserCancellationNeverUnlocksPro','testPendingPurchaseUnlocksOnlyAfterApproval','testUnverifiedTransactionNeverUnlocksPro','testCachedEntitlementSurvivesProductNetworkFailure','testFailedRestoreKeepsVerifiedEntitlement','testRestoreWithoutPurchaseDoesNotUnlockPro')
 CASES={'ProStoreTests/'+name for name in CASE_NAMES}
-RUNTIME='com.apple.CoreSimulator.SimRuntime.iOS-18-5'
+RUNTIME='com.apple.CoreSimulator.SimRuntime.iOS-26-2'
 DEVICE='com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro'
 # The complete mode-only transition set observed on the owned iOS18.5 Debug test host.
+# Retained conservatively for the 26.3 cohort; no new transition is presumed.
 # No other path, mode, type or content change is admitted across installation.
 INSTALL_MODE_PATHS=frozenset((
  'CleanSend.debug.dylib',
@@ -422,16 +423,16 @@ def worker(start,context):
   assert not output(['git','status','--porcelain','--untracked-files=no'],'source-status.txt')
   sources=source_hashes(names,run.end)
   write_small(SCOPE/'source-provenance.json',{'published_head':context['head'],'checkout':checkout,'tree':tree,'source_files':sources,'run':context['run'],'attempt':context['attempt']},start,deadline=start+run.end)
-  assert output(['xcodebuild','-version'],'xcode-version.txt',20)=='Xcode 16.4\nBuild version 16F6'
+  assert output(['xcodebuild','-version'],'xcode-version.txt',20)=='Xcode 26.3\nBuild version 17C529'
   runtimes=json.loads(output(['xcrun','simctl','list','runtimes','--json'],'runtimes.json',60))['runtimes']
-  runtime=[r for r in runtimes if r['identifier']==RUNTIME and r.get('isAvailable')];assert len(runtime)==1 and runtime[0]['version']=='18.5'
+  runtime=[r for r in runtimes if r['identifier']==RUNTIME and r.get('isAvailable')];assert len(runtime)==1 and runtime[0]['version']=='26.2'
   assert os.uname().machine in runtime[0]['supportedArchitectures'] and DEVICE in {d['identifier'] for d in runtime[0]['supportedDeviceTypes']}
   types=json.loads(output(['xcrun','simctl','list','devicetypes','--json'],'device-types.json'))['devicetypes']
-  device=[d for d in types if d['identifier']==DEVICE];assert len(device)==1 and version(device[0]['minRuntimeVersionString'])<=version('18.5')<=version(device[0]['maxRuntimeVersionString'])
+  device=[d for d in types if d['identifier']==DEVICE];assert len(device)==1 and version(device[0]['minRuntimeVersionString'])<=version('26.2')<=version(device[0]['maxRuntimeVersionString'])
   run.meta['runtime']=runtime[0];run.meta['device_type']=device[0]
   unit=host/'PlugIns/CleanSendTests.xctest';assert unit.is_dir() and not unit.is_symlink()
   info=plistlib.loads((host/'Info.plist').read_bytes());unitinfo=plistlib.loads((unit/'Info.plist').read_bytes())
-  assert info['CFBundleIdentifier']==APP_ID and info['DTXcodeBuild']=='16F6' and version(info['MinimumOSVersion'])<=version('18.5')
+  assert info['CFBundleIdentifier']==APP_ID and info['DTXcodeBuild']=='17C529' and version(info['MinimumOSVersion'])<=version('26.2')
   assert unitinfo['CFBundleIdentifier']=='io.github.4alvit.cleansend.tests'
   assert sha(unit/'CleanSend.storekit')==sources['App/CleanSend.storekit']
   plan=validate_test_plan(json.loads((ROOT/'CleanSend.xctestplan').read_bytes()))

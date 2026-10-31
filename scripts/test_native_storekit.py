@@ -591,7 +591,7 @@ class SingleInstallerWorkerTests(unittest.TestCase):
         self.device=self.root/'home/Library/Developer/CoreSimulator/Devices'/self.uid
         self.host=self.root/'.derivedData/Build/Products/Debug-iphonesimulator/CleanSend.app'
         self.unit=self.host/'PlugIns/CleanSendTests.xctest';self.unit.mkdir(parents=True)
-        (self.host/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':self.m.APP_ID,'DTXcodeBuild':'16F6','MinimumOSVersion':'17.0'}))
+        (self.host/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':self.m.APP_ID,'DTXcodeBuild':'17C529','MinimumOSVersion':'17.0'}))
         (self.unit/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'io.github.4alvit.cleansend.tests'}))
         self.names=('App/CleanSend.storekit','CleanSend.xctestplan','Tests/EntitlementTests/ProStoreTests.swift')
         for name,raw in zip(self.names,(b'fixed configuration',(ROOT/'CleanSend.xctestplan').read_bytes(),b'unchanged real cases fixture')):
@@ -601,7 +601,8 @@ class SingleInstallerWorkerTests(unittest.TestCase):
         (self.scope/'context.json').write_bytes(b'{}')
         self.expected={'.':{'directory':True,'mode':'0755'},'CleanSend':{'mode':'0755','sha256':'a'*64},'PlugIns/CleanSendTests.xctest/CleanSendTests':{'mode':'0755','sha256':'b'*64}}
         self.commands=[];self.inventories=[];self.lookup_count=0;self.lifecycle=self.m.load('lifecycle')
-    def exercise(self,*,start_case=True,changed_container=False,changed_bytes=False):
+        self.toolchain='Xcode 26.3\nBuild version 17C529';self.runtime_version='26.2';self.runtime_identifier=self.m.RUNTIME
+    def exercise(self,*,start_case=True,changed_container=False,changed_bytes=False,profile_rejected=False):
         m=self.m;clock=[100.0];phase_checks=[]
         def check(phase):
             phase_checks.append(phase);assert clock[0]<90+phase
@@ -619,9 +620,9 @@ class SingleInstallerWorkerTests(unittest.TestCase):
             self.commands.append([str(value) for value in args]);value=''
             if args[:2]==['git','ls-files']:value='\n'.join(self.names)
             elif args[:2]==['git','rev-parse']:value='b'*40 if str(args[2]).endswith('^{tree}') else 'a'*40
-            elif args==['xcodebuild','-version']:value='Xcode 16.4\nBuild version 16F6'
+            elif args==['xcodebuild','-version']:value=self.toolchain
             elif args[:4]==['xcrun','simctl','list','runtimes']:
-                value=json.dumps({'runtimes':[{'identifier':m.RUNTIME,'isAvailable':True,'version':'18.5','supportedArchitectures':['arm64'],'supportedDeviceTypes':[{'identifier':m.DEVICE}]}]})
+                value=json.dumps({'runtimes':[{'identifier':self.runtime_identifier,'isAvailable':True,'version':self.runtime_version,'supportedArchitectures':['arm64'],'supportedDeviceTypes':[{'identifier':m.DEVICE}]}]})
             elif args[:4]==['xcrun','simctl','list','devicetypes']:
                 value=json.dumps({'devicetypes':[{'identifier':m.DEVICE,'minRuntimeVersionString':'17.0','maxRuntimeVersionString':'99.0'}]})
             elif args[:3]==['xcrun','simctl','create']:value=self.uid
@@ -656,6 +657,13 @@ class SingleInstallerWorkerTests(unittest.TestCase):
             result=m.worker(90,context)
         metadata=json.loads((self.scope/'metadata.json').read_bytes())
         self.assertFalse(any(row[:3]==['xcrun','simctl','install'] for row in self.commands))
+        if profile_rejected:
+            self.assertEqual(result,1)
+            self.assertFalse(any(row[:2]==['xcodebuild','test-without-building'] for row in self.commands))
+            self.assertFalse(any(row[:3]==['xcrun','simctl','create'] for row in self.commands))
+            self.assertFalse((self.scope/'compiled-host-before.json').exists())
+            self.assertEqual(metadata['native_phase_deadlines_seconds'],m.NATIVE_PHASES)
+            return result,metadata
         self.assertEqual(sum(row[:2]==['xcodebuild','test-without-building'] for row in self.commands),1)
         self.assertFalse((self.scope/'installed-before.json').exists())
         self.assertTrue((self.scope/'compiled-host-before.json').exists())
@@ -678,6 +686,22 @@ class SingleInstallerWorkerTests(unittest.TestCase):
         self.assertEqual(self.lookup_count,0);self.assertNotIn('first_installed_snapshot',metadata)
         self.assertFalse((self.scope/'installed-during.json').exists());self.assertFalse((self.scope/'installed-after.json').exists())
         self.assertEqual(metadata['result'],'failed');self.assertTrue(metadata['failures'])
+    def test_old_toolchain_is_rejected_before_native_spawn(self):
+        self.toolchain='Xcode 16.4\nBuild version 16F6'
+        result,_=self.exercise(profile_rejected=True);self.assertEqual(result,1)
+        self.assertFalse(any(row[:2]==['xcodebuild','test-without-building'] for row in self.commands))
+    def test_old_runtime_is_rejected_before_native_spawn(self):
+        self.runtime_identifier='com.apple.CoreSimulator.SimRuntime.iOS-18-5';self.runtime_version='18.5'
+        result,_=self.exercise(profile_rejected=True);self.assertEqual(result,1)
+        self.assertFalse(any(row[:2]==['xcodebuild','test-without-building'] for row in self.commands))
+    def test_wrong_runtime_version_is_rejected_before_native_spawn(self):
+        self.runtime_version='18.5'
+        result,_=self.exercise(profile_rejected=True);self.assertEqual(result,1)
+        self.assertFalse(any(row[:2]==['xcodebuild','test-without-building'] for row in self.commands))
+    def test_cross_toolchain_host_is_rejected_before_native_spawn(self):
+        path=self.host/'Info.plist';info=plistlib.loads(path.read_bytes());info['DTXcodeBuild']='16F6';path.write_bytes(plistlib.dumps(info))
+        result,_=self.exercise(profile_rejected=True);self.assertEqual(result,1)
+        self.assertFalse(any(row[:2]==['xcodebuild','test-without-building'] for row in self.commands))
     def test_changed_container_with_identical_files_is_saved_and_rejected(self):
         result,metadata=self.exercise(changed_container=True);self.assertEqual(result,1)
         after=json.loads((self.scope/'installed-after.json').read_bytes())
@@ -694,6 +718,26 @@ class SingleInstallerWorkerTests(unittest.TestCase):
         for raw in (b"Test Suite 'ProStoreTests' started.",line.replace(b'started',b'passed'),line.replace(name.encode(),b'testUnknown'),line.replace(b'CleanSendTests',b'OtherTests'),line[:-1],b'command selector '+line):
             self.assertIsNone(self.m.observed_native_case_start(raw))
 
+
+class NativeCohortWorkflowTests(unittest.TestCase):
+    def test_only_native_job_overrides_toolchain_and_builds_own_products(self):
+        workflow=(ROOT/'.github/workflows/ci.yml').read_text()
+        prefix,native=workflow.split('  native-storekit:\n',1)
+        native,suffix=native.split('  package-smoke:\n',1)
+        self.assertIn('env:\n  DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer',prefix)
+        self.assertIn('    env:\n      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer',native)
+        self.assertEqual(workflow.count('DEVELOPER_DIR:'),2)
+        self.assertIn('Xcode 26.3\\nBuild version 17C529',native)
+        self.assertNotIn('16F6',native)
+        self.assertIn('-configuration Debug -sdk iphonesimulator26.2',native)
+        self.assertIn('-derivedDataPath .derivedData',native)
+        self.assertIn('xcodebuild build-for-testing -project CleanSend.xcodeproj',native)
+        self.assertLess(native.index('xcodebuild build-for-testing'),native.index('python3 -B scripts/check-native-storekit.py'))
+        self.assertNotIn('download-artifact',native)
+        self.assertIn('Xcode 16.4\\nBuild version 16F6',prefix)
+        self.assertIn('Xcode 16.4\\nBuild version 16F6',suffix)
+        self.assertNotIn('DEVELOPER_DIR:',suffix)
+        self.assertIn("host=ROOT/'.derivedData/Build/Products/Debug-iphonesimulator/CleanSend.app'",DRIVER.read_text())
 
 def setitem(mapping,key,value):mapping[key]=value
 
