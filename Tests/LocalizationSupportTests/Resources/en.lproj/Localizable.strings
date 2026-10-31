@@ -1,0 +1,8 @@
+"Greeting" = "Hello";
+"English fallback" = "Only in English";
+"File %@" = "File %@";
+"%@ then %@" = "%1$@ then %2$@";
+"count.files.one" = "%@ file";
+"count.files.few" = "%@ files";
+"count.files.many" = "%@ files";
+"count.files.other" = "%@ files";

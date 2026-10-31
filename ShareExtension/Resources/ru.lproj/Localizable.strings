@@ -1,0 +1,17 @@
+// User-facing text. Keep placeholders and technical identifiers unchanged.
+"An attachment could not be read." = "Не удалось прочитать вложение.";
+"Cancel" = "Отмена";
+"Choose a smaller batch, up to 50 MB total." = "Выберите меньше файлов: общий размер не должен превышать 50 МБ.";
+"Choose between 1 and 20 PDF or image files." = "Выберите от 1 до 20 файлов PDF или изображений.";
+"Close" = "Закрыть";
+"Copying files locally…" = "Копирование файлов на устройство…";
+"Done" = "Готово";
+"Each attachment must be a regular file no larger than 50 MB." = "Каждое вложение должно быть обычным файлом размером не более 50 МБ.";
+"Files are queued. Open RedactLeaf and import a queued batch to review and hide details. Queuing alone does not remove private information." = "Файлы добавлены в очередь. Откройте RedactLeaf и импортируйте пакет из очереди, чтобы проверить и скрыть данные. Само добавление в очередь не удаляет личную информацию.";
+"Files could not be copied. Check available storage or import them from Files inside RedactLeaf." = "Не удалось скопировать файлы. Проверьте свободное место или импортируйте их через «Файлы» в RedactLeaf.";
+"Queue PDF and image copies for RedactLeaf, then open the app to choose what to hide. Originals stay unchanged. Copies older than 24 hours are removed when the main app next checks the queue." = "Добавьте копии PDF и изображений в очередь RedactLeaf, затем откройте приложение и выберите, что скрыть. Оригиналы не изменяются. Копии старше 24 часов удаляются при следующей проверке очереди основным приложением.";
+"Save to RedactLeaf" = "Сохранить в RedactLeaf";
+"Send to RedactLeaf" = "Отправить в RedactLeaf";
+"The import queue is full. Open RedactLeaf to import or clear earlier files." = "Очередь импорта заполнена. Откройте RedactLeaf, чтобы импортировать или удалить предыдущие файлы.";
+"The shared container is unavailable. Open RedactLeaf and import using Files instead." = "Общее хранилище недоступно. Откройте RedactLeaf и импортируйте документы через «Файлы».";
+"Unsupported attachments were skipped." = "Неподдерживаемые вложения пропущены.";

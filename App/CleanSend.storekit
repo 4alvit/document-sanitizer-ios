@@ -1,0 +1,37 @@
+{
+  "identifier" : "CE10AF74-6D33-4314-99CB-762E3E629F4A",
+  "nonRenewingSubscriptions" : [],
+  "products" : [
+    {
+      "displayPrice" : "19.99",
+      "familyShareable" : false,
+      "internalID" : "8AA10757-9912-4C6A-A0DE-81972ED88AE2",
+      "localizations" : [
+        {
+          "description" : "Unlock larger document batches. One-time purchase.",
+          "displayName" : "RedactLeaf Pro",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "io.github.4alvit.cleansend.pro",
+      "referenceName" : "RedactLeaf Pro Lifetime",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_askToBuyEnabled" : false,
+    "_billingGracePeriodEnabled" : false,
+    "_billingIssuesEnabled" : false,
+    "_disableDialogs" : false,
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_US",
+    "_renewalBillingIssuesEnabled" : false,
+    "_storefront" : "USA",
+    "_storeKitErrors" : []
+  },
+  "subscriptionGroups" : [],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}
