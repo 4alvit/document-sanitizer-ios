@@ -1,0 +1,197 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+env:
+  DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: macOS core, independent export corpus, iOS build
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      release_assets_ready: ${{ steps.release_upload.outcome == 'success' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 2
+      - name: Require reviewed ARM toolchain profile
+        timeout-minutes: 1
+        run: |
+          test "$(uname -m)" = arm64
+          test "$(xcodebuild -version)" = $'Xcode 16.4\nBuild version 16F6'
+      - name: Install build and independent verification tools
+        run: |
+          brew install xcodegen poppler
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r requirements-qa.txt
+      - name: Verify Release packages
+        id: release-packages
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/package-prerelease.py
+      - name: Save verified Release simulator packages
+        id: release_upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        timeout-minutes: 3
+        with:
+          name: release-simulator-packages-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.release-packages.outputs.package_directory }}
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Verify
+        run: |
+          export PATH="$PWD/.venv/bin:$PATH"
+          bash scripts/check.sh
+      - name: Run hosted application tests (native StoreKit excluded)
+        run: >-
+          bash scripts/check-ios-tests.sh
+          -only-testing:CleanSendTests
+          -skip-testing:CleanSendTests/ProStoreTests
+      - name: Save verification evidence
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verification-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            .qa/corpus/report.json
+            .qa/verifier-probe.json
+            .qa/hosted-tests-*.xcresult
+            .qa/release-scan-*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+  privacy-ipad:
+    name: Russian iPad privacy at system AX5
+    if: github.event_name == 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 2
+      - name: Require reviewed ARM toolchain profile
+        timeout-minutes: 1
+        run: |
+          test "$(uname -m)" = arm64
+          test "$(xcodebuild -version)" = $'Xcode 16.4\nBuild version 16F6'
+      - name: Run one bounded Release iPad privacy scenario
+        timeout-minutes: 18
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REDACTLEAF_PRIVACY_CONFIGURATION: Release
+        run: python3 scripts/check-privacy-ipad.py
+      - name: Save iPad privacy evidence
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: privacy-ipad-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: .qa/privacy-ipad/run-${{ github.run_id }}-attempt-${{ github.run_attempt }}/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  native-storekit:
+    name: Native StoreKit eight-case acceptance
+    needs: [verify]
+    if: ${{ always() && github.event_name == 'pull_request' && needs.verify.outputs.release_assets_ready == 'true' }}
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 2
+      - name: Require reviewed ARM toolchain profile
+        timeout-minutes: 1
+        run: |
+          test "$(uname -m)" = arm64
+          test "$(xcodebuild -version)" = $'Xcode 26.3\nBuild version 17C529'
+      - name: Build signed Debug native test products on this host
+        timeout-minutes: 9
+        run: |
+          set -o pipefail
+          mkdir -p .qa/native-storekit-build
+          xcodebuild build-for-testing -project CleanSend.xcodeproj -scheme CleanSend \
+            -testPlan CleanSend -configuration Debug -sdk iphonesimulator26.2 \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath .derivedData \
+            -jobs 2 -only-testing:CleanSendTests/ProStoreTests \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee .qa/native-storekit-build/build.log
+      - name: Run all eight bounded native StoreKit cases
+        timeout-minutes: 21
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B scripts/check-native-storekit.py
+      - name: Preserve native payment evidence
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-storekit-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            .qa/native-storekit-build/build.log
+            .qa/native-storekit/run-${{ github.run_id }}-attempt-${{ github.run_attempt }}/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  package-smoke:
+    name: Exact packaged Release share smoke
+    needs: [verify, privacy-ipad]
+    if: ${{ always() && github.event_name == 'pull_request' && needs.verify.outputs.release_assets_ready == 'true' && needs['privacy-ipad'].result == 'success' }}
+    runs-on: macos-15
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 2
+      - name: Require reviewed ARM toolchain profile
+        timeout-minutes: 1
+        run: |
+          test "$(uname -m)" = arm64
+          test "$(xcodebuild -version)" = $'Xcode 16.4\nBuild version 16F6'
+      - name: Bind exact same-run package and Release UI runner
+        id: prepare
+        timeout-minutes: 6
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B scripts/release_smoke/prepare.py
+      - name: Run one bounded exact-package Share Extension case
+        timeout-minutes: 14
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RELEASE_SMOKE_CONTEXT_SHA: ${{ steps.prepare.outputs.context_sha256 }}
+          RELEASE_SMOKE_CONTEXT: ${{ steps.prepare.outputs.context }}
+        run: python3 -B scripts/release_smoke/run.py "$RELEASE_SMOKE_CONTEXT"
+      - name: Preserve exact-package smoke evidence
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: package-smoke-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/redact-package-smoke-${{ github.run_id }}-attempt-${{ github.run_attempt }}/preparation.json
+            ${{ runner.temp }}/redact-package-smoke-${{ github.run_id }}-attempt-${{ github.run_attempt }}/artifact-list.json
+            ${{ runner.temp }}/redact-package-smoke-${{ github.run_id }}-attempt-${{ github.run_attempt }}/context.json
+            ${{ runner.temp }}/redact-package-smoke-${{ github.run_id }}-attempt-${{ github.run_attempt }}/runner-binding.json
+            ${{ runner.temp }}/redact-package-smoke-${{ github.run_id }}-attempt-${{ github.run_attempt }}/native/
+          include-hidden-files: true
+          if-no-files-found: error

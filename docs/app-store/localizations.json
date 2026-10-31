@@ -1,0 +1,353 @@
+{
+  "schemaVersion": 1,
+  "status": "draft_not_submission_ready",
+  "sourceCommit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+  "sourceUrl": "https://github.com/4alvit/document-sanitizer-ios/tree/e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+  "formatNote": "Local authoring format, not an App Store Connect API request. en-US and ru are draft locale keys. Review-note translations are alternatives for the single review-note fields, not separately localized ASC records.",
+  "readiness": {
+    "textDraftComplete": true,
+    "submissionReady": false,
+    "nameReservationConfirmed": false,
+    "gates": [
+      {
+        "id": "nativePayments",
+        "status": "open",
+        "requirement": "Resolve and validate native StoreKit findings; complete actual product purchase, cancellation, pending approval, refund, restore and offline-relaunch acceptance. Controlled tests and ordinary UI smoke do not close this gate.",
+        "reference": "../STOREKIT-TESTING.md"
+      },
+      {
+        "id": "physicalDevice",
+        "status": "open",
+        "requirement": "Complete physical-device Sandbox, file-protection, memory-pressure and release interaction checks. Simulator evidence is insufficient.",
+        "reference": "../RELEASE.md"
+      },
+      {
+        "id": "appleAccountAndDistribution",
+        "status": "open",
+        "requirement": "Confirm Developer Program membership, signing/provisioning, App Group, paid agreements, tax/banking, ASC app and product records, validated device archive and TestFlight.",
+        "reference": "../RELEASE.md"
+      },
+      {
+        "id": "nameAndCommercialSetup",
+        "status": "account_configuration_unverified",
+        "requirement": "Freemium and the USD 19.99 one-time Pro target are assigned. Verify name reservation, ASC product registration, actual configured price and territory availability; no live offer is asserted."
+      },
+      {
+        "id": "publicContactAndPrivacy",
+        "status": "owner_input_required",
+        "requirement": "Provide actual support contact information and approve public support/privacy URLs. Verify privacy answers against the shipping binary. A GitHub issue tracker alone is not evidence of the required contact information."
+      },
+      {
+        "id": "legalAndReviewContact",
+        "status": "owner_input_required",
+        "requirement": "Provide the rights-holder copyright entry and App Review contact details; complete applicable legal, age-rating and content-rights declarations."
+      },
+      {
+        "id": "screenshots",
+        "status": "listing_frames_prepared_iap_review_pending",
+        "requirement": "Ten draft listing frames cover English/Russian iPhone and 13-inch iPad slots. See the inventory for raw-image provenance, viewport limits and the missing post-test installed-payload check. The IAP review screenshot of the real configured offer remains pending; listing frames do not establish payment or App Review acceptance.",
+        "reference": "screenshots.json"
+      }
+    ]
+  },
+  "shared": {
+    "appBundleId": "io.github.4alvit.cleansend",
+    "version": "0.1.0",
+    "build": "1",
+    "platform": "iOS",
+    "copyright": null,
+    "appReviewContact": null,
+    "primaryCategory": null,
+    "inAppPurchase": {
+      "productId": "io.github.4alvit.cleansend.pro",
+      "type": "non-consumable",
+      "referenceName": "RedactLeaf Pro",
+      "appStoreConnectRegistrationConfirmed": false,
+      "price": null,
+      "reviewScreenshot": null
+    }
+  },
+  "nullFieldPolicy": "Null means unset or not applicable, never invented. whatsNew is null because Apple does not offer it for the first version. Optional marketingUrl may remain unset. Required support/privacy, rights-holder and review contact fields must be supplied before submission.",
+  "fieldLimits": {
+    "name": {
+      "min": 2,
+      "max": 30,
+      "unit": "codepoints",
+      "appleUnit": "characters",
+      "source": "https://developer.apple.com/help/app-store-connect/reference/app-information/app-information/"
+    },
+    "subtitle": {
+      "max": 30,
+      "unit": "codepoints",
+      "appleUnit": "characters",
+      "source": "https://developer.apple.com/help/app-store-connect/reference/app-information/app-information/"
+    },
+    "promotionalText": {
+      "max": 170,
+      "unit": "codepoints",
+      "appleUnit": "characters",
+      "source": "https://developer.apple.com/help/app-store-connect/reference/app-information/platform-version-information/"
+    },
+    "description": {
+      "max": 4000,
+      "unit": "codepoints",
+      "appleUnit": "characters",
+      "source": "https://developer.apple.com/help/app-store-connect/reference/app-information/platform-version-information/"
+    },
+    "keywords": {
+      "max": 100,
+      "unit": "utf8Bytes",
+      "appleUnit": "bytes",
+      "source": "https://developer.apple.com/help/app-store-connect/reference/app-information/platform-version-information/"
+    },
+    "whatsNew": {
+      "max": 4000,
+      "unit": "codepoints",
+      "appleUnit": "characters",
+      "source": "https://developer.apple.com/help/app-store-connect/reference/app-information/platform-version-information/",
+      "applicability": "Not available for the first app version; null in these initial-release drafts."
+    },
+    "appReviewNotes": {
+      "max": 4000,
+      "unit": "utf8Bytes",
+      "appleUnit": "bytes",
+      "source": "https://developer.apple.com/help/app-store-connect/reference/app-information/platform-version-information/"
+    },
+    "inAppPurchase.displayName": {
+      "min": 2,
+      "max": 30,
+      "unit": "codepoints",
+      "appleUnit": "characters",
+      "source": "https://developer.apple.com/help/app-store-connect/reference/in-app-purchases-and-subscriptions/in-app-purchase-information/"
+    },
+    "inAppPurchase.description": {
+      "max": 45,
+      "unit": "codepoints",
+      "appleUnit": "characters",
+      "source": "https://developer.apple.com/help/app-store-connect/reference/in-app-purchases-and-subscriptions/in-app-purchase-information/"
+    },
+    "inAppPurchaseReviewNotes": {
+      "max": 4000,
+      "unit": "codepoints",
+      "appleUnit": "characters",
+      "source": "https://developer.apple.com/help/app-store-connect/reference/in-app-purchases-and-subscriptions/in-app-purchase-information/"
+    },
+    "inAppPurchase.referenceName": {
+      "max": 64,
+      "unit": "codepoints",
+      "appleUnit": "characters",
+      "source": "https://developer.apple.com/help/app-store-connect/reference/in-app-purchases-and-subscriptions/in-app-purchase-information/"
+    },
+    "inAppPurchase.productId": {
+      "max": 100,
+      "unit": "codepoints",
+      "appleUnit": "characters",
+      "source": "https://developer.apple.com/help/app-store-connect/reference/in-app-purchases-and-subscriptions/in-app-purchase-information/"
+    }
+  },
+  "countingNote": "Decoded strings, including spaces, punctuation and line feeds: Unicode codepoints and UTF-8 bytes are counted. All strings use NFC and BMP characters, so codepoint and UTF-16-unit lengths agree here. Keywords and app review notes use the stricter explicit ASC byte limits. ASC validation remains required.",
+  "localizations": {
+    "en-US": {
+      "name": "RedactLeaf: PDF & Photo",
+      "subtitle": "Hide details. Review. Share.",
+      "promotionalText": "Cover selected details in PDFs and images, check every page, then share new copies. Process documents on your device and reuse area presets with Pro.",
+      "description": "Prepare a copy of a receipt, form or other document before you send it. RedactLeaf lets you hide selected details in PDFs and images, inspect the result and share new copies. Your original files stay unchanged.\n\nCHOOSE WHAT TO HIDE\nDraw rectangular areas over details you want to cover, or position them with sliders. Search recognized text across the workspace and choose which matching lines to hide. A confirmed match covers the whole recognized line, not just the search phrase. Recognition supports English and Russian where available on the device; it can miss or misread content.\n\nCHECK BEFORE SHARING\nZoom into the final preview and confirm that you have checked every page before exporting. Selected areas become black pixels. Export one image-only PDF for the batch, or one PNG or JPEG image per page.\n\nFREE AND PRO\nThe free version includes editing, text search, preview and export for up to 3 pages per workspace. RedactLeaf Pro is an optional one-time in-app purchase, with no subscription. It increases the page limit to 30 and lets you create reusable area presets.\n\nEach workspace also has a total limit of 24,000,000 working pixels. Large pages can reach that limit before the page count, including with Pro. Split larger documents into smaller batches.\n\nREUSE AREA PRESETS\nSave up to 50 named presets for documents with similar layouts. A preset stores a name and relative rectangle positions, not a document or recognized text. Preview placement on the selected page before applying it: presets do not align fields automatically. Existing presets remain available to apply or delete if Pro becomes unavailable. Already loaded pages remain viewable and exportable. Restore purchases restores Pro access, not documents or presets.\n\nLOCAL, TEMPORARY WORKSPACE\nDocument processing takes place on your device, with no required app account or document upload service. The workspace clears when the app restarts, so export before restarting the app. Presets stay on this device and do not sync. Accessing cloud files or Apple's purchase services may require a connection.\n\nKNOW THE LIMITS\nInputs are limited to 50 MiB per file. PDF pages render at up to 144 dpi and 2,400 pixels on the longest edge. Locked PDFs and animated or multi-frame images are not supported.\n\nCopies are rasterized: selectable text, links, forms and accessibility structure are lost, and resolution may decrease. Visible annotations become part of the image; a signature's appearance is not a valid digital signature. Source text layers, attachments and source metadata are not copied, although new files contain technical output properties. OCR is not an automatic privacy check. Inspect every page, including handwriting, faces and other details you did not search for.",
+      "keywords": "redact,document,mask,receipt,scan,offline,metadata,export,private",
+      "supportUrl": null,
+      "privacyPolicyUrl": null,
+      "marketingUrl": null,
+      "whatsNew": null,
+      "inAppPurchase": {
+        "displayName": "RedactLeaf Pro",
+        "description": "Up to 30 pages and reusable area presets"
+      },
+      "appReviewNotes": "DRAFT for a future validated App Store build. Current payment and physical-device release gates remain open; these steps are not a record of successful payment acceptance.\n\nNo app account or demo credentials are required for document editing. Apple handles purchases separately.\n1. Launch RedactLeaf and tap \"Try a synthetic sample\". The built-in receipt is labelled synthetic and contains no real personal data.\n2. Draw an area on the receipt, or use \"Add area with accessible controls\". Optional: use \"Find matching lines\", then confirm a proposed whole line.\n3. Tap \"Review clean copies\". Inspect the preview and tap \"I checked this page\" for each page. Export stays disabled until every page is checked. Select PDF, PNG or JPEG, then \"Export clean copies\" to open the system share sheet. These are new raster copies; originals are unchanged.\n4. Return to editing. The top-right menu contains \"Saved areas\", \"Clear workspace\" and \"Privacy and support\".\n5. Open the top-left sparkle button (\"Unlock Pro\" or \"Pro\") for the paywall and \"Restore purchases\". The non-consumable product is io.github.4alvit.cleansend.pro. Free supports 3 pages; Pro permits up to 30 and creation of area presets. Both remain limited to 24,000,000 working pixels. Pro is one purchase, not a subscription; the app displays Apple's localized price.\n6. With validated Pro access, draw an area, open \"Saved areas\", then \"Save current page areas\". Save a generic name. Preview its placement on a selected page before applying. Presets do not align fields automatically.\n\nThe workspace is temporary and clears on restart. Presets persist locally without document images or OCR text. Restore purchases does not restore documents or presets. OCR can miss content and does not certify privacy. The release app excludes the development StoreKit configuration. Do not submit until the actual ASC product is available and the payment gates have passed.",
+      "inAppPurchaseReviewNotes": "DRAFT; not ready for submission. RedactLeaf Pro is the non-consumable product io.github.4alvit.cleansend.pro. Open the top-left sparkle button (\"Unlock Pro\" or \"Pro\"). The screen contains Apple's localized price and \"Restore purchases\". No app account is required.\n\nExpected benefit: increase the workspace limit from 3 to 30 pages, subject to the unchanged 24,000,000 working-pixel total, and create reusable area presets. This is not a subscription. With valid Pro access, import a small four-page synthetic PDF; use \"Saved areas\" > \"Save current page areas\" on a page with a drawn area to create a preset. Preview placement before applying it. Existing pages remain exportable and saved presets remain usable/deletable if Pro becomes unavailable. Restore purchases restores access, not documents or presets.\n\nBefore submission: configure the real ASC product and price; attach a review screenshot of the actual offer; complete purchase, cancellation, pending approval, refund, restore and offline-relaunch acceptance in the intended environment, including physical-device Sandbox checks. Native payment findings remain open. Local StoreKit fixtures and passing controlled tests are not a live product or payment acceptance. Do not submit an unavailable purchase."
+    },
+    "ru": {
+      "name": "RedactLeaf: PDF и фото",
+      "subtitle": "Скройте детали перед отправкой",
+      "promotionalText": "Скройте выбранные детали в PDF и изображениях, проверьте страницы и отправьте новые копии. Обработка на устройстве; с Pro можно сохранять шаблоны областей.",
+      "description": "Подготовьте копию чека, формы или другого документа перед отправкой. RedactLeaf помогает скрыть выбранные детали в PDF и изображениях, проверить результат и отправить новые копии. Исходные файлы остаются без изменений.\n\nВЫБЕРИТЕ, ЧТО СКРЫТЬ\nНарисуйте прямоугольники поверх нужных деталей или задайте их положение ползунками. Найдите распознанный текст во всей рабочей области и выберите строки, которые хотите закрыть. После подтверждения скрывается вся распознанная строка, а не только поисковая фраза. Распознавание поддерживает русский и английский, если они доступны на устройстве, но может пропустить или неверно прочитать текст.\n\nПРОВЕРЬТЕ ПЕРЕД ОТПРАВКОЙ\nУвеличьте итоговый предпросмотр и отметьте каждую страницу как проверенную перед экспортом. Выбранные области заменяются чёрными пикселями. Сохраните пакет как один PDF из изображений либо как отдельные PNG или JPEG для каждой страницы.\n\nБЕСПЛАТНАЯ ВЕРСИЯ И PRO\nБесплатная версия включает редактирование, поиск текста, предпросмотр и экспорт до 3 страниц в одной рабочей области. RedactLeaf Pro — дополнительная разовая покупка внутри приложения, без подписки. Она увеличивает предел до 30 страниц и позволяет создавать шаблоны областей.\n\nВ каждой рабочей области действует общий предел в 24 000 000 рабочих пикселей. Крупные страницы могут исчерпать его раньше лимита страниц, в том числе с Pro. Большие документы потребуется разделить на меньшие пакеты.\n\nПОВТОРНО ИСПОЛЬЗУЙТЕ ОБЛАСТИ\nСохраните до 50 именованных шаблонов для документов с похожим расположением полей. Шаблон хранит название и относительные координаты прямоугольников, без документа и распознанного текста. Перед применением проверьте положение на выбранной странице: автоматического выравнивания полей нет. Если Pro недоступен, готовые шаблоны по-прежнему можно применять и удалять, а уже загруженные страницы — просматривать и экспортировать. Восстановление покупок возвращает доступ к Pro, но не документы или шаблоны.\n\nЛОКАЛЬНАЯ ВРЕМЕННАЯ РАБОЧАЯ ОБЛАСТЬ\nДокументы обрабатываются на вашем устройстве, без обязательной учётной записи приложения и сервиса загрузки документов. При перезапуске рабочая область очищается: экспортируйте результат до перезапуска. Шаблоны остаются на этом устройстве и не синхронизируются. Для доступа к облачным файлам и сервисам покупок Apple может потребоваться интернет.\n\nУЧИТЫВАЙТЕ ОГРАНИЧЕНИЯ\nРазмер исходного файла — до 50 МиБ. Страницы PDF преобразуются с разрешением до 144 dpi и до 2400 пикселей по длинной стороне. Заблокированные PDF, анимированные и многокадровые изображения не поддерживаются.\n\nКопии растровые: выделяемый текст, ссылки, формы и структура доступности теряются; разрешение может уменьшиться. Видимые аннотации становятся частью изображения; изображение подписи не является действительной цифровой подписью. Исходные текстовые слои, вложения и метаданные не копируются, но новые файлы содержат технические свойства результата. OCR не заменяет проверку конфиденциальности. Осмотрите каждую страницу, включая рукописный текст, лица и детали, которые вы не искали.",
+      "keywords": "документ,скрыть,чек,маска,копия,офлайн,экспорт",
+      "supportUrl": null,
+      "privacyPolicyUrl": null,
+      "marketingUrl": null,
+      "whatsNew": null,
+      "inAppPurchase": {
+        "displayName": "RedactLeaf Pro",
+        "description": "До 30 страниц и шаблоны областей"
+      },
+      "appReviewNotes": "ЧЕРНОВИК для будущей проверенной сборки App Store. Проверки платежей и физических устройств не завершены; эти шаги не подтверждают приёмку покупок.\n\nДля работы с документами учётная запись приложения не нужна. Покупки отдельно обрабатывает Apple.\n1. Откройте RedactLeaf и нажмите «Открыть учебный пример». Чек помечен как учебный и не содержит реальных личных данных.\n2. Нарисуйте область на чеке или нажмите «Добавить область с помощью ползунков». Для поиска используйте «Найти строки с совпадениями» и подтвердите нужную строку целиком.\n3. Нажмите «Проверить готовые копии». Осмотрите результат и отметьте «Я проверил эту страницу» на каждой странице. До этого экспорт недоступен. Выберите PDF, PNG или JPEG и нажмите «Экспортировать готовые копии»: откроется системное меню отправки. Копии растровые, оригиналы не меняются.\n4. Меню справа вверху содержит «Шаблоны областей», «Очистить рабочую область» и «Конфиденциальность и поддержка».\n5. Кнопка со звёздочками слева вверху («Открыть Pro» или «Pro») открывает покупку и «Восстановить покупки». Продукт io.github.4alvit.cleansend.pro — разовая покупка без подписки. Бесплатно доступны 3 страницы; Pro даёт до 30 и создание шаблонов. Общий предел — 24 000 000 рабочих пикселей. Цену предоставляет Apple.\n6. При подтверждённом доступе Pro нарисуйте область, откройте «Шаблоны областей» и «Сохранить области этой страницы». Сохраните общее название и проверьте размещение перед применением к выбранной странице. Автовыравнивания полей нет.\n\nПерезапуск очищает рабочую область. Шаблоны хранятся локально без изображений и распознанного текста. Восстановление покупок не возвращает документы и шаблоны. OCR может пропустить данные. Сборка Release не содержит тестовой конфигурации StoreKit. Отправка на проверку возможна только после настройки реального продукта ASC и прохождения платёжных проверок.",
+      "inAppPurchaseReviewNotes": "ЧЕРНОВИК; к отправке не готов. RedactLeaf Pro — разовая покупка (non-consumable) io.github.4alvit.cleansend.pro. Откройте кнопку со звёздочками слева вверху («Открыть Pro» или «Pro»). На экране находятся цена Apple и «Восстановить покупки». Учётная запись приложения не нужна.\n\nОжидаемые возможности: до 30 страниц вместо 3 при прежнем общем пределе в 24 000 000 рабочих пикселей и создание шаблонов областей. Подписки нет. При действующем доступе Pro импортируйте небольшой учебный PDF из четырёх страниц. Нарисуйте область и выберите «Шаблоны областей» > «Сохранить области этой страницы». Проверьте размещение шаблона перед применением. Если Pro недоступен, загруженные страницы можно экспортировать, а сохранённые шаблоны — применять и удалять. Восстановление покупок возвращает доступ, но не документы и шаблоны.\n\nПеред отправкой: настройте реальный продукт и цену в ASC, приложите снимок действующего предложения, завершите проверки покупки, отмены, ожидания одобрения, возврата средств, восстановления и запуска без сети, включая Sandbox на физическом устройстве. Замечания по нативным платежам остаются открытыми. Локальная конфигурация StoreKit и контролируемые тесты не подтверждают готовность платежей. Не отправляйте недоступную покупку."
+    }
+  },
+  "counts": {
+    "en-US": {
+      "name": {
+        "codepoints": 23,
+        "utf8Bytes": 23,
+        "limit": 30,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "subtitle": {
+        "codepoints": 28,
+        "utf8Bytes": 28,
+        "limit": 30,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "promotionalText": {
+        "codepoints": 149,
+        "utf8Bytes": 149,
+        "limit": 170,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "description": {
+        "codepoints": 2757,
+        "utf8Bytes": 2757,
+        "limit": 4000,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "keywords": {
+        "codepoints": 65,
+        "utf8Bytes": 65,
+        "limit": 100,
+        "unit": "utf8Bytes",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "appReviewNotes": {
+        "codepoints": 1919,
+        "utf8Bytes": 1919,
+        "limit": 4000,
+        "unit": "utf8Bytes",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "inAppPurchase.displayName": {
+        "codepoints": 14,
+        "utf8Bytes": 14,
+        "limit": 30,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "inAppPurchase.description": {
+        "codepoints": 40,
+        "utf8Bytes": 40,
+        "limit": 45,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "inAppPurchaseReviewNotes": {
+        "codepoints": 1265,
+        "utf8Bytes": 1265,
+        "limit": 4000,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      }
+    },
+    "ru": {
+      "name": {
+        "codepoints": 22,
+        "utf8Bytes": 27,
+        "limit": 30,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "subtitle": {
+        "codepoints": 30,
+        "utf8Bytes": 57,
+        "limit": 30,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "promotionalText": {
+        "codepoints": 155,
+        "utf8Bytes": 279,
+        "limit": 170,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "description": {
+        "codepoints": 3050,
+        "utf8Bytes": 5551,
+        "limit": 4000,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "keywords": {
+        "codepoints": 46,
+        "utf8Bytes": 86,
+        "limit": 100,
+        "unit": "utf8Bytes",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "appReviewNotes": {
+        "codepoints": 1849,
+        "utf8Bytes": 3293,
+        "limit": 4000,
+        "unit": "utf8Bytes",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "inAppPurchase.displayName": {
+        "codepoints": 14,
+        "utf8Bytes": 14,
+        "limit": 30,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "inAppPurchase.description": {
+        "codepoints": 32,
+        "utf8Bytes": 57,
+        "limit": 45,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      },
+      "inAppPurchaseReviewNotes": {
+        "codepoints": 1249,
+        "utf8Bytes": 2200,
+        "limit": 4000,
+        "unit": "codepoints",
+        "passes": true,
+        "normalization": "NFC"
+      }
+    }
+  },
+  "sharedCounts": {
+    "inAppPurchase.referenceName": {
+      "codepoints": 14,
+      "utf8Bytes": 14,
+      "limit": 64,
+      "unit": "codepoints",
+      "passes": true
+    },
+    "inAppPurchase.productId": {
+      "codepoints": 30,
+      "utf8Bytes": 30,
+      "limit": 100,
+      "unit": "codepoints",
+      "passes": true
+    }
+  },
+  "preparedLocalDate": "2026-10-24",
+  "preparedTimeZone": "America/Los_Angeles"
+}

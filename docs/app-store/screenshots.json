@@ -1,0 +1,535 @@
+{
+  "schema_version": 1,
+  "status": "prepared_all_required_locale_device_slots",
+  "product": "RedactLeaf",
+  "application_source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+  "official_specification": {
+    "url": "https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications",
+    "checked_date": "2026-10-24",
+    "count_per_slot": "1 to 10",
+    "formats": [
+      "JPEG",
+      "JPG",
+      "PNG"
+    ],
+    "alpha_or_transparency_allowed": false,
+    "required_slots": {
+      "iphone": "Dynamic Island (medium display)",
+      "ipad": "13-inch display if iPad supported"
+    },
+    "accepted_portrait_dimensions": {
+      "iphone": [
+        [
+          1179,
+          2556
+        ],
+        [
+          1206,
+          2622
+        ]
+      ],
+      "ipad": [
+        [
+          2064,
+          2752
+        ],
+        [
+          2048,
+          2732
+        ]
+      ]
+    },
+    "landscape": "Reversed dimensions are accepted.",
+    "checked_timezone": "America/Los_Angeles"
+  },
+  "assets": [
+    {
+      "path": "docs/app-store/screenshots/en-US/iphone-dynamic-island-medium/01-welcome.png",
+      "sha256": "6f782a3ed09dcd9087a9575ccfdc6a07192518701f789a2d9f537c7398ac5afa",
+      "capture_id": "41F1EA19-1179-441B-8D23-B77C9068F651",
+      "title": "Welcome and workflow",
+      "source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "exact_packaged_release",
+        "matching_production_files": null
+      },
+      "build_configuration": "Release",
+      "device": "iPhone 17 Pro",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "en-US",
+      "app_language": "en",
+      "regional_locale": "en_US",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "dimensions": {
+        "width": 1206,
+        "height": 2622
+      },
+      "orientation": "portrait",
+      "text_size": "large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "The temporary-workspace footnote continues below the viewport.",
+      "capture_timestamp": 1792896473.498,
+      "application_archive_sha256": "2c51a4a3eba015ca46d58fd6ae16b9c3bd569cbfae310c84a7693efdebf8ec24",
+      "application_archive_kind": "ad_hoc_signed_simulator"
+    },
+    {
+      "path": "docs/app-store/screenshots/en-US/iphone-dynamic-island-medium/02-manual-mask.png",
+      "sha256": "bf2b162f711a8b475e4e826d56874cf78e050567859f0b7c24d07015f590fe87",
+      "capture_id": "11153479-85A7-42FC-928B-0066D568925F",
+      "title": "Mark a selected area",
+      "source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "exact_packaged_release",
+        "matching_production_files": null
+      },
+      "build_configuration": "Release",
+      "device": "iPhone 17 Pro",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "en-US",
+      "app_language": "en",
+      "regional_locale": "en_US",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "dimensions": {
+        "width": 1206,
+        "height": 2622
+      },
+      "orientation": "portrait",
+      "text_size": "large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "Shows a partial manual selection on a labelled synthetic sample, not a claim that all personal details were removed. The displayed USD total belongs to the synthetic receipt, not app pricing.",
+      "capture_timestamp": 1792896483.13,
+      "application_archive_sha256": "2c51a4a3eba015ca46d58fd6ae16b9c3bd569cbfae310c84a7693efdebf8ec24",
+      "application_archive_kind": "ad_hoc_signed_simulator"
+    },
+    {
+      "path": "docs/app-store/screenshots/en-US/iphone-dynamic-island-medium/03-review-export.png",
+      "sha256": "13ea1485e8915ed889b0d05ac99c68a9272cc8f9ae2201e851c812f281e5cdb1",
+      "capture_id": "4E3C7FFD-E0C4-4960-9EC0-899ADD105ABE",
+      "title": "Review and choose an export format",
+      "source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "exact_packaged_release",
+        "matching_production_files": null
+      },
+      "build_configuration": "Release",
+      "device": "iPhone 17 Pro",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "en-US",
+      "app_language": "en",
+      "regional_locale": "en_US",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "dimensions": {
+        "width": 1206,
+        "height": 2622
+      },
+      "orientation": "portrait",
+      "text_size": "large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "Review is scrolled to the checked state and export options; the upper portion of the raster preview is outside this frame.",
+      "capture_timestamp": 1792896494.003,
+      "application_archive_sha256": "2c51a4a3eba015ca46d58fd6ae16b9c3bd569cbfae310c84a7693efdebf8ec24",
+      "application_archive_kind": "ad_hoc_signed_simulator"
+    },
+    {
+      "path": "docs/app-store/screenshots/ru/iphone-dynamic-island-medium/01-accessible-manual-controls.png",
+      "sha256": "dbe658ea644fa9bda9d5cee42d0690b9041fa133cc2fc52234dc95347917440e",
+      "capture_id": "D1BAE0B9-37DB-4DF1-A0FF-5E2E39B7AED7",
+      "title": "Accessible manual area controls",
+      "source_commit": "df2e2ea176786554a0211498c98e6d69a7260adb",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "production_source_hash_equivalence",
+        "matching_production_files": 42,
+        "equivalent_commit": "e67a692a329f9b3598b40a96c39ed5e9d31511b5"
+      },
+      "build_configuration": "Debug",
+      "device": "iPhone 17 Pro",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "ru",
+      "app_language": "ru",
+      "regional_locale": "en_US",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "dimensions": {
+        "width": 1206,
+        "height": 2622
+      },
+      "orientation": "portrait",
+      "text_size": "accessibility-extra-extra-extra-large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "Real maximum-text-size accessibility capture. Only the upper controls are visible; this is a supplementary feature frame, not a normal-text-size overview.",
+      "capture_source_state": "uncommitted candidate based on source_commit; production files match the later equivalent_commit and current_application_commit",
+      "capture_timestamp": 1792606711.189
+    },
+    {
+      "path": "docs/app-store/screenshots/en-US/ipad-13-inch/01-welcome.png",
+      "sha256": "40af3269f42757f9577ddf08df94824f74bf452fbd1ef3115a176297132c3cb9",
+      "capture_id": "7AE75BF0-573B-4DEC-AECE-10304DD1A6E9",
+      "capture_timestamp": 1792898762.71,
+      "title": "Welcome and workflow",
+      "source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "exact_packaged_release",
+        "matching_production_files": null,
+        "installed_after_hash_check": "not_recorded"
+      },
+      "build_configuration": "Release",
+      "capture_session": "replacement-20261025",
+      "device": "iPad Pro 13-inch (M4)",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "en-US",
+      "app_language": "en",
+      "regional_locale": "en_US",
+      "slot": "iPad 13-inch",
+      "dimensions": {
+        "width": 2064,
+        "height": 2752
+      },
+      "orientation": "portrait",
+      "text_size": "large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "No frame-specific clipping noted during visual inspection.",
+      "application_archive_sha256": "2c51a4a3eba015ca46d58fd6ae16b9c3bd569cbfae310c84a7693efdebf8ec24",
+      "application_archive_kind": "ad_hoc_signed_simulator"
+    },
+    {
+      "path": "docs/app-store/screenshots/en-US/ipad-13-inch/02-synthetic-sample.png",
+      "sha256": "0e3cdbe5a555d4af304088e82f1bace78b293f103a88f7c5ef3a18412ab7a4e0",
+      "capture_id": "0033F908-055A-4F0A-AB21-F7E84810FB74",
+      "capture_timestamp": 1792898770.561,
+      "title": "Synthetic document workspace",
+      "source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "exact_packaged_release",
+        "matching_production_files": null,
+        "installed_after_hash_check": "not_recorded"
+      },
+      "build_configuration": "Release",
+      "capture_session": "replacement-20261025",
+      "device": "iPad Pro 13-inch (M4)",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "en-US",
+      "app_language": "en",
+      "regional_locale": "en_US",
+      "slot": "iPad 13-inch",
+      "dimensions": {
+        "width": 2064,
+        "height": 2752
+      },
+      "orientation": "portrait",
+      "text_size": "large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "Shows the labelled synthetic receipt with zero hidden areas. The USD amount is sample document content.",
+      "application_archive_sha256": "2c51a4a3eba015ca46d58fd6ae16b9c3bd569cbfae310c84a7693efdebf8ec24",
+      "application_archive_kind": "ad_hoc_signed_simulator"
+    },
+    {
+      "path": "docs/app-store/screenshots/ru/ipad-13-inch/01-welcome.png",
+      "sha256": "90a38bd93cd20974758d337976cede86d6490726f3d4cbeb11965544b8948c5d",
+      "capture_id": "0D9C7533-8A62-486C-A7DC-41F7F97D33FB",
+      "capture_timestamp": 1792898781.112,
+      "title": "Welcome and workflow",
+      "source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "exact_packaged_release",
+        "matching_production_files": null,
+        "installed_after_hash_check": "not_recorded"
+      },
+      "build_configuration": "Release",
+      "capture_session": "replacement-20261025",
+      "device": "iPad Pro 13-inch (M4)",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "ru",
+      "app_language": "ru",
+      "regional_locale": "ru_RU",
+      "slot": "iPad 13-inch",
+      "dimensions": {
+        "width": 2064,
+        "height": 2752
+      },
+      "orientation": "portrait",
+      "text_size": "large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "No frame-specific clipping noted during visual inspection.",
+      "application_archive_sha256": "2c51a4a3eba015ca46d58fd6ae16b9c3bd569cbfae310c84a7693efdebf8ec24",
+      "application_archive_kind": "ad_hoc_signed_simulator"
+    },
+    {
+      "path": "docs/app-store/screenshots/ru/ipad-13-inch/02-synthetic-sample.png",
+      "sha256": "f967d1cef3208abde11368d8be8715529ced7121010fa12f9842a708bfa6df56",
+      "capture_id": "E4164284-D937-45A1-B678-1E6EB67D2038",
+      "capture_timestamp": 1792898788.664,
+      "title": "Synthetic document workspace",
+      "source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "exact_packaged_release",
+        "matching_production_files": null,
+        "installed_after_hash_check": "not_recorded"
+      },
+      "build_configuration": "Release",
+      "capture_session": "replacement-20261025",
+      "device": "iPad Pro 13-inch (M4)",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "ru",
+      "app_language": "ru",
+      "regional_locale": "ru_RU",
+      "slot": "iPad 13-inch",
+      "dimensions": {
+        "width": 2064,
+        "height": 2752
+      },
+      "orientation": "portrait",
+      "text_size": "large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "Shows the labelled synthetic receipt with zero hidden areas. The USD amount is sample document content.",
+      "application_archive_sha256": "2c51a4a3eba015ca46d58fd6ae16b9c3bd569cbfae310c84a7693efdebf8ec24",
+      "application_archive_kind": "ad_hoc_signed_simulator"
+    },
+    {
+      "path": "docs/app-store/screenshots/ru/iphone-dynamic-island-medium/02-welcome.png",
+      "sha256": "cf1a16d5278de583ad4320da39f4d71c93eebd18d036d6bc84600f0e2418856c",
+      "capture_id": "880C99A3-611C-4B4C-AFF6-6FC92EC0E249",
+      "capture_timestamp": 1792898862.054,
+      "title": "Welcome and workflow",
+      "source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "exact_packaged_release",
+        "matching_production_files": null,
+        "installed_after_hash_check": "not_recorded"
+      },
+      "build_configuration": "Release",
+      "capture_session": "replacement-20261025",
+      "device": "iPhone 17 Pro",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "ru",
+      "app_language": "ru",
+      "regional_locale": "ru_RU",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "dimensions": {
+        "width": 1206,
+        "height": 2622
+      },
+      "orientation": "portrait",
+      "text_size": "large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "The introduction and three workflow steps are visible. The import button begins at the bottom edge; subsequent controls and notes are below the natural viewport.",
+      "application_archive_sha256": "2c51a4a3eba015ca46d58fd6ae16b9c3bd569cbfae310c84a7693efdebf8ec24",
+      "application_archive_kind": "ad_hoc_signed_simulator"
+    },
+    {
+      "path": "docs/app-store/screenshots/ru/iphone-dynamic-island-medium/03-synthetic-sample.png",
+      "sha256": "88d28021bc16ed9cd186f1b389f1626171f6bef3ef3f88032812ac396a1e37b9",
+      "capture_id": "C156218C-6A7E-4643-9782-FA0EAE4F79CC",
+      "capture_timestamp": 1792898871.572,
+      "title": "Synthetic document workspace",
+      "source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "current_application_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "source_equivalence": {
+        "kind": "exact_packaged_release",
+        "matching_production_files": null,
+        "installed_after_hash_check": "not_recorded"
+      },
+      "build_configuration": "Release",
+      "capture_session": "replacement-20261025",
+      "device": "iPhone 17 Pro",
+      "runtime": {
+        "platform": "iOS Simulator",
+        "version": "27.0",
+        "build": "24A434"
+      },
+      "locale": "ru",
+      "app_language": "ru",
+      "regional_locale": "ru_RU",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "dimensions": {
+        "width": 1206,
+        "height": 2622
+      },
+      "orientation": "portrait",
+      "text_size": "large",
+      "format": "PNG",
+      "alpha_channel": false,
+      "transparency": false,
+      "raw_unchanged": true,
+      "synthetic_only": true,
+      "metadata_local_paths_found": false,
+      "readiness": "prepared_raw_frame",
+      "limits": "Shows the labelled synthetic receipt with zero hidden areas. The USD amount is sample document content. The workspace header has scrolled above the visible area; the bottom of the OCR section is outside the viewport behind the fixed review control.",
+      "application_archive_sha256": "2c51a4a3eba015ca46d58fd6ae16b9c3bd569cbfae310c84a7693efdebf8ec24",
+      "application_archive_kind": "ad_hoc_signed_simulator"
+    }
+  ],
+  "gaps": [],
+  "limits": [
+    "These are simulator captures of real app screens with synthetic content. They do not prove App Store approval or payment readiness.",
+    "No compositing, cropping, resizing, replacement text, invented price or alpha removal was applied.",
+    "Per-app language and regional locale are recorded separately; simulator system chrome may retain the system language.",
+    "The older Russian accessibility frame is retained as supplementary material alongside the new normal-size Russian overview frames.",
+    "Replacement captures used the exact packaged app and verified its installed bytes before testing. The supplied app and runner remained unchanged; installed app bytes were not independently recorded after testing."
+  ],
+  "coverage": [
+    {
+      "locale": "en-US",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "asset_count": 3,
+      "status": "prepared"
+    },
+    {
+      "locale": "en-US",
+      "slot": "iPad 13-inch",
+      "asset_count": 2,
+      "status": "prepared"
+    },
+    {
+      "locale": "ru",
+      "slot": "iPhone with Dynamic Island (medium display)",
+      "asset_count": 3,
+      "status": "prepared"
+    },
+    {
+      "locale": "ru",
+      "slot": "iPad 13-inch",
+      "asset_count": 2,
+      "status": "prepared"
+    }
+  ],
+  "capture_history": [
+    {
+      "session": "initial-ipad-capture",
+      "outcome": "capture_runner_loader_failure_before_cases",
+      "test_invocations": 1,
+      "started_capture_cases": 0,
+      "new_pngs": 0,
+      "temporary_device_removed": true
+    },
+    {
+      "session": "replacement-20261025",
+      "outcome": "passed",
+      "test_invocations": 2,
+      "passed_cases": 3,
+      "failed_cases": 0,
+      "skipped_cases": 0,
+      "new_pngs": 6,
+      "runtime_seconds_including_cleanup": 193.93741141702048,
+      "temporary_devices_removed": 2,
+      "source_commit": "e40d6933bff2100c028259aa54be3ea8f3a6a66a",
+      "supplied_application_files_verified": 27,
+      "installed_before_files_verified": 27,
+      "installed_after_hash_check": "not_recorded",
+      "frozen_runner_files_verified": 7,
+      "protected_source_files_verified": 67,
+      "runner_manifest_sha256": "5c000d561be6ae7199350646f3077e3e5cfb04c71b9ae163154829fce4cfcecf",
+      "driver_sha256": "edf3c7cec50ea9836fac5aadd7b472307f2f1ad0d8b8f475fd7a727249c65775",
+      "static_preflight_sha256": "4e342f2c1b47b6776c7b1314dd8017d86d38c543b6fdcc02f4cdb8a5a2842d60",
+      "ipad_config_sha256": "34349eb1a2be20ed571d490b301a21c025bd887333943b7b96866c2c18bd4664",
+      "iphone_config_sha256": "e43189128197a5b5170d275318609f5552fc6d3b0d79fbdc2a2fc119ee799087",
+      "application_archive_sha256": "2c51a4a3eba015ca46d58fd6ae16b9c3bd569cbfae310c84a7693efdebf8ec24",
+      "application_archive_kind": "ad_hoc_signed_simulator"
+    }
+  ],
+  "gap_scope": "Required listing screenshot locale/device slots only; other App Store materials are tracked separately.",
+  "other_material_gaps": [
+    {
+      "kind": "iap_app_review_screenshot",
+      "status": "not_included",
+      "scope": "Separate from listing screenshot coverage; no in-app purchase screen was captured."
+    }
+  ]
+}
