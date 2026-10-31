@@ -136,11 +136,29 @@ existing `ProStoreTests`, on a fresh owned iPhone 16 Pro Simulator with iOS 18.5
 and Xcode 16.4. It reuses the same job's Debug application and unit-test bundle;
 the native test driver does not rebuild, re-sign or enter an Apple Account.
 Missing embedded test products, invalid signatures or changed source fail closed.
-The existing empty Debug unit-test host lets each case initialize its local
-StoreKit session before constructing the real production `ProStore`. The existing
-per-case preflight performs a synthetic purchase, verifies `.xcode` history, then
-clears it and waits for an empty entitlement stream. That disclosed barrier is
-unchanged; the adapter adds no separate warm-up.
+The empty Debug unit-test host lets each case initialize its local StoreKit
+session before constructing the real production `ProStore`. The per-case setup
+first resets and clears the StoreKitTest ledger and requires it to be empty.
+It then performs the disclosed synthetic preflight purchase. The first
+app-facing `Transaction.currentEntitlements` query must return that exact
+transaction ID and product ID, verified in the `.xcode` environment. After
+finishing and clearing the preflight purchase, setup still requires both an
+empty StoreKitTest ledger and zero verified or unverified app-facing
+entitlements before any real test case proceeds. A stale transaction cannot
+satisfy the identity check. The adapter adds no separate warm-up.
+
+This ordering is an explicit hypothesis, not a qualified native fix. In run
+`41239753264` at `f7287727`, the fresh iOS 18.5 host booted, but the first
+pre-purchase empty-history iterator never completed. The background and
+MainActor diagnostic callbacks both ran while it was suspended. The revised
+ordering removes that redundant pre-purchase query while preserving the strict
+empty-history barrier before each real case. The optional scheduling trace now
+labels its first query `firstPreflightIterator`. Offline regressions execute the
+actual Swift setup methods against an in-memory service model; they prove
+ordering, exact identity matching and failure handling, not Apple's service or
+payment routing. Acceptance still requires all eight native cases on a fresh
+host, with the existing 120/180-second case policy and 300-second process
+ceiling. No retry, account sign-in or acceptance bypass is introduced.
 
 The purchase case verifies local native history after `Product.purchase()`,
 then exercises a new store instance and restore. The pending case observes the

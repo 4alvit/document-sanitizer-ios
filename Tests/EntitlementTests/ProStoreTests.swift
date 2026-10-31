@@ -359,11 +359,10 @@ final class ProStoreTests: XCTestCase {
                 XCTFail("The local StoreKit ledger is not empty after reset and clear: \(resetTransactionCount) transactions.")
                 throw NSError(domain: "CleanSendStoreKitTests", code: 6)
             }
-            // A session reset is not an app-facing observation barrier. Require
-            // both histories to be empty before creating this case's purchase.
-            tracePhase("waitForCleanStoreKitSession", "begin")
-            try await waitForLocalEntitlement(present: false, resetSession: session, probeFirstIterator: true)
-            tracePhase("waitForCleanStoreKitSession", "end")
+            // The first app-facing query follows this disclosed synthetic
+            // purchase and must observe its exact identity. Do not infer an
+            // empty app-facing history from allTransactions(); the strict
+            // empty ledger/entitlement barrier still follows clear below.
             // SKTestSession can control the Xcode service while an app that
             // queried StoreKit before test setup is still routed to Sandbox.
             // Verify local history before exercising the app. This detects
@@ -377,7 +376,7 @@ final class ProStoreTests: XCTestCase {
             XCTAssertEqual(purchase.productType, .nonConsumable)
             XCTAssertEqual(purchase.appBundleID, Bundle.main.bundleIdentifier)
             tracePhase("waitForLocalEntitlement.present", "begin")
-            try await waitForLocalEntitlement(present: true)
+            try await waitForLocalEntitlement(present: true, matching: purchase, probeFirstIterator: true)
             tracePhase("waitForLocalEntitlement.present", "end")
             tracePhase("purchase.finish.preflight", "begin")
             await purchase.finish()
@@ -395,7 +394,7 @@ final class ProStoreTests: XCTestCase {
         }
     }
 
-    private func waitForLocalEntitlement(present: Bool, resetSession: SKTestSession? = nil, probeFirstIterator: Bool = false) async throws {
+    private func waitForLocalEntitlement(present: Bool, matching expectedTransaction: Transaction? = nil, resetSession: SKTestSession? = nil, probeFirstIterator: Bool = false) async throws {
         var lastSummary = "No query completed."
         for _ in 0..<100 {
             var found = false
@@ -432,7 +431,10 @@ final class ProStoreTests: XCTestCase {
                         NSLocalizedDescriptionKey: "The entitlement stream is outside Xcode StoreKit. Local tests must not sign in to the App Store."
                     ])
                 }
-                if transaction.revocationDate == nil && transaction.productType == .nonConsumable {
+                let expectedIdentityMatches = expectedTransaction.map {
+                    transaction.id == $0.id && transaction.productID == $0.productID
+                } ?? true
+                if transaction.revocationDate == nil && transaction.productType == .nonConsumable && expectedIdentityMatches {
                     found = true
                 }
             }
@@ -531,7 +533,7 @@ private final class FirstEntitlementSchedulingProbe: @unchecked Sendable {
         // The saved-log interpreter rejects all events outside the open phase.
         let eventData: [String: Any] = [
             "case": "testCachedEntitlementSurvivesProductNetworkFailure()",
-            "scope": "firstCleanIterator", "probe": 1,
+            "scope": "firstPreflightIterator", "probe": 1,
             "processIdentifier": processID, "iteratorBeginSequence": iteratorSequence,
             "event": event.rawValue,
             "elapsedMilliseconds": elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000
