@@ -99,9 +99,35 @@ final class ShareExtensionEntryTests: XCTestCase {
         let export = app.buttons["export-button"]
         reveal(export, in: review)
         export.tap()
-        XCTAssertTrue(app.buttons["Close"].waitForExistence(timeout: 10))
+        try waitForSystemShareSheet(in: app)
         capture("share-\(format.lowercased())-system-sheet")
         return app
+    }
+
+    @MainActor
+    private func waitForSystemShareSheet(in app: XCUIApplication) throws {
+        let started = ProcessInfo.processInfo.systemUptime
+        let ready = app.buttons["Close"].waitForExistence(timeout: 10)
+        func record(_ phase: String, appeared: Bool) {
+            let elapsed = ProcessInfo.processInfo.systemUptime - started
+            FileHandle.standardOutput.write(Data(
+                "REDACT_SHARE_SHEET phase=\(phase) elapsed=\(elapsed) appeared=\(appeared)\n".utf8))
+        }
+        record("required-wait", appeared: ready)
+        if ready { return }
+
+        // Preserve the ten-second acceptance requirement. The extra wait only
+        // distinguishes a delayed system sheet from one that never populates;
+        // a late appearance must still fail this test.
+        attachTree(app, name: "share-system-sheet-missing-after-required-wait")
+        let remaining = max(0, started + 60 - ProcessInfo.processInfo.systemUptime)
+        let appearedLate = remaining > 0
+            ? app.buttons["Close"].waitForExistence(timeout: remaining)
+            : app.buttons["Close"].exists
+        record("failure-observation", appeared: appearedLate)
+        attachTree(app, name: "share-system-sheet-after-failure-observation")
+        XCTFail("The system activity sheet did not expose Close within 10 seconds; later diagnostic visibility does not satisfy acceptance.")
+        throw NSError(domain: "CleanSendShareEntryTests", code: 2)
     }
 
     @MainActor
@@ -212,21 +238,15 @@ final class ShareExtensionEntryTests: XCTestCase {
 
     @MainActor
     private func waitForStableControl(_ element: XCUIElement) {
-        var previous = CGRect.null
-        var stableSince = Date()
+        var sampler = StableControlSampler(started: ProcessInfo.processInfo.systemUptime)
         let stable = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            guard element.exists, element.isHittable else {
-                previous = .null
-                stableSince = Date()
-                return false
-            }
-            let frame = element.frame
-            if frame != previous {
-                previous = frame
-                stableSince = Date()
-                return false
-            }
-            return Date().timeIntervalSince(stableSince) >= 1
+            sampler.poll(
+                now: { ProcessInfo.processInfo.systemUptime },
+                snapshot: {
+                    guard let value = try? element.snapshot() else { return nil }
+                    return StableControlGeometry(frame: value.frame, enabled: value.isEnabled)
+                },
+                isHittable: { element.isHittable })
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [stable], timeout: 6), .completed)
     }
