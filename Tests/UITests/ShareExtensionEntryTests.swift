@@ -238,21 +238,15 @@ final class ShareExtensionEntryTests: XCTestCase {
 
     @MainActor
     private func waitForStableControl(_ element: XCUIElement) {
-        var previous = CGRect.null
-        var stableSince = Date()
+        var sampler = StableControlSampler(started: ProcessInfo.processInfo.systemUptime)
         let stable = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            guard element.exists, element.isHittable else {
-                previous = .null
-                stableSince = Date()
-                return false
-            }
-            let frame = element.frame
-            if frame != previous {
-                previous = frame
-                stableSince = Date()
-                return false
-            }
-            return Date().timeIntervalSince(stableSince) >= 1
+            sampler.poll(
+                now: { ProcessInfo.processInfo.systemUptime },
+                snapshot: {
+                    guard let value = try? element.snapshot() else { return nil }
+                    return StableControlGeometry(frame: value.frame, enabled: value.isEnabled)
+                },
+                isHittable: { element.isHittable })
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [stable], timeout: 6), .completed)
     }
