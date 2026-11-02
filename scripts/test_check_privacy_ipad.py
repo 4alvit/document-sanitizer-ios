@@ -308,19 +308,20 @@ class Fixture:
                 'TestConfigurations': [{'Name': 'Local Testing', 'TestTargets': [
                     {'BlueprintName': 'CleanSendTests'}, target]}]}
         (self.dd / 'Build/Products/synthetic.xctestrun').write_bytes(plistlib.dumps(plan))
-        # Model elapsed independent preparation, not an impossible overlong wait().
-        actual_prepare = self.module.prepare_config
-        def prepare(run):
-            value = actual_prepare(run)
-            self.clock.value = max(self.clock.value, self.backend.bootstatus_elapsed)
-            return value
+        # Model elapsed startup immediately before readiness, regardless of the
+        # order of static preparation and device creation.
+        actual_command = self.module.Run.command
+        def command(run, args, *positional, **kwargs):
+            if list(args)[:3] == ['xcrun', 'simctl', 'bootstatus']:
+                self.clock.value = max(self.clock.value, self.backend.bootstatus_elapsed)
+            return actual_command(run, args, *positional, **kwargs)
         actual_ax5 = self.module.configure_system_ax5
         def configure(run, uid):
             value = actual_ax5(run, uid)
             if self.backend.readback_elapsed is not None:
                 self.clock.value = max(self.clock.value, self.backend.readback_elapsed)
             return value
-        self.stack.enter_context(mock.patch.object(self.module, 'prepare_config', prepare))
+        self.stack.enter_context(mock.patch.object(self.module.Run, 'command', command))
         self.stack.enter_context(mock.patch.object(self.module, 'configure_system_ax5', configure))
         test.addCleanup(self.assert_injected_only)
 
@@ -641,15 +642,13 @@ class BaselineWorkerTests(unittest.TestCase):
         rc, meta = self.f.run()
         self.assertEqual(rc, 1)
         self.assert_failed(meta, 'AssertionError')
-        self.assertEqual(sum(p.step == 'create' for p in self.f.backend.processes), 1)
-        self.assertEqual(sum(p.step == 'boot' for p in self.f.backend.processes), 1)
-        self.assertFalse(any(p.step in ('bootstatus', 'set_ax5', 'readback', 'test')
+        self.assertFalse(any(p.step in ('create', 'boot', 'bootstatus', 'set_ax5', 'readback', 'test')
                              for p in self.f.backend.processes))
         self.assertFalse((self.f.out / 'selected.xctestrun').exists())
         self.assertEqual(generated.read_bytes(), original)
-        self.f.assert_cleanup(meta)
+        self.assertNotIn('owned_uuid', meta)
 
-    def test_build_precedes_one_discovery_and_readiness_follows_owned_boot_and_signatures(self):
+    def test_signatures_precede_one_discovery_and_owned_boot(self):
         original_popen = self.f.backend.popen
         def popen(args, **kwargs):
             if 'build-for-testing' in args:
@@ -661,11 +660,12 @@ class BaselineWorkerTests(unittest.TestCase):
             rc, meta = self.f.run()
         self.assertEqual(rc, 0)
         steps = [p.step for p in self.f.backend.processes]
-        for before, after in [('build', 'runtimes'), ('runtimes', 'create'), ('create', 'boot'),
-                              ('boot', 'signature'), ('bootstatus', 'set_ax5'), ('readback', 'test')]:
+        for before, after in [('build', 'signature'), ('signature', 'runtimes'),
+                              ('runtimes', 'create'), ('create', 'boot'),
+                              ('boot', 'bootstatus'), ('bootstatus', 'set_ax5'), ('readback', 'test')]:
             self.assertLess(steps.index(before), steps.index(after))
         self.assertEqual(steps.count('signature'), 2)
-        self.assertLess(max(i for i, step in enumerate(steps) if step == 'signature'), steps.index('bootstatus'))
+        self.assertLess(max(i for i, step in enumerate(steps) if step == 'signature'), steps.index('runtimes'))
         for step, cap in (('create', 15), ('boot', 20), ('build', 300), ('runtimes', 60), ('bootstatus', 300)):
             processes = [p for p in self.f.backend.processes if p.step == step]
             self.assertEqual(len(processes), 1);self.assertEqual(processes[0].wait_calls, [cap])
@@ -685,15 +685,37 @@ class BaselineWorkerTests(unittest.TestCase):
                 self.assertTrue(command['owned_group_absent']);self.assertFalse(meta['retry'])
                 self.assertFalse(any(p.step in ('shutdown', 'delete') for p in f.backend.processes))
 
-    def test_signature_failure_after_early_boot_does_not_start_readiness_or_test(self):
+    def test_signature_failure_does_not_create_a_device_or_start_test(self):
         self.f.backend.fault_step, self.f.backend.fault = 'signature', 'nonzero'
         rc, meta = self.f.run()
         self.assertEqual(rc, 1)
-        self.assertEqual(meta['owned_uuid'], UID)
+        self.assertNotIn('owned_uuid', meta)
         self.assert_failed(meta, 'aut-signature.log exited 7')
-        self.assertFalse(any(p.step in ('bootstatus', 'set_ax5', 'readback', 'test')
+        self.assertFalse(any(p.step in ('runtimes', 'create', 'boot', 'bootstatus', 'set_ax5', 'readback', 'test', 'shutdown', 'delete')
                              for p in self.f.backend.processes))
-        self.f.assert_cleanup(meta)
+
+    def test_second_signature_timeout_closes_group_without_creating_device(self):
+        original_popen = self.f.backend.popen
+        def popen(args, **kwargs):
+            if args[0] == 'codesign' and any(p.step == 'signature' for p in self.f.backend.processes):
+                self.f.backend.fault_step, self.f.backend.fault = 'signature', 'timeout'
+            return original_popen(args, **kwargs)
+        with mock.patch.object(subprocess, 'Popen', popen):
+            rc, meta = self.f.run()
+        self.assertEqual(rc, 1)
+        self.assertNotIn('owned_uuid', meta)
+        signatures = [p for p in self.f.backend.processes if p.step == 'signature']
+        self.assertEqual(len(signatures), 2)
+        self.assertEqual(signatures[0].returncode, 0)
+        failed = signatures[1]
+        self.assertEqual(failed.wait_calls[0], 15)
+        record = next(c for c in meta['commands'] if c.get('owned_process_group') == failed.pid)
+        self.assertEqual(record['command_error_operation'], 'wait')
+        self.assertTrue(record['owned_group_absent'])
+        self.assertFalse(failed.group_present)
+        self.assertFalse(any(p.step in ('runtimes', 'create', 'boot', 'test', 'shutdown', 'delete')
+                             for p in self.f.backend.processes))
+        self.assertFalse(meta['retry'])
 
     def test_build_elapsed_time_is_not_renewed_for_readiness_or_downstream_work(self):
         for elapsed, expected_boot in ((100.0, 272), (200.0, 172), (300.0, 72)):
@@ -1330,7 +1352,7 @@ class StartupPolicyBoundaryTests(unittest.TestCase):
                         with self.assertRaises(TimeoutError):f.module.inventory(f.app, run.check)
                 self.assertEqual(f.backend.processes, []);self.assertEqual(run.start, 0)
 
-    def test_late_archive_write_or_close_never_starts_readiness_and_still_cleans(self):
+    def test_late_archive_write_or_close_never_creates_a_device(self):
         for stage in ('write', 'close'):
             with self.subTest(stage=stage):
                 f = Fixture(self);archive_type = f.module.zipfile.ZipFile
@@ -1343,8 +1365,8 @@ class StartupPolicyBoundaryTests(unittest.TestCase):
                 with mock.patch.object(archive_type, stage, late):rc, meta = f.run()
                 self.assertEqual(rc, 1)
                 self.assertIn('Original phase deadline', '\n'.join(meta['failures']))
-                self.assertFalse(any(p.step in ('bootstatus', 'set_ax5', 'readback', 'test') for p in f.backend.processes))
-                f.assert_cleanup(meta)
+                self.assertFalse(any(p.step in ('create', 'boot', 'bootstatus', 'set_ax5', 'readback', 'test', 'shutdown', 'delete') for p in f.backend.processes))
+                self.assertNotIn('owned_uuid', meta)
 
     def test_late_preparation_serialization_does_not_open_output(self):
         f = Fixture(self);run = f.module.Run();run.end = 376

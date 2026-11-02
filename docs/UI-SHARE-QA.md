@@ -108,14 +108,23 @@ Installed app and runner payloads are compared before, during and after the case
 No native StoreKit test, purchase, App Store release or physical-device result is
 implied by this development Simulator check.
 
-The new job has a 25-minute ceiling and runs after the two existing jobs, so
+The package-smoke job has a 30-minute ceiling and runs after the two existing jobs, so
 peak macOS parallelism remains two. Its own bounds are 180 seconds for two
 artifact transfers without retry, 120 additional seconds for validation and
-selective extraction, and 780 seconds for the private native session including
+selective extraction, and 900 seconds for the private native session including
 cleanup. The case retains 240 seconds inside a 300-second XCTest command limit;
-work ends at 560 seconds, device cleanup at 660, and the complete native session
-at 780. Missing exact inputs, unsupported runtime, insufficient capacity or
+work ends at 680 seconds, device cleanup at 780, and the complete native session
+at 900. Missing exact inputs, unsupported runtime, insufficient capacity or
 unconfirmed process cleanup fail the job; there is no automatic alternate route.
+
+The native setup allowance includes cold runtime discovery, boot, system text-size
+configuration and installation. The November 2 run completed these steps in
+about 276 seconds, exceeding the old 256-second preparation budget before
+XCTest could start. The revised budget reserves 376 seconds for preparation
+and retains the full 300-second test window plus its four-second stop reserve.
+All deadlines use the original start; cleanup and evidence durations, disk
+limits and payload checks are unchanged. Local admission tests cover the
+observed delay and late preparation; a successful hosted case is still required.
 
 ## Busy-state layout evidence
 

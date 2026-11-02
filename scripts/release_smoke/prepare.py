@@ -11,6 +11,8 @@ PRIVACY=('tested-payloads.zip','generated-original.xctestrun','selected.xctestru
 def load(name,path=None):
  path=path or HERE/(name+'.py');spec=importlib.util.spec_from_file_location(name,path);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 
+LIMITS=load('lifecycle')
+
 def identities(data,repo,run,attempt,head):
  assert data['total_count']<=100 and len(data['artifacts'])==data['total_count']
  result=[]
@@ -211,7 +213,7 @@ def main():
   binding={'producer':producer,'runner':str(runner),'runner_entries':entries,'runner_source_commit':checkout,'selected_test_source_path':str(ROOT/'Tests/UITests/ShareExtensionEntryTests.swift'),'test_source_sha256':privacy['source_files']['Tests/UITests/ShareExtensionEntryTests.swift'],'runner_Info':{k:plistlib.loads((runner/'Info.plist').read_bytes()).get(k) for k in ('CFBundleIdentifier','MinimumOSVersion','DTXcodeBuild')},'original_runner':before['runner']['path'],'original_AUT':before['AUT']['path'],'template_sha256':hashlib.sha256(raw('privacy-inputs/generated-original.xctestrun')).hexdigest()}
   saved_binding=save('runner-binding.json',binding)
   report['stage']='native_context'
-  context={'host_architecture':os.uname().machine,'repository':REPO,'run':run,'attempt':attempt,'head':head,'tree':tree,'checkout':checkout,'base':str(base),'scope':str(base/'native'),'assets':str(base/'release-assets'),'runner_binding':str(base/'runner-binding.json'),'runner_binding_sha256':saved_binding['sha256'],'runner_template':str(base/'privacy-inputs/generated-original.xctestrun'),'adhoc_zip_sha256':checksums['RedactLeaf-adhoc-simulator.zip'],'adhoc_zip_bytes':(base/'release-assets/RedactLeaf-adhoc-simulator.zip').stat().st_size,'payload_manifest_sha256':checksums['payload-sha256.json'],'runtime_id':meta['runtime']['identifier'],'device_type':meta['device_type']['identifier'],'runtime_version':'18.5','xcode_build':'16F6','seconds':780,'owned_cap_bytes':2*2**30,'free_floor_bytes':12*2**30,'get_count':0,'native_worker_count':1,'retry_authorized':False,'pipeline_deadline':start+1080,'expires_unix':time.time()+300,'source_files':privacy['source_files']}
+  context={'host_architecture':os.uname().machine,'repository':REPO,'run':run,'attempt':attempt,'head':head,'tree':tree,'checkout':checkout,'base':str(base),'scope':str(base/'native'),'assets':str(base/'release-assets'),'runner_binding':str(base/'runner-binding.json'),'runner_binding_sha256':saved_binding['sha256'],'runner_template':str(base/'privacy-inputs/generated-original.xctestrun'),'adhoc_zip_sha256':checksums['RedactLeaf-adhoc-simulator.zip'],'adhoc_zip_bytes':(base/'release-assets/RedactLeaf-adhoc-simulator.zip').stat().st_size,'payload_manifest_sha256':checksums['payload-sha256.json'],'runtime_id':meta['runtime']['identifier'],'device_type':meta['device_type']['identifier'],'runtime_version':'18.5','xcode_build':'16F6','seconds':LIMITS.TOTAL,'owned_cap_bytes':2*2**30,'free_floor_bytes':12*2**30,'get_count':0,'native_worker_count':1,'retry_authorized':False,'pipeline_deadline':start+300+LIMITS.TOTAL,'expires_unix':time.time()+300,'source_files':privacy['source_files']}
   assert context['runtime_id']=='com.apple.CoreSimulator.SimRuntime.iOS-18-5'
   assert context['device_type']=='com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4-16GB'
   assert time.monotonic()<start+300 and shutil.disk_usage(base).free>=14*2**30
