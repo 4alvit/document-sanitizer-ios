@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """One bounded same-host native StoreKit invocation; no build, account sign-in or retry."""
+
+if not __debug__:
+    raise SystemExit("Python assertions must be enabled")
 from contextlib import contextmanager
 import datetime as dt
 import copy, hashlib, importlib.util, json, os, plistlib, re, shutil, signal, stat, subprocess, sys, time, uuid
@@ -140,7 +143,9 @@ def bind_unit_test_host(products,host,unit,output,check):
  encoded=plistlib.dumps(bound);assert len(encoded)<=1024*1024 and b'__TESTROOT__' not in encoded
  check()
  with output.open('xb') as stream:
-  check();assert stream.write(encoded)==len(encoded);check();stream.flush();check();os.fsync(stream.fileno());check()
+  check();written=stream.write(encoded)
+  if written!=len(encoded):raise OSError('short configuration write')
+  check();stream.flush();check();os.fsync(stream.fileno());check()
  return {'original_path':str(original),'original_sha256':hashlib.sha256(raw).hexdigest(),'bound_path':str(output),
   'bound_sha256':hashlib.sha256(encoded).hexdigest(),'host':str(host),'unit_bundle':str(unit),
   'host_marker':{NATIVE_HOST_MARKER:'1'},'selected_cases':sorted(CASES),'default_case_seconds':120,'maximum_case_seconds':180,
@@ -185,7 +190,9 @@ def write_small(path,value,start,*,deadline=None):
  check()
  raw=(json.dumps(value,indent=2)+'\n').encode();check();assert len(raw)<=1024*1024
  with path.open('xb') as stream:
-  check();assert stream.write(raw)==len(raw);check()
+  check();written=stream.write(raw)
+  if written!=len(raw):raise OSError('short receipt write')
+  check()
   stream.flush();check();os.fsync(stream.fileno());check()
  check()
 

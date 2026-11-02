@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """One granted exact shipped-package smoke, no build/re-sign/network or native retry."""
-import hashlib, importlib.util, json, os, plistlib, re, shutil, signal, stat, subprocess, sys, time, uuid, zipfile
+import hashlib, importlib.util, json, os, plistlib, shutil, signal, stat, subprocess, sys, time, uuid, zipfile
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[1]
@@ -147,7 +147,9 @@ def extract_exact(b,e,resources,expected):
     with b.directory(destination.parent) as fd:
      target=os.open(destination.name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,int(expected[relative]['mode'],8),dir_fd=fd)
      try:
-      assert os.write(target,raw)==len(raw);os.fchmod(target,int(expected[relative]['mode'],8));os.fsync(target)
+      written=os.write(target,raw)
+      if written!=len(raw):raise OSError('short payload write')
+      os.fchmod(target,int(expected[relative]['mode'],8));os.fsync(target)
      finally:os.close(target)
  assert e.payload_inventory(BUNDLE,b,resources.check)==expected
 
@@ -161,7 +163,9 @@ def failure_detail(error):
 def save_installed_runner(path,value,check):
  check();raw=(json.dumps(value,indent=2)+'\n').encode();check();assert len(raw)<=1024*1024
  with path.open('xb') as stream:
-  check();assert stream.write(raw)==len(raw);check()
+  check();written=stream.write(raw)
+  if written!=len(raw):raise OSError('short receipt write')
+  check()
   stream.flush();check();os.fsync(stream.fileno());check()
  check()
 
@@ -382,7 +386,7 @@ def worker(start,grant):
   appinfo=plistlib.loads((BUNDLE/'Info.plist').read_bytes());assert version(appinfo['MinimumOSVersion'])<=version(grant['runtime_version'])
   run.meta['runtime']=runtime[0];run.meta['device_type']=device[0]
   run.meta['phase']='config.prepare';run.meta['config_preparation']={};run.persist()
-  config=c.prepare(BUNDLE,developer,SCOPE/'config',BINDING,TEMPLATE,HEAD,grant['tree'],run.meta['config_preparation'])
+  c.prepare(BUNDLE,developer,SCOPE/'config',BINDING,TEMPLATE,HEAD,grant['tree'],run.meta['config_preparation'])
   encoded=(SCOPE/'config/exact-package-share.xctestrun').read_bytes()
   assert b'storekit' not in encoded.lower() and b'commerce' not in encoded.lower(),'commerce configuration rejected'
   frozen=json.loads(BINDING.read_bytes())

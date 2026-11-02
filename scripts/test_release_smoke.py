@@ -1058,6 +1058,7 @@ class PackageAX5PostconditionTests(unittest.TestCase):
                 value=self.read_values.pop(0) if self.read_values else self.read_value
                 kwargs['stdout'].write(value.encode());kwargs['stdout'].flush()
             proc.returncode=0
+            return 0
         proc.wait=wait;return proc
     def stop(self,proc,row):
         if proc.returncode is None:proc.returncode=-15

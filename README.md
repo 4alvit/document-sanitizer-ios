@@ -20,6 +20,12 @@ Image-only copies lose selectable text, links, interactive forms and accessibili
 
 Requirements: macOS, Xcode with iOS SDK, XcodeGen, Python 3, Poppler and the packages pinned in `requirements-qa.txt`. The deployment target is iOS 17. The core package also runs on macOS 13 or later.
 
+Run the Python acceptance scripts without `-O`, `-OO`, or `PYTHONOPTIMIZE`:
+their assertions enforce the acceptance contract. The native StoreKit, iPad
+privacy, and export-probe entrypoints reject optimized execution before external
+work. Receipt and extracted-payload writes execute explicitly and reject short
+writes; a missing receipt never counts as successful acceptance.
+
 ```sh
 brew install xcodegen poppler
 python3 -m venv .venv

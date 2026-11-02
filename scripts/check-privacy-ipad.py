@@ -5,6 +5,9 @@ This creates a new Debug simulator AUT by default, or Release when explicitly
 selected by REDACTLEAF_PRIVACY_CONFIGURATION. It does not use a local frozen binary,
 change product behavior, select native StoreKit tests, or retry a failed run.
 """
+
+if not __debug__:
+    raise SystemExit("Python assertions must be enabled")
 import copy
 import datetime
 import hashlib

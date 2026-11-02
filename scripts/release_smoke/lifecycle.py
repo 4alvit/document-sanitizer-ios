@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
 """Bounded native child lifecycle shared by this one exact-package smoke."""
-import copy
 import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
-import plistlib
-import re
 import shutil
 import signal
 import subprocess
-import sys
 import time
-import uuid
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / '.qa/privacy-ipad'
@@ -26,9 +20,6 @@ TEST_PLAN = SCHEME
 TARGET = 'CleanSendUITests'
 CASE = 'PrivacySupportUITests/testRussianOfflineInformationAtSystemAX5OnLandscapeIPad'
 AX5 = 'accessibility-extra-extra-extra-large'
-# Cold hosted AX5 requests can exhaust 30s after bootstatus succeeds.
-# Both finite 60s caps must fit before the unchanged runtime/cleanup reservation.
-AX5_SET_LIMIT, AX5_READ_LIMIT = 60, 60
 # Runner startup and selected-case execution share this finite outer cap.
 # Run.command still clips this maximum to remaining work minus its 4s reserve.
 XCTEST_COMMAND_LIMIT = 300

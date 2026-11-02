@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Bounded same-run artifact preparation for the exact Release package smoke."""
-import hashlib, importlib.util, io, json, os, plistlib, re, shutil, stat, sys, time, zipfile
+import hashlib, importlib.util, io, json, os, plistlib, re, shutil, stat, time, zipfile
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[1]

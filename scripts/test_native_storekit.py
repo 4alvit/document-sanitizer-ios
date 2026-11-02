@@ -572,6 +572,16 @@ class ExplicitUnitHostBindingTests(unittest.TestCase):
         outside=self.root/'outside';outside.write_bytes(plistlib.dumps(self.data));self.original.symlink_to(outside)
         with self.assertRaises(OSError):self.m.bind_unit_test_host(self.products,self.host,self.unit,self.output,lambda:None)
         self.assertFalse(self.output.exists())
+    def test_short_configuration_write_is_fatal_and_closes_output(self):
+        self.original.write_bytes(plistlib.dumps(self.data))
+        stream=mock.MagicMock();stream.__enter__.return_value=stream
+        stream.write.side_effect=lambda raw:len(raw)-1
+        with mock.patch.object(Path,'open',return_value=stream) as opened:
+            with self.assertRaisesRegex(OSError,'short configuration write'):
+                self.m.bind_unit_test_host(self.products,self.host,self.unit,self.output,lambda:None)
+        opened.assert_called_once_with('xb');self.assertEqual(stream.write.call_count,1)
+        stream.flush.assert_not_called();stream.__exit__.assert_called_once()
+
     def test_only_actual_fixed_inert_host_event_is_accepted(self):
         event={'event':'first.session','explicitUnitHost':True,'firstSessionInert':True,'xctestLoaded':True,'rootConstructions':0,'storeConstructions':0}
         line=lambda row:b'NATIVE_STOREKIT_HOST '+json.dumps(row).encode()+b'\n'
