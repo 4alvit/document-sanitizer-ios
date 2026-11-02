@@ -154,7 +154,7 @@ jobs:
     needs: [verify, privacy-ipad]
     if: ${{ always() && github.event_name == 'pull_request' && needs.verify.outputs.release_assets_ready == 'true' && needs['privacy-ipad'].result == 'success' }}
     runs-on: macos-15
-    timeout-minutes: 25
+    timeout-minutes: 30
     permissions:
       contents: read
       actions: read
@@ -175,7 +175,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 -B scripts/release_smoke/prepare.py
       - name: Run one bounded exact-package Share Extension case
-        timeout-minutes: 14
+        timeout-minutes: 16
         env:
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RELEASE_SMOKE_CONTEXT_SHA: ${{ steps.prepare.outputs.context_sha256 }}

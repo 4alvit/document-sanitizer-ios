@@ -22,6 +22,8 @@ def load(name):
  name={'window_budget':'window','bounded_lifecycle':'lifecycle','prepare_config':'config'}.get(name,name)
  spec=importlib.util.spec_from_file_location(name,HERE/(name+'.py'));module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 
+LIMITS=load('bounded_lifecycle')
+
 def validate_grant(path):
  global CONTEXT,SCOPE,OWNED_ROOT,ASSETS,ZIP,BUNDLE,BINDING,TEMPLATE,ZIP_SHA,PAYLOAD_SHA,HEAD
  if not __debug__:raise SystemExit('Python assertions must be enabled')
@@ -34,14 +36,14 @@ def validate_grant(path):
  assert grant['head']==os.environ['EXPECTED_HEAD_SHA'] and grant['run']==os.environ['GITHUB_RUN_ID'] and grant['attempt']==os.environ['GITHUB_RUN_ATTEMPT'] and grant['checkout']==os.environ['GITHUB_SHA']
  expected=Path(os.environ['RUNNER_TEMP'])/f"redact-package-smoke-{grant['run']}-attempt-{grant['attempt']}"
  assert Path(grant['base'])==expected and Path(grant['scope'])==expected/'native'
- assert grant['seconds']==780 and grant['owned_cap_bytes']==CAP and grant['free_floor_bytes']==FLOOR
+ assert grant['seconds']==LIMITS.TOTAL and grant['owned_cap_bytes']==CAP and grant['free_floor_bytes']==FLOOR
  assert grant['get_count']==0 and grant['native_worker_count']==1 and grant['retry_authorized'] is False
  assert grant['device_type']=='com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4-16GB'
  assert grant['runtime_id']=='com.apple.CoreSimulator.SimRuntime.iOS-18-5' and grant['runtime_version']=='18.5' and grant['xcode_build']=='16F6'
- assert time.time()<grant['expires_unix'] and time.monotonic()+780<grant['pipeline_deadline']
+ assert time.time()<grant['expires_unix'] and time.monotonic()+LIMITS.TOTAL<grant['pipeline_deadline']
  total=0
  for name,digest in grant['source_files'].items():
-  assert time.monotonic()+780<grant['pipeline_deadline']
+  assert time.monotonic()+LIMITS.TOTAL<grant['pipeline_deadline']
   candidate=ROOT/name;assert not candidate.is_symlink() and candidate.is_file() and candidate.is_relative_to(ROOT) and '..' not in candidate.parts
   total+=candidate.stat().st_size;assert total<=16*2**20
   assert sha(candidate)==digest
@@ -55,7 +57,7 @@ def validate_grant(path):
 class Resources:
  def __init__(self,start):
   self.start=start;self.device=None;self.last=0;self.maximum=0;self.first_failure=None
- def check(self,phase=560):
+ def check(self,phase=LIMITS.WORK_END):
   total=0;count=0;stat_calls=0;directories=0;root_label=None;root_start=None;root_progress={};traversal_complete=False;operation='phase_admission'
   observed=time.monotonic();scan_started=observed
   try:
@@ -254,7 +256,7 @@ def verify_observation_roots(data,group,device,uid,budget,check,*,baseline=None,
 def wait_for_package_boot(run,resources,uid):
  # One cold-readiness command shares the original startup budget with all
  # remaining work. The full300s XCTest plus4s stop reserve stays unavailable.
- previous_end=run.end;run.end=min(previous_end,560-304)
+ previous_end=run.end;run.end=min(previous_end,LIMITS.WORK_END-304)
  try:
   resources.check(run.end)
   run.command(['xcrun','simctl','bootstatus',uid,'-b'],'bootstatus.log',120)
@@ -273,7 +275,7 @@ def cleanup_device_commands(run,uid,lifecycle):
 def configure_package_ax5(run,resources,uid,lifecycle):
  # Preserve the full300s test plus4s stop admission. A responsive default-size
  # readback after one safely closed timeout permits one idempotent setup retry.
- previous_end=run.end;run.end=min(previous_end,560-304)
+ previous_end=run.end;run.end=min(previous_end,LIMITS.WORK_END-304)
  try:
   device=Path(lifecycle.ENV['HOME'])/'Library/Developer/CoreSimulator/Devices'/uid
   def identity():
@@ -337,7 +339,7 @@ def worker(start,grant):
   raise InterruptedError('SIGTERM')
  signal.signal(signal.SIGTERM,interrupted)
  def command(args,name,limit=15,required=True):
-  if run.end==560:resources.check()
+  if run.end==LIMITS.WORK_END:resources.check()
   return run.command(args,name,limit,required)
  def output(args,name,limit=15):
   command(args,name,limit);return (SCOPE/name).read_text().strip()
@@ -488,7 +490,7 @@ def worker(start,grant):
    except BaseException as error:failures.append('device cleanup: '+repr(error))
    run.meta['cleanup']=cleanup
    run.persist()
-  run.end=772
+  run.end=(LIMITS.TOTAL-8)
   try:
    assert run.meta.get('xcodebuild_returncode')==0
    for kind in ['summary','tests']:
@@ -499,7 +501,7 @@ def worker(start,grant):
    run.command(['xcrun','xcresulttool','export','attachments','--path',SCOPE/'result.xcresult','--output-path',SCOPE/'attachments'],'attachments-export.log',40)
   except BaseException as error:failures.append('result evidence: '+repr(error))
   try:
-   resources.check(772)
+   resources.check((LIMITS.TOTAL-8))
    assert sha(ZIP)==ZIP_SHA and sha(ASSETS/'payload-sha256.json')==PAYLOAD_SHA
    assert sha(BINDING)==grant['runner_binding_sha256']
    c.verify_runner(json.loads(BINDING.read_bytes()));run.meta['runner_and_package_unchanged']=True
@@ -522,7 +524,7 @@ def cleanup_metadata():
 
 def await_cleanup_ack(proc,start,intent,*,clock=time.monotonic,sleep=time.sleep,read=cleanup_metadata):
  # Three seconds belong to the existing owned-group stop, plus two for receipt acknowledgement.
- absolute_end=start+660;ack_end=min(absolute_end,clock()+5);acknowledged=False
+ absolute_end=start+LIMITS.CLEANUP_END;ack_end=min(absolute_end,clock()+5);acknowledged=False
  while proc.poll() is None and clock()<absolute_end:
   try:
    meta=read();phase=meta.get('cleanup_phase',{})
@@ -560,11 +562,11 @@ def final_read(path,deadline,clock=time.monotonic):
 
 def retain_cleanup_obligation(intent,start):
  try:
-  raw=final_read(SCOPE/'metadata.json',start+780);meta=json.loads(raw);owned_uuid=meta.get('owned_uuid');owned_name=meta.get('owned_device_name')
+  raw=final_read(SCOPE/'metadata.json',start+LIMITS.TOTAL);meta=json.loads(raw);owned_uuid=meta.get('owned_uuid');owned_name=meta.get('owned_device_name')
   if owned_uuid:uuid.UUID(owned_uuid)
   removed=meta.get('device_removed') is True
   requested=bool(owned_uuid or owned_name or any(c.get('args',[])[:3]==['xcrun','simctl','create'] for c in meta.get('commands',[])))
-  digest=hashlib.sha256(raw).hexdigest();assert time.monotonic()<start+780,'whole deadline after metadata hash'
+  digest=hashlib.sha256(raw).hexdigest();assert time.monotonic()<start+LIMITS.TOTAL,'whole deadline after metadata hash'
   intent['cleanup_obligation']={'owned_uuid':owned_uuid,'owned_name':owned_name,'absence_verified':removed,'cleanup_required':requested,
       'worker_cleanup':meta.get('cleanup'),'metadata_sha256':digest,
       'status':'SATISFIED' if removed else ('UNCONFIRMED_REQUIRES_OWNED_DEVICE_FOLLOWUP' if requested else 'NOT_REQUIRED_NO_CREATE_COMMAND_RECORDED'),
@@ -573,7 +575,7 @@ def retain_cleanup_obligation(intent,start):
   intent['cleanup_obligation']={'status':'UNKNOWN_REQUIRES_OWNERSHIP_RECOVERY','absence_verified':False,'error':repr(error)}
 
 def final_write(value,start,clock=time.monotonic):
- deadline=start+780
+ deadline=start+LIMITS.TOTAL
  assert clock()<deadline,'whole deadline before final serialization'
  raw=(json.dumps(value,indent=2)+'\n').encode();assert len(raw)<=256*1024
  assert clock()<deadline,'whole deadline after final serialization'
@@ -592,7 +594,7 @@ def aggregate_command_groups(meta,start,clock=time.monotonic,probe=os.killpg):
  commands=meta.get('commands',[]);assert len(commands)<=128
  groups=[]
  for command in commands:
-  assert clock()<start+780,'whole deadline before owned-command group proof'
+  assert clock()<start+LIMITS.TOTAL,'whole deadline before owned-command group proof'
   pid=command.get('owned_process_group')
   if pid is None:continue
   assert type(pid) is int and pid>1
@@ -602,34 +604,34 @@ def aggregate_command_groups(meta,start,clock=time.monotonic,probe=os.killpg):
    try:probe(pid,0);row.update(absent=False,basis='group still present; no blind signal after worker exit')
    except ProcessLookupError:row.update(absent=True,basis='terminal read-only group probe absent; leader reap only if recorded')
    except OSError as error:row.update(absent=False,basis='group proof unavailable',error=repr(error))
-  assert clock()<start+780,'whole deadline after owned-command group proof'
+  assert clock()<start+LIMITS.TOTAL,'whole deadline after owned-command group proof'
   groups.append(row)
  return {'all_absent':all(row['absent'] for row in groups),'groups':groups,
          'unresolved_group_ids':[row['pid'] for row in groups if not row['absent']]}
 
 
 def terminal_stdout(value,start,clock=time.monotonic,write=os.write):
- if clock()>=start+780:return False
+ if clock()>=start+LIMITS.TOTAL:return False
  raw=(json.dumps(value)+'\n').encode()
- if len(raw)>8192 or clock()>=start+780:return False
+ if len(raw)>8192 or clock()>=start+LIMITS.TOTAL:return False
  offset=0
  while offset<len(raw):
-  if clock()>=start+780:return False
+  if clock()>=start+LIMITS.TOTAL:return False
   count=write(1,raw[offset:offset+4096])
-  if count<=0 or clock()>=start+780:return False
+  if count<=0 or clock()>=start+LIMITS.TOTAL:return False
   offset+=count
  return True
 
 
 def close_worker_group(proc,receipt,lifecycle,start):
- assert time.monotonic()+3<=start+780,'no whole-window owned-group closure reserve'
+ assert time.monotonic()+3<=start+LIMITS.TOTAL,'no whole-window owned-group closure reserve'
  lifecycle.stop_group(proc,receipt)
  assert receipt.get('owned_group_absent') is True
- assert time.monotonic()<start+780,'owned-group closure exceeded whole window'
+ assert time.monotonic()<start+LIMITS.TOTAL,'owned-group closure exceeded whole window'
 
 def supervise(grant_path,grant):
  assert not SCOPE.exists();SCOPE.mkdir(mode=0o700);start=time.monotonic();l=load('bounded_lifecycle')
- intent={'started_at':l.now(),'start_monotonic':start,'context_sha256':sha(grant_path),'seconds':780,'status':'running'}
+ intent={'started_at':l.now(),'start_monotonic':start,'context_sha256':sha(grant_path),'seconds':LIMITS.TOTAL,'status':'running'}
  l.save(SCOPE/'invocation.json',intent);proc=None;monitor=None
  try:
   with (SCOPE/'driver.log').open('xb') as log:
@@ -637,42 +639,42 @@ def supervise(grant_path,grant):
    intent['owned_worker']=proc.pid
    monitor=Resources(start)
    while proc.poll() is None:
-    assert time.monotonic()<start+772,'worker deadline'
+    assert time.monotonic()<start+(LIMITS.TOTAL-8),'worker deadline'
     metadata=SCOPE/'metadata.json'
     if metadata.exists():
      assert metadata.stat().st_size<=256*1024
      value=json.loads(metadata.read_bytes()).get('owned_uuid')
      if value:
       uuid.UUID(value);monitor.device=Path.home()/'Library/Developer/CoreSimulator/Devices'/value
-    monitor.check(772)
-    time.sleep(min(1,max(0,start+772-time.monotonic())))
+    monitor.check((LIMITS.TOTAL-8))
+    time.sleep(min(1,max(0,start+(LIMITS.TOTAL-8)-time.monotonic())))
    intent['maximum_observed_owned_allocation']=monitor.maximum
    assert proc.returncode==0
    close_worker_group(proc,intent,l,start)
    intent['status']='passed_pending_independent_review'
  except BaseException as error:intent.update(status='failed',error=repr(error))
  finally:
-  if time.monotonic()>=start+780:raise SystemExit(1)  # No further I/O after the original whole deadline.
+  if time.monotonic()>=start+LIMITS.TOTAL:raise SystemExit(1)  # No further I/O after the original whole deadline.
   if proc is not None and proc.poll() is None:
    try:
     try:already_cleaning=bool(cleanup_metadata().get('cleanup_phase'))
     except (OSError,ValueError,AssertionError):already_cleaning=False
     if not already_cleaning:os.killpg(proc.pid,signal.SIGTERM)
     await_cleanup_ack(proc,start,intent)
-    proc.wait(timeout=min(3,max(.01,start+775-time.monotonic())))
+    proc.wait(timeout=min(3,max(.01,start+(LIMITS.TOTAL-5)-time.monotonic())))
    except (ProcessLookupError,subprocess.TimeoutExpired):
     try:
      meta=json.loads((SCOPE/'metadata.json').read_bytes());active=[c for c in meta['commands'] if 'owned_process_group' in c and ('finished_at' not in c or c.get('owned_group_absent') is False)]
      assert len(active)<=2;intent['last_resort_children']=[]
-     for child in active:intent['last_resort_children']+=l.stop_recorded_children(proc.pid,{'commands':[child]},min(start+778,time.monotonic()+2))
+     for child in active:intent['last_resort_children']+=l.stop_recorded_children(proc.pid,{'commands':[child]},min(start+(LIMITS.TOTAL-2),time.monotonic()+2))
     except BaseException as error:intent['last_resort_error']=repr(error)
-    try:os.killpg(proc.pid,signal.SIGKILL);proc.wait(timeout=max(.01,start+779-time.monotonic()))
+    try:os.killpg(proc.pid,signal.SIGKILL);proc.wait(timeout=max(.01,start+(LIMITS.TOTAL-1)-time.monotonic()))
     except (ProcessLookupError,subprocess.TimeoutExpired):intent['worker_reap_unconfirmed']=True
   if proc is not None and intent.get('owned_group_absent') is not True:
    try:close_worker_group(proc,intent,l,start)
    except BaseException as error:intent.update(status='failed',worker_group_closure_error=repr(error),owned_group_absent=False)
   try:
-   meta=json.loads(final_read(SCOPE/'metadata.json',start+780))
+   meta=json.loads(final_read(SCOPE/'metadata.json',start+LIMITS.TOTAL))
    intent['owned_command_groups']=aggregate_command_groups(meta,start)
    if not intent['owned_command_groups']['all_absent']:intent['status']='failed'
   except BaseException as error:intent.update(status='failed',owned_command_groups={'all_absent':False,'error':repr(error)})
@@ -680,17 +682,17 @@ def supervise(grant_path,grant):
   if not intent['cleanup_obligation'].get('absence_verified'):intent['status']='failed'
   if monitor is not None:intent['resource_scan_first_failure']=monitor.first_failure
   intent.update(returncode=proc.returncode if proc else None,elapsed_seconds=time.monotonic()-start)
-  if intent['elapsed_seconds']>=780:intent['status']='failed'
+  if intent['elapsed_seconds']>=LIMITS.TOTAL:intent['status']='failed'
   try:intent['terminal_receipt']=final_write(intent,start)
   except BaseException as error:intent.update(status='failed',terminal_receipt_error=repr(error))
-  if time.monotonic()>=start+780:intent['status']='failed'
+  if time.monotonic()>=start+LIMITS.TOTAL:intent['status']='failed'
   if not terminal_stdout({'status':intent['status'],'terminal_receipt':intent.get('terminal_receipt'),'terminal_receipt_error':intent.get('terminal_receipt_error'),'cleanup_obligation':intent.get('cleanup_obligation'),'owned_command_groups':{key:intent.get('owned_command_groups',{}).get(key) for key in ('all_absent','unresolved_group_ids')}},start):intent['status']='failed'
  return 0 if intent['status']=='passed_pending_independent_review' else 1
 
 if __name__=='__main__':
  grant_path=Path(sys.argv[1]);assert grant_path.is_absolute();grant=validate_grant(grant_path)
  if sys.argv[2:3]==['--worker']:
-  started=float(sys.argv[3]);assert 0<=time.monotonic()-started<780
+  started=float(sys.argv[3]);assert 0<=time.monotonic()-started<LIMITS.TOTAL
   raise SystemExit(worker(started,grant))
  assert len(sys.argv)==2
  raise SystemExit(supervise(grant_path,grant))

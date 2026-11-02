@@ -165,6 +165,29 @@ class HostedPreparationTests(unittest.TestCase):
         with mock.patch.dict(os.environ,{'GITHUB_ACTIONS':'true','GITHUB_EVENT_NAME':'pull_request'}),mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='x86_64')):
             with self.assertRaisesRegex(AssertionError,'ARM host profile'):native.validate_grant(self.root/'absent-context.json')
 
+    def test_native_grant_and_pipeline_match_the_complete_fixed_budget(self):
+        self.inputs();report=self.execute();self.assertEqual(report['status'],'prepared',report)
+        path=self.scope/'context.json';original=json.loads(path.read_bytes())
+        self.assertEqual(original['seconds'],900)
+        self.assertEqual(original['pipeline_deadline']-report['started'],1200)
+        native=load('grant_budget_native',SMOKE/'run.py')
+        env={'GITHUB_ACTIONS':'true','GITHUB_EVENT_NAME':'pull_request',
+             'GITHUB_REPOSITORY':self.prep.REPO,'EXPECTED_HEAD_SHA':self.head,
+             'GITHUB_RUN_ID':'123','GITHUB_RUN_ATTEMPT':'1','GITHUB_SHA':self.checkout,
+             'RUNNER_TEMP':str(self.root)}
+        cases=[('current',{}),('old',{'seconds':780}),('oversized',{'seconds':901}),
+               ('short_pipeline',{'pipeline_deadline':time.monotonic()+899})]
+        for label,changes in cases:
+            with self.subTest(label=label):
+                path.write_bytes(encoded(original|changes))
+                with mock.patch.dict(os.environ,env|{'RELEASE_SMOKE_CONTEXT_SHA':digest(path.read_bytes())}), \
+                     mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='arm64')), \
+                     mock.patch.object(native,'ROOT',self.repo):
+                    if label=='current':
+                        self.assertEqual(native.validate_grant(path)['seconds'],900)
+                    else:
+                        with self.assertRaises(AssertionError):native.validate_grant(path)
+
     def test_real_preparation_and_rebound_config(self):
         self.inputs();report=self.execute();self.assertEqual(report['status'],'prepared',report);self.assertEqual(self.gets,2)
         binding=json.loads((self.scope/'runner-binding.json').read_bytes())
@@ -259,7 +282,7 @@ class HostedPreparationTests(unittest.TestCase):
     def test_native_command_uses_original_remaining_work_after_preflight(self):
         lifecycle=load('smoke_lifecycle_test',SMOKE/'lifecycle.py')
         lifecycle.OUT=self.root
-        for elapsed,expected in ((70,300),(550,6),(557,None)):
+        for elapsed,expected in ((70,300),(670,6),(677,None)):
             with self.subTest(elapsed=elapsed):
                 process=SimpleNamespace(pid=123,returncode=0,wait=mock.Mock())
                 with mock.patch.object(lifecycle.time,'monotonic',return_value=elapsed),mock.patch.object(lifecycle.subprocess,'Popen',return_value=process) as spawn,mock.patch.object(lifecycle,'stop_group',side_effect=lambda proc,row:row.update(owned_group_absent=True)):
@@ -276,19 +299,19 @@ class HostedPreparationTests(unittest.TestCase):
         for stage in ('persist','open'):
             with self.subTest(stage=stage):
                 lifecycle=load('late_package_lifecycle',SMOKE/'lifecycle.py');lifecycle.OUT=self.root
-                clock=[550.0];original_open=Path.open
+                clock=[670.0];original_open=Path.open
                 with mock.patch.object(lifecycle.time,'monotonic',side_effect=lambda:clock[0]):
                     run=lifecycle.Run();run.start=0
                     def persist():
-                        if stage=='persist':clock[0]=556
+                        if stage=='persist':clock[0]=676
                     run.persist=persist
                     def opened(path,*args,**kwargs):
                         stream=original_open(path,*args,**kwargs)
-                        if stage=='open':clock[0]=556
+                        if stage=='open':clock[0]=676
                         return stream
                     with mock.patch.object(Path,'open',opened),mock.patch.object(subprocess,'Popen') as spawn:
                         with self.assertRaises(TimeoutError):run.command(['fixture'],stage+'.log',300)
-                    spawn.assert_not_called();self.assertEqual(run.start,0);self.assertEqual(run.end,560)
+                    spawn.assert_not_called();self.assertEqual(run.start,0);self.assertEqual(run.end,680)
     def test_lifecycle_post_spawn_work_consumes_single_original_command_end(self):
         lifecycle=load('post_spawn_package_lifecycle',SMOKE/'lifecycle.py');lifecycle.OUT=self.root
         clock=[0.0];calls=[];proc=SimpleNamespace(pid=123,returncode=0,wait=mock.Mock())
@@ -800,11 +823,11 @@ class PackageResourceScanTests(unittest.TestCase):
     def test_each_worker_and_supervisor_sample_is_fresh_and_independent(self):
         root=str(self.m.OWNED_ROOT);blocks=[1];worker=self.m.Resources(100);supervisor=self.m.Resources(100)
         with mock.patch.object(os,'walk',side_effect=lambda *a,**k:iter([(root,[],[])])),mock.patch.object(os,'lstat',side_effect=lambda path:self.info(blocks[0],0o040700)) as observed:
-            worker.check(196);supervisor.check(772)
+            worker.check(196);supervisor.check(892)
             self.assertEqual(observed.call_count,2)
             blocks[0]=7;self.clock[0]+=2;worker.check(196)
             self.assertEqual(worker.maximum,7*512);self.assertEqual(supervisor.maximum,512)
-            supervisor.check(772);self.assertEqual(observed.call_count,4);self.assertEqual(supervisor.maximum,7*512)
+            supervisor.check(892);self.assertEqual(observed.call_count,4);self.assertEqual(supervisor.maximum,7*512)
     def test_first_deadline_failure_has_bounded_counters_and_is_not_overwritten(self):
         root=str(self.m.OWNED_ROOT);resources=self.m.Resources(100)
         def observe(path):
@@ -821,7 +844,7 @@ class PackageResourceScanTests(unittest.TestCase):
         self.assertLess(len(json.dumps(failure)),2048);self.assertNotIn('secret',json.dumps(failure));self.assertNotIn('/fixture',json.dumps(failure))
         self.clock[0]=101
         with mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',side_effect=PermissionError('credential must not enter evidence')):
-            with self.assertRaises(PermissionError):resources.check(772)
+            with self.assertRaises(PermissionError):resources.check(892)
         self.assertEqual(resources.first_failure,failure)
     def test_complete_scan_over_cap_remains_fatal(self):
         root=str(self.m.OWNED_ROOT);resources=self.m.Resources(100)
@@ -866,7 +889,7 @@ class PackageTestLaunchAdmissionTests(unittest.TestCase):
                          handlers=launch.handlers,orelse=launch.orelse,finalbody=launch.finalbody)
         self.boundary=compile(ast.fix_missing_locations(ast.Module(body=events.body[admission_index:launch_index]+[boundary],type_ignores=[])),str(SMOKE/'run.py'),'exec')
 
-    def launch(self,*,elapsed=250,persist_delay=0,open_delay=0):
+    def launch(self,*,elapsed=370,persist_delay=0,open_delay=0):
         clock=[100.0+elapsed];opened=[];observed=[];original_open=Path.open
         with tempfile.TemporaryDirectory() as temporary,mock.patch.object(time,'monotonic',side_effect=lambda:clock[0]):
             run=self.l.Run();run.start=100.0
@@ -890,10 +913,10 @@ class PackageTestLaunchAdmissionTests(unittest.TestCase):
                 try:exec(self.boundary,state)
                 except AssertionError as caught:error=caught
             self.assertTrue(all(stream.closed for stream in opened))
-            self.assertEqual(run.start,100.0);self.assertEqual(run.end,560)
+            self.assertEqual(run.start,100.0);self.assertEqual(run.end,680)
             self.assertEqual(run.meta['phase_deadlines_seconds'],deadlines)
-            self.assertEqual(deadlines['absence'],660);self.assertEqual(run.meta['total_seconds'],780)
-            if 'end' in state:self.assertLessEqual(state['end'],run.start+560-4)
+            self.assertEqual(deadlines['absence'],780);self.assertEqual(run.meta['total_seconds'],900)
+            if 'end' in state:self.assertLessEqual(state['end'],run.start+680-4)
             for launch in observed:self.assertEqual(launch['end']-launch['time'],300)
             return error,popen.call_count,stop.call_count,observed,state.get('end')
 
@@ -912,8 +935,8 @@ class PackageTestLaunchAdmissionTests(unittest.TestCase):
     def test_fast_open_spawns_once_with_full_window_and_original_work_cleanup_deadlines(self):
         error,spawns,stops,observed,end=self.launch(open_delay=1)
         self.assertIsNone(error);self.assertEqual(spawns,1);self.assertEqual(stops,1)
-        self.assertEqual(observed,[{'time':351.0,'end':651.0,'run_end':551.0}])
-        self.assertEqual(end,651.0)
+        self.assertEqual(observed,[{'time':471.0,'end':771.0,'run_end':671.0}])
+        self.assertEqual(end,771.0)
 
     def test_early_long_open_establishes_single_full_window_after_io(self):
         error,spawns,stops,observed,end=self.launch(elapsed=100,open_delay=150)
@@ -921,11 +944,22 @@ class PackageTestLaunchAdmissionTests(unittest.TestCase):
         self.assertEqual(observed,[{'time':350.0,'end':650.0,'run_end':550.0}])
         self.assertEqual(end,650.0)
 
+    def test_observed_cold_setup_keeps_the_full_xctest_window(self):
+        error,spawns,stops,observed,end=self.launch(elapsed=276)
+        self.assertIsNone(error);self.assertEqual((spawns,stops),(1,1))
+        self.assertEqual(observed,[{'time':376.0,'end':676.0,'run_end':576.0}])
+        self.assertEqual(end,676.0)
+
+    def test_over_budget_setup_is_rejected_before_spawn(self):
+        error,spawns,stops,_,end=self.launch(elapsed=377)
+        self.assertIsInstance(error,AssertionError);self.assertEqual((spawns,stops),(0,0))
+        self.assertIsNone(end)
+
     def test_exact_original_work_reserve_can_spawn_with_no_io_delay(self):
-        error,spawns,stops,observed,end=self.launch(elapsed=256)
+        error,spawns,stops,observed,end=self.launch(elapsed=376)
         self.assertIsNone(error);self.assertEqual(spawns,1);self.assertEqual(stops,1)
-        self.assertEqual(observed,[{'time':356.0,'end':656.0,'run_end':556.0}])
-        self.assertEqual(end,656.0)
+        self.assertEqual(observed,[{'time':476.0,'end':776.0,'run_end':676.0}])
+        self.assertEqual(end,776.0)
 
 
 class PackageReadinessBudgetTests(unittest.TestCase):
@@ -943,41 +977,41 @@ class PackageReadinessBudgetTests(unittest.TestCase):
             proc.wait=wait;resources=SimpleNamespace(check=mock.Mock())
             with mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(self.l,'stop_group',side_effect=lambda p,r:r.update(owned_group_absent=True)):
                 self.m.wait_for_package_boot(run,resources,'fixture-owned')
-            resources.check.assert_called_once_with(256);spawn.assert_called_once();self.assertEqual(run.start,0);self.assertEqual(run.end,560);self.assertGreaterEqual(run.remaining(),304);self.assertTrue(run.meta['commands'][0]['owned_group_absent'])
+            resources.check.assert_called_once_with(376);spawn.assert_called_once();self.assertEqual(run.start,0);self.assertEqual(run.end,680);self.assertGreaterEqual(run.remaining(),304);self.assertTrue(run.meta['commands'][0]['owned_group_absent'])
     def test_late_persist_or_open_cannot_spawn_from_stale_120s_allowance(self):
         original_open=Path.open
         for stage in ('persist','open'):
             with self.subTest(stage=stage),mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]):
-                self.clock[0]=200;run=self.actual_run()
+                self.clock[0]=320;run=self.actual_run()
                 def persisted():
-                    if stage=='persist':self.clock[0]=252
+                    if stage=='persist':self.clock[0]=372
                 run.persist=persisted
                 def opened(path,*args,**kwargs):
                     stream=original_open(path,*args,**kwargs)
-                    if stage=='open':self.clock[0]=252
+                    if stage=='open':self.clock[0]=372
                     return stream
                 with mock.patch.object(Path,'open',opened),mock.patch.object(subprocess,'Popen') as spawn:
                     with self.assertRaises(TimeoutError):self.m.wait_for_package_boot(run,SimpleNamespace(check=lambda phase:None),'fixture-owned')
-                spawn.assert_not_called();self.assertEqual(run.end,560);self.assertEqual(run.start,0)
-    def test_late_boot_clips_to_original256_and_timeout_closes_one_child(self):
+                spawn.assert_not_called();self.assertEqual(run.end,680);self.assertEqual(run.start,0)
+    def test_late_boot_clips_to_original376_and_timeout_closes_one_child(self):
         with mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]):
-            self.clock[0]=200;run=self.actual_run();proc=SimpleNamespace(pid=123,returncode=None)
+            self.clock[0]=320;run=self.actual_run();proc=SimpleNamespace(pid=123,returncode=None)
             def wait(timeout):
                 self.assertEqual(timeout,52);self.clock[0]+=timeout;raise subprocess.TimeoutExpired('fixture',timeout)
             proc.wait=wait
             def stopped(p,row):p.returncode=-15;row['owned_group_absent']=True
             with mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(self.l,'stop_group',side_effect=stopped) as stop:
                 with self.assertRaises(subprocess.TimeoutExpired):self.m.wait_for_package_boot(run,SimpleNamespace(check=lambda phase:None),'fixture-owned')
-            spawn.assert_called_once();stop.assert_called_once();self.assertTrue(run.meta['commands'][0]['owned_group_absent']);self.assertEqual(run.end,560);self.assertEqual(run.start,0)
+            spawn.assert_called_once();stop.assert_called_once();self.assertTrue(run.meta['commands'][0]['owned_group_absent']);self.assertEqual(run.end,680);self.assertEqual(run.start,0)
     def test_scan_expiry_prevents_native_spawn_and_restores_original_work_end(self):
         with mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]):
             run=self.actual_run()
-            def scan(phase):self.clock[0]=256;raise AssertionError('original phase deadline')
+            def scan(phase):self.clock[0]=376;raise AssertionError('original phase deadline')
             with mock.patch.object(subprocess,'Popen') as spawn:
                 with self.assertRaises(AssertionError):self.m.wait_for_package_boot(run,SimpleNamespace(check=scan),'fixture-owned')
-            spawn.assert_not_called();self.assertEqual(run.end,560);self.assertEqual(run.start,0)
+            spawn.assert_not_called();self.assertEqual(run.end,680);self.assertEqual(run.start,0)
     def test_cleanup_uses_existing_absolute_ends_and_attempts_delete_after_timeout(self):
-        for elapsed,expected in ((560,[45,25]),(610,[5,19])):
+        for elapsed,expected in ((680,[45,25]),(730,[5,19])):
             with self.subTest(elapsed=elapsed),mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]):
                 self.clock[0]=elapsed;run=self.actual_run();waits=[]
                 def spawn(*args,**kwargs):
@@ -1038,27 +1072,27 @@ class PackageAX5PostconditionTests(unittest.TestCase):
     def invoke(self):return self.m.configure_package_ax5(self.run,self.resources,self.uid,self.l)
     def test_timeout_closed_then_exact_readback_preserves_scans_error_and_budget(self):
         self.assertEqual(self.invoke(),self.l.AX5)
-        self.assertEqual(len(self.calls),2);self.assertEqual(self.scans,[256,256])
-        self.assertEqual(self.run.end,560);self.assertEqual(self.run.start,0)
+        self.assertEqual(len(self.calls),2);self.assertEqual(self.scans,[376,376])
+        self.assertEqual(self.run.end,680);self.assertEqual(self.run.start,0)
         self.assertGreaterEqual(self.run.remaining(),304)
         self.assertIn('TimeoutExpired',self.run.meta['commands'][0]['command_error'])
         self.assertTrue(self.run.meta['ax5_postcondition']['setter_timed_out'])
     def test_normal_setter_uses_the_same_single_readback(self):
         self.mode='success';self.assertEqual(self.invoke(),self.l.AX5)
-        self.assertEqual(len(self.calls),2);self.assertEqual(self.scans,[256,256])
+        self.assertEqual(len(self.calls),2);self.assertEqual(self.scans,[376,376])
         self.assertFalse(self.run.meta['ax5_postcondition']['setter_timed_out'])
     def test_unknown_group_leader_secondary_and_cleanup_never_read(self):
         for fault in ('group','leader','probe','secondary','cleanup'):
             with self.subTest(fault=fault):
                 self.calls.clear();self.scans.clear();self.clock[0]=50;self.run.meta['commands']=[];self.closure_fault=fault
                 with self.assertRaises(subprocess.TimeoutExpired):self.invoke()
-                self.assertEqual(len(self.calls),1);self.assertEqual(self.run.end,560)
+                self.assertEqual(len(self.calls),1);self.assertEqual(self.run.end,680)
     def test_nonzero_cancellation_and_readback_failure_remain_fatal(self):
         for mode,count in (('nonzero',1),('interrupt',1),('read_timeout',2)):
             with self.subTest(mode=mode):
                 self.calls.clear();self.scans.clear();self.clock[0]=50;self.run.meta['commands']=[];self.mode=mode
                 with self.assertRaises((RuntimeError,InterruptedError,subprocess.TimeoutExpired)):self.invoke()
-                self.assertEqual(len(self.calls),count);self.assertEqual(self.run.end,560)
+                self.assertEqual(len(self.calls),count);self.assertEqual(self.run.end,680)
     def test_wrong_readback_and_changed_owner_or_directory_fail(self):
         self.read_value='large'
         with self.assertRaises(AssertionError):self.invoke()
@@ -1071,33 +1105,33 @@ class PackageAX5PostconditionTests(unittest.TestCase):
                     else:self.device.rename(self.device.with_name('old-device'));self.device.mkdir()
                 self.after_set=changed
                 with self.assertRaises(AssertionError):self.invoke()
-                self.assertEqual(len(self.calls),1);self.assertEqual(self.run.end,560)
+                self.assertEqual(len(self.calls),1);self.assertEqual(self.run.end,680)
     def test_symlink_device_is_rejected_before_any_child(self):
         self.device.rmdir();self.device.symlink_to(self.root,target_is_directory=True)
         with self.assertRaises(AssertionError):self.invoke()
         self.assertEqual(self.calls,[])
     def test_original_startup_clips_setter_and_blocks_readback_when_reserve_spent(self):
-        self.clock[0]=200
+        self.clock[0]=320
         with self.assertRaises(subprocess.TimeoutExpired):self.invoke()
-        self.assertEqual(len(self.calls),1);self.assertEqual(self.clock[0],252)
+        self.assertEqual(len(self.calls),1);self.assertEqual(self.clock[0],372)
         self.assertEqual(self.run.meta['commands'][0]['timeout_seconds'],52)
-        self.assertEqual(self.run.end,560);self.assertEqual(self.run.start,0)
+        self.assertEqual(self.run.end,680);self.assertEqual(self.run.start,0)
     def test_blocking_scan_persist_or_open_cannot_start_late_readback(self):
         original_open=Path.open
         for stage in ('scan','persist','open'):
             with self.subTest(stage=stage):
                 self.calls.clear();self.scans.clear();self.clock[0]=50;self.run.meta['commands']=[]
-                self.before_read_scan=(lambda:self.clock.__setitem__(0,256)) if stage=='scan' else None
+                self.before_read_scan=(lambda:self.clock.__setitem__(0,376)) if stage=='scan' else None
                 def persisted():
-                    if stage=='persist' and self.run.meta['commands'][-1]['args'][-1]=='content_size':self.clock[0]=252
+                    if stage=='persist' and self.run.meta['commands'][-1]['args'][-1]=='content_size':self.clock[0]=372
                 self.run.persist=persisted
                 def opened(path,*args,**kwargs):
                     stream=original_open(path,*args,**kwargs)
-                    if stage=='open' and path.name=='ax5-readback.txt':self.clock[0]=252
+                    if stage=='open' and path.name=='ax5-readback.txt':self.clock[0]=372
                     return stream
                 with mock.patch.object(Path,'open',opened):
                     with self.assertRaises((AssertionError,TimeoutError)):self.invoke()
-                self.assertEqual(len(self.calls),1);self.assertEqual(self.run.end,560);self.assertEqual(self.run.start,0)
+                self.assertEqual(len(self.calls),1);self.assertEqual(self.run.end,680);self.assertEqual(self.run.start,0)
 
 
     def test_closed_timeout_default_readback_converges_once_without_renewing_budget(self):
@@ -1105,8 +1139,8 @@ class PackageAX5PostconditionTests(unittest.TestCase):
         self.read_values=['large',self.l.AX5]
         self.assertEqual(self.invoke(),self.l.AX5)
         self.assertEqual(len(self.calls),4);self.assertEqual(self.calls[0],self.calls[2])
-        self.assertEqual(self.scans,[256,256,242,256])
-        self.assertEqual(self.run.end,560);self.assertEqual(self.run.start,0)
+        self.assertEqual(self.scans,[376,376,362,376])
+        self.assertEqual(self.run.end,680);self.assertEqual(self.run.start,0)
         self.assertIn('TimeoutExpired',self.run.meta['commands'][0]['command_error'])
         self.assertEqual([a['readback'] for a in self.run.meta['ax5_convergence']['attempts']],['large',self.l.AX5])
         self.assertTrue(all(c['owned_group_absent'] for c in self.run.meta['commands']))
@@ -1135,9 +1169,9 @@ class PackageAX5PostconditionTests(unittest.TestCase):
                 self.assertEqual(len(self.calls),2)
 
     def test_insufficient_remaining_startup_budget_never_starts_second_setter(self):
-        self.clock[0]=165;self.read_value='large'
+        self.clock[0]=285;self.read_value='large'
         with self.assertRaises(AssertionError):self.invoke()
-        self.assertEqual(len(self.calls),2);self.assertEqual(self.run.end,560)
+        self.assertEqual(len(self.calls),2);self.assertEqual(self.run.end,680)
         self.assertGreaterEqual(self.run.remaining(),304)
 
     def test_changed_owner_during_retry_scan_rejects_before_second_setter(self):
@@ -1153,10 +1187,10 @@ class PackageAX5PostconditionTests(unittest.TestCase):
     def test_retry_metadata_delay_does_not_spend_readback_or_test_reserve(self):
         self.read_value='large'
         def persist():
-            if len(self.run.meta['commands'])==3:self.clock[0]=240
+            if len(self.run.meta['commands'])==3:self.clock[0]=360
         self.run.persist=persist
         with self.assertRaises(TimeoutError):self.invoke()
-        self.assertEqual(len(self.calls),2);self.assertEqual(self.run.end,560)
+        self.assertEqual(len(self.calls),2);self.assertEqual(self.run.end,680)
         self.assertGreaterEqual(self.run.remaining(),304)
 
 
@@ -1166,7 +1200,7 @@ class PackageAX5PostconditionTests(unittest.TestCase):
                 self.calls.clear();self.scans.clear();self.clock[0]=50;self.run.meta['commands']=[]
                 self.setter_modes=['timeout',mode];self.read_values=['large']
                 with self.assertRaises((RuntimeError,InterruptedError)):self.invoke()
-                self.assertEqual(len(self.calls),3);self.assertEqual(self.run.end,560)
+                self.assertEqual(len(self.calls),3);self.assertEqual(self.run.end,680)
 
     def test_retry_unresolved_group_cannot_start_another_readback(self):
         self.read_values=['large']
@@ -1176,7 +1210,7 @@ class PackageAX5PostconditionTests(unittest.TestCase):
             if len(self.calls)==3:row['owned_group_absent']=False
         with mock.patch.object(self.l,'stop_group',side_effect=stop):
             with self.assertRaises(subprocess.TimeoutExpired):self.invoke()
-        self.assertEqual(len(self.calls),3);self.assertEqual(self.run.end,560)
+        self.assertEqual(len(self.calls),3);self.assertEqual(self.run.end,680)
 
     def test_retry_readback_failure_remains_fatal_without_third_setter(self):
         self.read_values=['large'];original_spawn=self.spawn
@@ -1185,6 +1219,6 @@ class PackageAX5PostconditionTests(unittest.TestCase):
             return original_spawn(args,**kwargs)
         with mock.patch.object(subprocess,'Popen',side_effect=spawn):
             with self.assertRaises(subprocess.TimeoutExpired):self.invoke()
-        self.assertEqual(len(self.calls),4);self.assertEqual(self.run.end,560)
+        self.assertEqual(len(self.calls),4);self.assertEqual(self.run.end,680)
 
 if __name__=='__main__':unittest.main()

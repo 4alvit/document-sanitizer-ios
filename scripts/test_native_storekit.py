@@ -261,7 +261,7 @@ class NativePolicyWindowTests(unittest.TestCase):
         native=self.m.load('lifecycle');package=load('package_default_lifecycle',MODULES/'lifecycle.py')
         fields=('TOTAL','WORK_END','RECOVERY_END','SHUTDOWN_END','DELETE_END','CLEANUP_END')
         self.assertEqual(tuple(getattr(native,k) for k in fields),(1200,980,1002,1039,1058,1080))
-        self.assertEqual(tuple(getattr(package,k) for k in fields),(780,560,582,619,638,660))
+        self.assertEqual(tuple(getattr(package,k) for k in fields),(900,680,702,739,758,780))
         run=native.Run()
         self.assertEqual(run.end,980);self.assertEqual(run.meta['total_seconds'],1200)
         self.assertEqual(run.meta['phase_deadlines_seconds'],{'work':980,'recovery':1002,'shutdown':1039,'delete':1058,'absence':1080,'evidence':1192})

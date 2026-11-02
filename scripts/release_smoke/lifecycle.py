@@ -32,9 +32,14 @@ AX5_SET_LIMIT, AX5_READ_LIMIT = 60, 60
 # Runner startup and selected-case execution share this finite outer cap.
 # Run.command still clips this maximum to remaining work minus its 4s reserve.
 XCTEST_COMMAND_LIMIT = 300
-TOTAL = 780
-WORK_END = 560
-RECOVERY_END, SHUTDOWN_END, DELETE_END, CLEANUP_END = 582, 619, 638, 660
+# Cold setup has 376s before the full 300s test plus 4s stop reserve.
+# Cleanup and evidence retain their original durations after work completes.
+WORK_END = 680
+RECOVERY_END = WORK_END + 22
+SHUTDOWN_END = WORK_END + 59
+DELETE_END = WORK_END + 78
+CLEANUP_END = WORK_END + 100
+TOTAL = CLEANUP_END + 120
 NATIVE_CONTEXT_KEYS = ('XPC_SERVICE_NAME', 'XPC_FLAGS', '__CF_USER_TEXT_ENCODING')
 
 
