@@ -718,9 +718,11 @@ def worker():
                      'ARCHS=arm64', 'ONLY_ACTIVE_ARCH=YES',
                      'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-', 'build-for-testing',
                      '-only-testing:' + TARGET + '/' + CASE], 'build.log', 300)
+        # Bind and verify the built payload before starting CoreSimulator. A
+        # signature/configuration failure must not create a device to recover,
+        # and static verification must not compete with a cold simulator boot.
+        config, payloads = prepare_config(run)
         runtime, device_type = select_device(run)
-        # Generic build precedes the one runtime query. Owned boot can progress
-        # during configuration, signatures and payload binding; no second child.
         name = 'RedactLeaf-Privacy-' + str(uuid.uuid4())
         run.meta['owned_device_name'] = name
         run.persist()
@@ -729,7 +731,6 @@ def worker():
         run.meta['owned_uuid'] = uid
         run.persist()
         run.command(['xcrun', 'simctl', 'boot', uid], 'boot.log', 20)
-        config, payloads = prepare_config(run)
         run.check()
         run.command(['xcrun', 'simctl', 'bootstatus', uid, '-b'], 'bootstatus.log', READINESS_LIMIT)
         readback = configure_system_ax5(run, uid)
