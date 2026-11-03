@@ -14,6 +14,112 @@ def load(name,path):
 def jobs(now,elapsed=300):
     return {'total_count':1,'jobs':[{'id':7,'name':'Native StoreKit eight-case acceptance','run_id':123,'run_attempt':1,'head_sha':'a'*40,'status':'in_progress','runner_id':55,'runner_name':'fixture','labels':['macos-15'],'started_at':(now-dt.timedelta(seconds=elapsed)).isoformat()}]}
 
+class NativeFailureProgressTests(unittest.TestCase):
+    def setUp(self):
+        self.m=load('native_failure_progress_test',DRIVER)
+        self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
+        self.scope=Path(self.temporary.name)
+        self.staging=self.scope/'result.xcresult/Staging/1_Test/Diagnostics'
+        self.staging.mkdir(parents=True)
+        self.run=SimpleNamespace(meta={'failures':[{'type':'original_failure'}],
+            'native_failure_markers':{'inert_host_observed':False,
+             'first_case_start_observed':None,'log_bytes_examined':1720}})
+    def collect(self,check=lambda:None):
+        with mock.patch.object(subprocess,'Popen',side_effect=AssertionError('no native calls')):
+            self.m.record_native_failure_progress(self.run,self.scope,check)
+        self.assertEqual(self.run.meta['failures'],[{'type':'original_failure'}])
+        return self.run.meta['native_failure_progress']
+    def test_fixed_milestones_and_hashes_never_include_raw_path_or_launch_values(self):
+        raw=('01:15:32.196 xcodebuild[50:60] Beginning test session Private-Session\n'
+             '01:15:32.269 xcodebuild[50:60] Test runner session acquired connection.\n'
+             '01:15:32.869 xcodebuild[50:60] UUID: Installing app at path: /private/SENSITIVE\n'
+             '01:15:51.515 xcodebuild[50:60] UUID: Installed app at path: /private/SENSITIVE\n'
+             '01:15:52.941 xcodebuild[50:60] UUID: Launching app with identifier: SECRET and options: {\n'
+             ' environment = {TOKEN = SENSITIVE;}\n').encode()
+        (self.staging/'Session-synthetic.log').write_bytes(raw)
+        result=self.collect();self.assertTrue(result['diagnostic_only'])
+        self.assertEqual(result['stdout_markers']['first_case_start_observed'],None)
+        record=result['sessions'][0]
+        self.assertEqual(record['sha256'],hashlib.sha256(raw).hexdigest())
+        self.assertEqual([e['kind'] for e in record['milestones']],
+            ['session_started','runner_connected','app_install_requested','app_installed','app_launch_requested'])
+        self.assertEqual(record['milestones'][-1]['time'],'01:15:52.941')
+        for forbidden in ('SENSITIVE','SECRET','Private-Session','TOKEN','/private/'):
+            self.assertNotIn(forbidden,json.dumps(result))
+    def test_malformed_and_unrelated_lines_do_not_fabricate_progress(self):
+        (self.staging/'Session-synthetic.log').write_text(
+            'Launching app with identifier: SENSITIVE\n'
+            '99:99:99.999 xcodebuild[50:60] UUID: Launching app with identifier: SENSITIVE\n'
+            '01:15:52.941 other[50:60] UUID: Launching app with identifier: SENSITIVE\n')
+        self.assertEqual(self.collect()['sessions'][0]['milestones'],[])
+    def test_missing_staging_is_unavailable_evidence_not_success(self):
+        result=self.collect() # Existing empty staging is distinct from missing.
+        self.assertEqual(result['sessions'],[])
+        other=self.scope/'missing'
+        self.m.record_native_failure_progress(self.run,other,lambda:None)
+        self.assertEqual(self.run.meta['native_failure_progress']['status'],'missing_staging')
+    def test_symlinked_staging_and_session_are_never_read(self):
+        for kind in ('root','leaf'):
+            with self.subTest(kind=kind):
+                scope=self.scope/kind;scope.mkdir()
+                if kind=='root':(scope/'result.xcresult').symlink_to(self.scope/'result.xcresult',target_is_directory=True)
+                else:
+                    staging=scope/'result.xcresult/Staging';staging.mkdir(parents=True)
+                    (staging/'Session-synthetic.log').symlink_to(self.staging/'outside')
+                self.m.record_native_failure_progress(self.run,scope,lambda:None)
+                self.assertEqual(self.run.meta['native_failure_progress']['status'],'unavailable')
+    def test_oversized_file_is_rejected_before_open(self):
+        with (self.staging/'Session-large.log').open('wb') as stream:stream.truncate(256*1024+1)
+        original=self.m.os.open;files=[]
+        def opened(name,*args,**kwargs):
+            if str(name).startswith('Session-'):
+                files.append(name);raise AssertionError('must not open')
+            return original(name,*args,**kwargs)
+        with mock.patch.object(self.m.os,'open',opened):
+            self.assertEqual(self.collect()['status'],'unavailable')
+        self.assertEqual(files,[])
+    def test_entry_and_session_counts_are_bounded(self):
+        for count,session in ((129,False),(5,True)):
+            with self.subTest(count=count):
+                scope=self.scope/str(count);staging=scope/'result.xcresult/Staging';staging.mkdir(parents=True)
+                for index in range(count):(staging/(f'Session-{index}.log' if session else f'{index}.txt')).touch()
+                self.m.record_native_failure_progress(self.run,scope,lambda:None)
+                self.assertEqual(self.run.meta['native_failure_progress']['status'],'unavailable')
+    def test_replaced_file_cannot_be_mislabeled_with_prior_identity(self):
+        path=self.staging/'Session-synthetic.log';path.write_text('original')
+        original=self.m.os.open
+        def replaced(name,*args,**kwargs):
+            if name==path.name:
+                replacement=self.staging/'replacement';replacement.write_text('replacement')
+                replacement.replace(path)
+            return original(name,*args,**kwargs)
+        with mock.patch.object(self.m.os,'open',replaced):result=self.collect()
+        self.assertEqual(result['status'],'unavailable')
+    def test_existing_phase_and_local_read_deadlines_do_not_replace_failure(self):
+        def expired():raise TimeoutError('existing phase')
+        self.assertEqual(self.collect(expired)['status'],'unavailable')
+        with mock.patch.object(self.m.time,'monotonic',side_effect=[100,102]):
+            self.assertEqual(self.collect()['status'],'unavailable')
+    def test_replaced_directory_is_not_followed_and_all_owned_fds_close(self):
+        original_open,original_close=self.m.os.open,self.m.os.close;opened=[];closed=[]
+        def replacement(name,*args,**kwargs):
+            if name=='Diagnostics':
+                old=self.staging.with_name('old');self.staging.rename(old)
+                self.staging.symlink_to(old,target_is_directory=True)
+            fd=original_open(name,*args,**kwargs);opened.append(fd);return fd
+        def close(fd):closed.append(fd);return original_close(fd)
+        with mock.patch.object(self.m.os,'open',replacement),mock.patch.object(self.m.os,'close',close):
+            self.assertEqual(self.collect()['status'],'unavailable')
+        self.assertEqual(sorted(opened),sorted(closed))
+    def test_milestone_and_depth_caps_remain_diagnostic_failures(self):
+        path=self.staging/'Session-repeated.log'
+        path.write_text('01:15:32.269 xcodebuild[50:60] Test runner session acquired connection.\n'*33)
+        self.assertEqual(self.collect()['status'],'unavailable')
+        path.unlink();deep=self.staging
+        for index in range(13):deep=deep/str(index);deep.mkdir()
+        self.assertEqual(self.collect()['status'],'unavailable')
+
+
 class NativeStoreKitBindingTests(unittest.TestCase):
     def setUp(self):self.m=load('native_storekit_test',DRIVER);self.now=dt.datetime.now(dt.timezone.utc)
     def test_eight_existing_cases_share_one_unchanged_bounded_command(self):
@@ -696,6 +802,11 @@ class SingleInstallerWorkerTests(unittest.TestCase):
         self.assertEqual(self.lookup_count,0);self.assertNotIn('first_installed_snapshot',metadata)
         self.assertFalse((self.scope/'installed-during.json').exists());self.assertFalse((self.scope/'installed-after.json').exists())
         self.assertEqual(metadata['result'],'failed');self.assertTrue(metadata['failures'])
+        progress=metadata['native_failure_progress']
+        self.assertEqual(progress['status'],'missing_staging')
+        self.assertTrue(progress['stdout_markers']['inert_host_observed'])
+        self.assertIsNone(progress['stdout_markers']['first_case_start_observed'])
+        self.assertGreater(progress['stdout_markers']['log_bytes_examined'],0)
     def test_old_toolchain_is_rejected_before_native_spawn(self):
         self.toolchain='Xcode 16.4\nBuild version 16F6'
         result,_=self.exercise(profile_rejected=True);self.assertEqual(result,1)
