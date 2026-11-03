@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0BE8E68F126C3D8855AFDE34 /* PrivacyReadingSample.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED819D1525793A27983B8EF6 /* PrivacyReadingSample.swift */; };
 		159D9814ECA4737FF1AF2ACB /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = A353C101359173D8A008D504 /* InfoPlist.strings */; };
 		1799E80FD4387A50B53E07B8 /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68A8F3135D2EED158C4B68B1 /* ReviewView.swift */; };
 		1A103060EC00DA0DBB4D00E9 /* MaskPresetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5281E2A1430C9C03C28065A3 /* MaskPresetStore.swift */; };
@@ -95,6 +96,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		ED819D1525793A27983B8EF6 /* PrivacyReadingSample.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacyReadingSample.swift; sourceTree = "<group>"; };
 		0194412E95A1C4AE569DDA81 /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
 		019659BF0CA96A41A9C40034 /* CleanSend.xctestplan */ = {isa = PBXFileReference; path = CleanSend.xctestplan; sourceTree = "<group>"; };
 		05E70DB22E308A4265FCEC25 /* WorkspaceErrorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceErrorTests.swift; sourceTree = "<group>"; };
@@ -305,6 +307,7 @@
 				46F93A909050493535E1E9BE /* FilesImportTests.swift */,
 				FC497A89ECAE6A5C3E633606 /* LocalizationUITests.swift */,
 				64013B171A75914F76625D4F /* PresetUITests.swift */,
+				ED819D1525793A27983B8EF6 /* PrivacyReadingSample.swift */,
 				895E45E36DBDC2BA5B62A722 /* PrivacySupportUITests.swift */,
 				4F28A35220593E5DAD914DB2 /* ShareExtensionEntryTests.swift */,
 				ACAA88AD640916E56FBAF9EE /* StableControlSampler.swift */,
@@ -483,6 +486,7 @@
 				667CD2A4B89A1A3B3FCB9349 /* FilesImportTests.swift in Sources */,
 				60434AD6CC406C0BCF8E86CF /* LocalizationUITests.swift in Sources */,
 				232D0DFE4ABB69B69C07C3B8 /* PresetUITests.swift in Sources */,
+				0BE8E68F126C3D8855AFDE34 /* PrivacyReadingSample.swift in Sources */,
 				D28BC7C8FB7CB6EB95EDC1EC /* PrivacySupportUITests.swift in Sources */,
 				DCDB974BCC46921DC8CCBD2E /* ShareExtensionEntryTests.swift in Sources */,
 				30624E496BAD47B2D30D0C26 /* StableControlSampler.swift in Sources */,

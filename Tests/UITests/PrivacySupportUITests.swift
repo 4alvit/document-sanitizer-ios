@@ -301,7 +301,6 @@ final class PrivacySupportUITests: XCTestCase {
 
     @MainActor
     private func readEverySectionAndFooter(in app: XCUIApplication, language: String) -> [String: String] {
-        let list = informationList(in: app)
         let device = UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
         let size = UIApplication.shared.preferredContentSizeCategory.rawValue
         let prefix = "privacy-\(language)-\(device)-\(size)"
@@ -314,11 +313,12 @@ final class PrivacySupportUITests: XCTestCase {
         var read: [String: String] = [:]
         for identifier in paragraphIDs + ["privacy-preview-notice"] {
             let paragraph = app.staticTexts[identifier]
-            reveal(paragraph, in: list, app: app)
-            // Sample this paragraph once after reveal; keep every content/geometry check.
-            let label = paragraph.label
-            let frame = paragraph.frame
-            let listFrame = list.frame
+            guard let sample = revealInformation(paragraph, identifier: identifier, in: app),
+                  let target = sample.target else { return read }
+            // Use the ready observation; a later gesture always obtains a new snapshot.
+            let label = target.label
+            let frame = target.frame
+            let listFrame = sample.listFrame
             assertTranslated(label, language: language)
             XCTAssertGreaterThan(frame.width, 0)
             XCTAssertGreaterThanOrEqual(frame.minX, listFrame.minX - 2)
@@ -332,14 +332,73 @@ final class PrivacySupportUITests: XCTestCase {
         }
         for identifier in ["privacy-policy-link", "support-guide-link", "public-issues-link"] {
             let link = app.descendants(matching: .any)[identifier].firstMatch
-            reveal(link, in: list, app: app, needsCenter: true)
-            assertTranslated(link.label, language: language)
+            guard let sample = revealInformation(link, identifier: identifier, in: app, needsCenter: true),
+                  let target = sample.target else { return read }
+            assertTranslated(target.label, language: language)
             XCTAssertTrue(link.isHittable)
             // Visibility is verified without following an external destination.
         }
         XCTAssertEqual(app.state, .runningForeground)
         XCTAssertTrue(app.buttons["close-privacy-support"].isHittable)
         return read
+    }
+
+    @MainActor
+    private func revealInformation(_ element: XCUIElement, identifier: String, in app: XCUIApplication,
+                                   needsCenter: Bool = false) -> PrivacyReadingSample? {
+        for _ in 0..<16 {
+            let sample: PrivacyReadingSample
+            do {
+                sample = try PrivacyReadingSample.read(
+                    listIdentifier: "privacy-support-list", targetIdentifier: identifier,
+                    needsCenter: needsCenter,
+                    snapshot: {
+                        let root = try app.snapshot()
+                        var elements: [PrivacyReadingElement] = []
+                        var bars: [PrivacyReadingElement] = []
+                        @MainActor func visit(_ node: XCUIElementSnapshot) {
+                            let value = PrivacyReadingElement(identifier: node.identifier,
+                                                              label: node.label, frame: node.frame)
+                            if value.identifier == "privacy-support-list" || value.identifier == identifier {
+                                elements.append(value)
+                            }
+                            if node.elementType == .navigationBar { bars.append(value) }
+                            for child in node.children { visit(child) }
+                        }
+                        visit(root)
+                        return PrivacyReadingTree(appFrame: root.frame, elements: elements, navigationBars: bars)
+                    },
+                    navigationBarIsHittable: { bar in
+                        let matches = app.navigationBars.matching(NSPredicate(
+                            format: "identifier == %@ AND label == %@", bar.identifier, bar.label))
+                        guard matches.count == 1 else {
+                            throw PrivacyReadingSample.Invalid.ambiguousNavigationBar
+                        }
+                        return matches.element.isHittable
+                    },
+                    // Preserve the caller's typed target (StaticText for paragraphs).
+                    targetIsHittable: { element.isHittable })
+            } catch {
+                XCTFail("Could not sample the privacy reading position: \(error)")
+                return nil
+            }
+            if sample.ready { return sample }
+            guard remainingScrollGestures > 0 else {
+                XCTFail("The bounded scrolling budget was exhausted at \(identifier)")
+                return nil
+            }
+            remainingScrollGestures -= 1
+            let visible = sample.viewport
+            let upwards = sample.target == nil || sample.target!.frame.midY >= visible.midY
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let from = CGPoint(x: visible.midX, y: visible.minY + visible.height * (upwards ? 0.8 : 0.2))
+            let to = CGPoint(x: visible.midX, y: visible.minY + visible.height * (upwards ? 0.2 : 0.8))
+            origin.withOffset(CGVector(dx: from.x, dy: from.y)).press(forDuration: 0.05,
+                thenDragTo: origin.withOffset(CGVector(dx: to.x, dy: to.y)))
+        }
+        capture(app, name: "privacy-unreachable-\(identifier)")
+        XCTFail("Could not reveal \(identifier) within the natural scroll viewport.")
+        return nil
     }
 
     @MainActor
