@@ -189,6 +189,16 @@ profile check, nine-minute build and full 780-second native window plus that res
 leave four minutes for checkout and scheduling overhead. Actual elapsed time, not
 this estimate, controls admission. There is no automatic retry or cap increase.
 
+On failure, the driver retains the last observed host/case stdout markers.
+After cleanup attempts it also reads existing staging session logs for a few
+fixed launch milestones. This read checks a two-second cooperative budget within
+the original evidence deadline; the existing parent process deadline remains
+the hard bound. It permits 128 entries, four regular session files of at most 256 KiB
+each, and 32 milestones per file; symlinks and changing files are rejected.
+The receipt contains milestone types/times, hashes and sizes, not raw launch
+arguments, paths or environment values. It runs no additional native command
+and cannot change failed acceptance to success or establish a launch root cause.
+
 The native job waits for the verification job and requires its successful Release
 asset upload. It can run if a later ordinary test failed, but that failure remains
 fatal to overall acceptance. Release asset upload and privacy success independently

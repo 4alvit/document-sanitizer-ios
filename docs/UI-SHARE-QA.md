@@ -23,6 +23,17 @@ environment-dependent cases explicitly skip in an ordinary default-size test
 run; that run alone does not satisfy this accessibility gate. Inspect screenshots
 as well as results: a successful tap does not prove that a label is fully visible.
 
+The dedicated Russian iPad privacy driver keeps a 240-second XCTest case limit
+and a 960-second total session limit. Preparation must finish before 376 seconds;
+work, device cleanup and evidence still end at 740, 840 and 952 seconds. Its
+`xcodebuild` watchdog may use otherwise unused preparation time: at spawn it is
+the smaller of 570 seconds and remaining work time minus the four-second stop
+reserve. Late preparation retains the original minimum 360-second window.
+The 570-second maximum plans for 300 seconds of cold launch, the unchanged
+240-second case and 30 seconds of completion. These are planning components,
+not separately observed or renewed phases. No log marker grants extra time.
+Timeouts, skipped or failed cases and unconfirmed cleanup still fail acceptance.
+
 ## Actual extension entry
 
 ```sh

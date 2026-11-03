@@ -6,7 +6,6 @@ allocation aborts. This is not an instantaneous filesystem quota.
 """
 from contextlib import contextmanager
 import hashlib
-import json
 import math
 import os
 from pathlib import Path, PurePosixPath

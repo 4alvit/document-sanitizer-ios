@@ -67,7 +67,9 @@ class Observer:
   if state!=self.previous:
    raw=(json.dumps({'elapsed':time.monotonic()-self.started,**state},sort_keys=True)+'\n').encode()
    assert self.evidence_bytes+len(raw)<=self.event_cap,'cumulative event evidence cap'
-   assert stream.write(raw)==len(raw);stream.flush();self.evidence_bytes+=len(raw)
+   written=stream.write(raw)
+   if written!=len(raw):raise OSError('short event evidence write')
+   stream.flush();self.evidence_bytes+=len(raw)
    self.events.append(state);self.previous=state
   for row in state['tmp']['entries']:
    if 'sha256' in row and row['path'].lower().endswith('.pdf'):self.exported[row['sha256']]=row['path']

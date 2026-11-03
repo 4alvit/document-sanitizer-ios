@@ -1,5 +1,5 @@
 """Bind the same-run Release UI runner to the separately packaged Release AUT."""
-import copy, hashlib, json, os, plistlib, stat
+import copy, hashlib, json, plistlib, stat
 from pathlib import Path
 CASE='ShareExtensionEntryTests/testPDFReceivedByExtensionThenImported'
 

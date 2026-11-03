@@ -628,7 +628,7 @@ class BaselineWorkerTests(unittest.TestCase):
         changes = json.loads((self.f.out / 'config-diff.json').read_text())['target_changes']
         self.assertEqual(changes['MaximumTestExecutionTimeAllowance'], {'before': 180, 'after': 240})
         self.assertEqual(len(self.f.test_processes()), 1)
-        self.assertEqual(self.f.test_processes()[0].wait_calls, [360])
+        self.assertEqual(self.f.test_processes()[0].wait_calls, [364])
         self.assertFalse(meta['retry'])
         self.f.assert_cleanup(meta)
 
@@ -725,7 +725,8 @@ class BaselineWorkerTests(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 bootstatus = next(p for p in f.backend.processes if p.step == 'bootstatus')
                 self.assertEqual(bootstatus.wait_calls, [expected_boot])
-                self.assertEqual(f.test_processes()[0].wait_calls, [360])
+                self.assertEqual(f.test_processes()[0].wait_calls,
+                                 [{100.0: 570, 200.0: 536, 300.0: 436}[elapsed]])
                 self.assertEqual(meta['phase_deadlines_seconds'],
                     {'startup': 376, 'work': 740, 'recovery': 762, 'shutdown': 799,
                      'delete': 818, 'absence': 840, 'evidence': 952})
@@ -747,7 +748,7 @@ class BaselineWorkerTests(unittest.TestCase):
         provenance = json.loads((self.f.out / 'source-provenance.json').read_text())
         self.assertEqual((provenance['run_id'], provenance['run_attempt']), ('40631521600', '2'))
         self.assertEqual(len(self.f.test_processes()), 1)
-        self.assertEqual(self.f.test_processes()[0].wait_calls, [360])
+        self.assertEqual(self.f.test_processes()[0].wait_calls, [364])
         self.f.assert_cleanup(meta)
 
     def test_wrong_host_profile_rejected_before_any_process(self):
@@ -799,7 +800,7 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertEqual(self.f.backend.signals, [])
 
     def test_xctest_outer_cap_and_remaining_work_clipping(self):
-        for elapsed, expected in ((340.0, 360.0), (372.0, 360.0), (375.999, 360.0)):
+        for elapsed, expected in ((340.0, 396.0), (372.0, 364.0), (375.999, 360.001)):
             with self.subTest(readback_elapsed=elapsed):
                 f = Fixture(self)
                 f.backend.readback_elapsed = elapsed
@@ -827,7 +828,7 @@ class BaselineWorkerTests(unittest.TestCase):
         rc, meta = self.f.run()
         self.assertEqual(rc, 0)
         self.assertEqual(len(self.f.test_processes()[0].wait_calls), 1)
-        self.assertAlmostEqual(self.f.test_processes()[0].wait_calls[0], 360)
+        self.assertAlmostEqual(self.f.test_processes()[0].wait_calls[0], 458.607457)
         self.assertAlmostEqual(self.f.clock.value, 277.392543 + startup + testcase + completion)
         self.assertLess(self.f.clock.value, 740 - 4)
         self.assertEqual(meta['phase_deadlines_seconds']['absence'], 840)
@@ -835,13 +836,13 @@ class BaselineWorkerTests(unittest.TestCase):
 
     def test_xctest_maximum_timeout_still_reaps_and_preserves_cleanup(self):
         self.f.backend.readback_elapsed = 246.0
-        self.f.backend.test_seconds = 360.001
+        self.f.backend.test_seconds = 490.001
         rc, meta = self.f.run()
         self.assertEqual(rc, 1)
         self.assert_failed(meta, 'TimeoutExpired')
         tests = self.f.test_processes()
         self.assertEqual(len(tests), 1)
-        self.assertEqual(tests[0].wait_calls, [360])
+        self.assertEqual(tests[0].wait_calls, [490])
         self.assertIn((tests[0].pid, signal.SIGTERM), self.f.backend.signals)
         self.assertFalse(tests[0].group_present)
         command = next(c for c in meta['commands'] if 'test-without-building' in c['args'])
@@ -851,14 +852,14 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertFalse(meta['retry'])
         self.f.assert_cleanup(meta)
 
-    def test_full360_seconds_reaches_one_unchanged_ui_test_and_preserves_result(self):
+    def test_minimum_window_reaches_one_unchanged_ui_test_and_preserves_result(self):
         rc, meta = self.f.run()
         self.assertEqual(rc, 0)
         self.assertEqual(meta['result'], 'passed_pending_independent_review')
         self.assertEqual(meta['counts'], {'passedTests': 1, 'failedTests': 0, 'skippedTests': 0, 'totalTestCount': 1})
         tests = self.f.test_processes()
         self.assertEqual(len(tests), 1)
-        self.assertEqual(tests[0].wait_calls, [360])
+        self.assertEqual(tests[0].wait_calls, [364])
         self.assertEqual(tests[0].args, ['xcodebuild', 'test-without-building', '-xctestrun',
             str(self.f.out / 'selected.xctestrun'), '-destination', 'platform=iOS Simulator,id=' + UID,
             '-parallel-testing-enabled', 'NO', '-maximum-concurrent-test-simulator-destinations', '1',
@@ -892,7 +893,7 @@ class BaselineWorkerTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         commands = [p for p in self.f.backend.processes if p.step in ('set_ax5', 'readback', 'test')]
         self.assertEqual([p.step for p in commands], ['set_ax5', 'readback', 'test'])
-        self.assertEqual([p.wait_calls for p in commands], [[60], [60], [360]])
+        self.assertEqual([p.wait_calls for p in commands], [[60], [60], [364]])
         self.assertIn('-only-testing:CleanSendUITests/' + CASE, commands[-1].args)
         self.assertEqual(meta['actual_system_content_size'], self.f.module.AX5)
         self.f.assert_cleanup(meta)
@@ -915,7 +916,7 @@ class BaselineWorkerTests(unittest.TestCase):
         rc, meta = self.f.run()
         self.assertEqual(rc, 0)
         commands = [p for p in self.f.backend.processes if p.step in ('set_ax5', 'readback', 'test')]
-        self.assertEqual([p.wait_calls for p in commands], [[60], [60], [360]])
+        self.assertEqual([p.wait_calls for p in commands], [[60], [60], [470]])
         self.assertEqual(meta['actual_system_content_size'], self.f.module.AX5)
         self.f.assert_cleanup(meta)
 
@@ -927,7 +928,7 @@ class BaselineWorkerTests(unittest.TestCase):
         rc, meta = self.f.run()
         self.assertEqual(rc, 0)
         commands = [p for p in self.f.backend.processes if p.step in ('set_ax5', 'readback', 'test')]
-        self.assertEqual([p.wait_calls for p in commands], [[41], [21], [360]])
+        self.assertEqual([p.wait_calls for p in commands], [[41], [21], [375]])
         self.assertEqual(meta['phase_deadlines_seconds']['work'], 740)
         self.assertEqual(meta['phase_deadlines_seconds']['absence'], 840)
         self.assertEqual(meta['total_seconds'], 960)
@@ -1061,7 +1062,7 @@ class BaselineWorkerTests(unittest.TestCase):
         tests = self.f.test_processes()
         self.assertEqual(len(tests), 1)
         proc = tests[0]
-        self.assertEqual(proc.wait_calls, [360])
+        self.assertEqual(proc.wait_calls, [364])
         self.assertIn((proc.pid, signal.SIGTERM), self.f.backend.signals)
         self.assertFalse(proc.group_present)
         command = next(c for c in meta['commands'] if 'test-without-building' in c['args'])
@@ -1294,7 +1295,7 @@ class StartupPolicyBoundaryTests(unittest.TestCase):
                 f.clock.value = max(f.clock.value, 377)
         with mock.patch.object(f.module.Run, 'persist', persist):rc, meta = f.run()
         self.assertEqual(rc, 1)
-        self.assertIn('No full XCTest/stop budget before spawn', '\n'.join(meta['failures']))
+        self.assertIn('No minimum XCTest/stop budget before spawn', '\n'.join(meta['failures']))
         self.assertEqual(f.test_processes(), [])
         f.assert_cleanup(meta)
 
@@ -1445,13 +1446,134 @@ class StartupPolicyBoundaryTests(unittest.TestCase):
 
     def test_selected_case_and_cleanup_reserves_are_not_borrowed(self):
         f = Fixture(self);m = f.module
-        self.assertEqual((m.TEST_ADMISSION, m.XCTEST_COMMAND_LIMIT, m.STARTUP_END), (364, 360, 376))
+        self.assertEqual((m.TEST_ADMISSION, m.XCTEST_COMMAND_LIMIT, m.STARTUP_END), (364, 570, 376))
         self.assertEqual((m.CLEANUP_END-m.WORK_END, (m.TOTAL-8)-m.CLEANUP_END, m.TOTAL-(m.TOTAL-8)), (100,112,8))
         rc, meta = f.run();self.assertEqual(rc, 0)
         selected = plistlib.loads((f.out / 'selected.xctestrun').read_bytes())
         target = selected['TestConfigurations'][0]['TestTargets'][0]
         self.assertEqual(target['MaximumTestExecutionTimeAllowance'], 240)
         self.assertEqual(target['OnlyTestIdentifiers'], [CASE]);self.assertEqual(target['SkipTestIdentifiers'], [])
+
+
+class UnusedStartupBudgetTests(unittest.TestCase):
+    def test_command_borrows_only_unused_work_with_a_finite_maximum(self):
+        for setup, expected in ((0, 570), (136, 570), (166, 570), (200, 536),
+                                (340, 396), (372, 364), (375.999, 360.001)):
+            with self.subTest(setup=setup):
+                f = Fixture(self)
+                f.backend.readback_elapsed = setup
+                rc, meta = f.run()
+                self.assertEqual(rc, 0)
+                self.assertAlmostEqual(f.test_processes()[0].wait_calls[0], expected)
+                command = next(c for c in meta['commands'] if 'test-without-building' in c['args'])
+                self.assertAlmostEqual(command['command_deadline_monotonic'], setup + expected)
+                self.assertLessEqual(command['command_deadline_monotonic'], 736)
+                self.assertEqual(meta['phase_deadlines_seconds'],
+                                 {'startup': 376, 'work': 740, 'recovery': 762, 'shutdown': 799,
+                                  'delete': 818, 'absence': 840, 'evidence': 952})
+                self.assertEqual(meta['total_seconds'], 960)
+                f.assert_cleanup(meta)
+
+    def test_observed_cold_launch_and_full_case_fit_without_extending_total(self):
+        f = Fixture(self)
+        f.backend.readback_elapsed = 136.074457
+        f.backend.test_seconds = 266.649191 + 240 + 30
+        rc, meta = f.run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(f.test_processes()[0].wait_calls, [570])
+        self.assertLess(f.clock.value, 736)
+        selected = plistlib.loads((f.out / 'selected.xctestrun').read_bytes())
+        target = selected['TestConfigurations'][0]['TestTargets'][0]
+        self.assertEqual(target['MaximumTestExecutionTimeAllowance'], 240)
+        self.assertEqual(target['OnlyTestIdentifiers'], [CASE])
+        self.assertEqual(target['SkipTestIdentifiers'], [])
+        f.assert_cleanup(meta)
+
+    def test_late_preparation_does_not_borrow_cleanup_or_start_a_test(self):
+        for setup in (376, 376.001, 740):
+            with self.subTest(setup=setup):
+                f = Fixture(self)
+                f.backend.readback_elapsed = setup
+                rc, meta = f.run()
+                self.assertEqual(rc, 1)
+                self.assertEqual(f.test_processes(), [])
+                f.assert_cleanup(meta)
+
+    def test_elapsed_time_before_spawn_rechecks_minimum_admission(self):
+        f = Fixture(self)
+        f.backend.readback_elapsed = 136
+        original = f.module.Run.persist
+        def persist(run):
+            original(run)
+            if run.meta['commands'] and 'test-without-building' in run.meta['commands'][-1]['args']:
+                f.clock.value = 376.001
+        with mock.patch.object(f.module.Run, 'persist', persist):
+            rc, meta = f.run()
+        self.assertEqual(rc, 1)
+        self.assertEqual(f.test_processes(), [])
+        self.assertIn('No minimum XCTest/stop budget before spawn', '\n'.join(meta['failures']))
+        f.assert_cleanup(meta)
+
+    def test_spawn_and_persist_time_cannot_renew_the_command_deadline(self):
+        for stage in ('spawn', 'persist'):
+            for setup, expected in ((136, 560), (340, 386)):
+                with self.subTest(stage=stage, setup=setup):
+                    f = Fixture(self)
+                    f.backend.readback_elapsed = setup
+                    original_spawn, original_persist = f.backend.popen, f.module.Run.persist
+                    charged = False
+                    def spawn(args, **kwargs):
+                        proc = original_spawn(args, **kwargs)
+                        if stage == 'spawn' and proc.step == 'test':
+                            f.clock.value += 10
+                        return proc
+                    def persist(run):
+                        nonlocal charged
+                        original_persist(run)
+                        if stage == 'persist' and not charged and run.meta['commands']:
+                            item = run.meta['commands'][-1]
+                            if 'test-without-building' in item['args'] and 'owned_process_group' in item:
+                                f.clock.value += 10
+                                charged = True
+                    with mock.patch.object(subprocess, 'Popen', spawn), \
+                         mock.patch.object(f.module.Run, 'persist', persist):
+                        rc, meta = f.run()
+                    self.assertEqual(rc, 0)
+                    self.assertEqual(f.test_processes()[0].wait_calls, [expected])
+                    command = next(c for c in meta['commands'] if 'test-without-building' in c['args'])
+                    self.assertEqual(command['command_deadline_monotonic'], setup + expected + 10)
+                    self.assertLessEqual(command['command_deadline_monotonic'], 736)
+                    f.assert_cleanup(meta)
+
+    def test_maximum_and_clipped_hangs_still_stop_and_clean_without_retry(self):
+        for setup, budget in ((136, 570), (372, 364)):
+            with self.subTest(setup=setup):
+                f = Fixture(self)
+                f.backend.readback_elapsed = setup
+                f.backend.test_seconds = budget + 0.001
+                rc, meta = f.run()
+                self.assertEqual(rc, 1)
+                self.assertIn('TimeoutExpired', '\n'.join(meta['failures']))
+                self.assertEqual(len(f.test_processes()), 1)
+                proc = f.test_processes()[0]
+                self.assertEqual(proc.wait_calls, [budget])
+                self.assertIn((proc.pid, signal.SIGTERM), f.backend.signals)
+                self.assertFalse(proc.group_present)
+                self.assertLess(f.clock.value, 740)
+                self.assertFalse(meta['retry'])
+                f.assert_cleanup(meta)
+
+    def test_extra_launch_headroom_cannot_hide_an_xctest_case_failure(self):
+        f = Fixture(self)
+        f.backend.readback_elapsed = 136
+        f.backend.test_seconds = 500
+        f.backend.summary = {'passedTests': 0, 'failedTests': 1, 'skippedTests': 0, 'totalTestCount': 1}
+        f.backend.nodes = [{'nodeType': 'Test Case', 'nodeIdentifier': CASE, 'result': 'Failed'}]
+        rc, meta = f.run()
+        self.assertEqual(rc, 1)
+        self.assertEqual(f.test_processes()[0].wait_calls, [570])
+        self.assertTrue(meta['failures'])
+        f.assert_cleanup(meta)
 
 
 class ScriptedStop:

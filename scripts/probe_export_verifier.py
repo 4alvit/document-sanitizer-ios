@@ -8,6 +8,9 @@ Generated ImageIO EXIF is allowed only for matching dimensions and sRGB.
 """
 from __future__ import annotations
 
+if not __debug__:
+    raise SystemExit("Python assertions must be enabled")
+
 import argparse
 import json
 from pathlib import Path
@@ -236,9 +239,12 @@ def build_fixtures(root: Path) -> list[dict]:
     assert "SYNTHETIC ORIGINAL TEXT" in PdfReader(root / "pdf_extractable_text.pdf").pages[0].extract_text()
     assert b"/Filespec" in (root / "pdf_orphan_filespec.pdf").read_bytes()
     assert b"/EmbeddedFile" in (root / "pdf_orphan_filespec.pdf").read_bytes()
-    assert Image.open(root / "jpg_exif_gps.jpg").getexif().get_ifd(34853)
-    assert Image.open(root / "jpeg_xmp_metadata.jpg").info.get("xmp")
-    assert Image.open(root / "jpeg_comment.jpg").info.get("comment")
+    with Image.open(root / "jpg_exif_gps.jpg") as image:
+        assert image.getexif().get_ifd(34853)
+    with Image.open(root / "jpeg_xmp_metadata.jpg") as image:
+        assert image.info.get("xmp")
+    with Image.open(root / "jpeg_comment.jpg") as image:
+        assert image.info.get("comment")
     with Image.open(root / "valid_png_imageio_technical_exif.png") as technical:
         assert set(technical.info) == {"exif", "srgb"} and technical.info["srgb"] == 0
         assert set(technical.getexif()) == {34665}

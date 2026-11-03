@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """One bounded same-host native StoreKit invocation; no build, account sign-in or retry."""
+
+if not __debug__:
+    raise SystemExit("Python assertions must be enabled")
 from contextlib import contextmanager
 import datetime as dt
 import copy, hashlib, importlib.util, json, os, plistlib, re, shutil, signal, stat, subprocess, sys, time, uuid
@@ -140,7 +143,9 @@ def bind_unit_test_host(products,host,unit,output,check):
  encoded=plistlib.dumps(bound);assert len(encoded)<=1024*1024 and b'__TESTROOT__' not in encoded
  check()
  with output.open('xb') as stream:
-  check();assert stream.write(encoded)==len(encoded);check();stream.flush();check();os.fsync(stream.fileno());check()
+  check();written=stream.write(encoded)
+  if written!=len(encoded):raise OSError('short configuration write')
+  check();stream.flush();check();os.fsync(stream.fileno());check()
  return {'original_path':str(original),'original_sha256':hashlib.sha256(raw).hexdigest(),'bound_path':str(output),
   'bound_sha256':hashlib.sha256(encoded).hexdigest(),'host':str(host),'unit_bundle':str(unit),
   'host_marker':{NATIVE_HOST_MARKER:'1'},'selected_cases':sorted(CASES),'default_case_seconds':120,'maximum_case_seconds':180,
@@ -185,7 +190,9 @@ def write_small(path,value,start,*,deadline=None):
  check()
  raw=(json.dumps(value,indent=2)+'\n').encode();check();assert len(raw)<=1024*1024
  with path.open('xb') as stream:
-  check();assert stream.write(raw)==len(raw);check()
+  check();written=stream.write(raw)
+  if written!=len(raw):raise OSError('short receipt write')
+  check()
   stream.flush();check();os.fsync(stream.fileno());check()
  check()
 
@@ -377,12 +384,88 @@ def native_test_end(run,now):
  assert run.remaining()>=TEST_ADMISSION,'300s XCTest and final verification admission unavailable'
  return min(now+300,run.start+TEST_BODY_END)
 
+def native_session_milestones(scope,check):
+ # Diagnostic only: existing closed files, fixed milestone types, no raw lines,
+ # paths, launch options or environment. This never grants test acceptance.
+ markers=(('Beginning test session ','session_started'),
+          ('Test runner session acquired connection.','runner_connected'),
+          (': Installing app at path:','app_install_requested'),
+          (': Installed app at path:','app_installed'),
+          (': Launching app with identifier:','app_launch_requested'))
+ entries=0;sessions=[];total=0
+ flags=os.O_RDONLY|os.O_NOFOLLOW|os.O_DIRECTORY
+ def visit(directory,depth):
+  nonlocal entries,total
+  check()
+  if depth>12:raise ValueError('staging depth cap')
+  with os.scandir(directory) as children:
+   for entry in children:
+    check();entries+=1
+    if entries>128:raise ValueError('staging entry cap')
+    before=entry.stat(follow_symlinks=False)
+    if stat.S_ISLNK(before.st_mode):raise ValueError('staging symlink')
+    if stat.S_ISDIR(before.st_mode):
+     child=os.open(entry.name,flags,dir_fd=directory)
+     try:
+      opened=os.fstat(child)
+      if (opened.st_dev,opened.st_ino)!=(before.st_dev,before.st_ino):raise ValueError('staging directory changed')
+      visit(child,depth+1)
+     finally:os.close(child)
+     continue
+    if not (entry.name.startswith('Session-') and entry.name.endswith('.log')):continue
+    if not stat.S_ISREG(before.st_mode):raise ValueError('non-regular session log')
+    if len(sessions)>=4 or before.st_size>256*1024 or total+before.st_size>1024*1024:
+     raise ValueError('session byte/file cap')
+    check();fd=os.open(entry.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
+    with os.fdopen(fd,'rb') as stream:
+     identity=lambda s:(s.st_dev,s.st_ino,s.st_mode,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
+     if identity(os.fstat(stream.fileno()))!=identity(before):raise ValueError('session changed before read')
+     check();raw=stream.read(before.st_size+1);check()
+     if len(raw)!=before.st_size or identity(os.fstat(stream.fileno()))!=identity(before):
+      raise ValueError('session changed during read')
+    total+=len(raw);events=[]
+    for line in raw.decode('utf-8',errors='replace').splitlines():
+     check()
+     match=re.match(r'^(\d{2}:\d{2}:\d{2}\.\d{3}) xcodebuild\[\d+:\d+\] (.*)$',line)
+     if not match:continue
+     try:dt.time.fromisoformat(match[1])
+     except ValueError:continue
+     for token,kind in markers:
+      if token in match[2]:
+       if len(events)>=32:raise ValueError('session milestone cap')
+       events.append({'time':match[1],'kind':kind});break
+    sessions.append({'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw),'milestones':events})
+    check()
+ check();opened=[]
+ try:
+  opened.append(os.open(scope,flags))
+  for name in ('result.xcresult','Staging'):
+   check();opened.append(os.open(name,flags,dir_fd=opened[-1]))
+  visit(opened[-1],0)
+ except FileNotFoundError:
+  return {'status':'missing_staging','sessions':[]}
+ finally:
+  for fd in reversed(opened):os.close(fd)
+ return {'status':'observed','sessions':sessions}
+
+def record_native_failure_progress(run,scope,check):
+ result={'diagnostic_only':True,'observation':'after_test_stop_and_device_cleanup_attempts',
+         'stdout_markers':run.meta.get('native_failure_markers',{})}
+ end=time.monotonic()+2
+ def bounded_check():
+  check()
+  if time.monotonic()>=end:raise TimeoutError('diagnostic read deadline')
+ try:result.update(native_session_milestones(scope,bounded_check))
+ except BaseException as error:result.update(status='unavailable',collection_error=safe_failure(error))
+ run.meta['native_failure_progress']=result
+
 def worker(start,context):
  b,e,l=load('window'),load('evidence'),load('lifecycle')
  l.OUT=SCOPE;l.ROOT=ROOT;l.CONFIGURATION='Debug'
  run=l.Run();run.start=start;run.end=STARTUP_END
  run.meta.update(installation_contract={'installer':'xcodebuild test-without-building','explicit_simctl_install':False,'prelaunch_installed_snapshot':False,'compiled_before':'compiled-host-before.json','first_installed_snapshot':'installed-during.json','first_snapshot_trigger':'actual admitted XCTest case start','after_snapshot':'installed-after.json','after_comparison':'exact first installed container path and full inventory'},native_phase_deadlines_seconds=dict(NATIVE_PHASES),owner_worker_pid=os.getpid(),head=context['head'],binary_kind='same-host existing Debug application and hosted unit-test products',build_configuration='Debug',build_scheme='CleanSend',test_plan='CleanSend',native_storekit_tests=0,native_storekit_selected_cases=sorted(CASES),job_admission=context['job_admission'],context_sha256=sha(SCOPE/'context.json'))
  resources=Resources(start);uid=None;failures=[];sources={};expected=None;installed_baseline=None;host=ROOT/'.derivedData/Build/Products/Debug-iphonesimulator/CleanSend.app';during=False
+ inert_host_observed=False;log_read=0
  def interrupted(*_):
   if run.meta.get('cleanup_phase'):return
   raise InterruptedError('SIGTERM')
@@ -487,6 +570,9 @@ def worker(start,context):
    run.meta['compiled_host_unchanged']=True
  except BaseException as error:failures.append(safe_failure(error))
  finally:
+  if failures:
+   run.meta['native_failure_markers']={'inert_host_observed':inert_host_observed,
+       'first_case_start_observed':run.meta.get('first_started_native_case'),'log_bytes_examined':log_read}
   mark_cleanup(run,start,failures,l)
   run.end=l.RECOVERY_END
   if not uid and run.meta.get('owned_device_name'):
@@ -510,6 +596,10 @@ def worker(start,context):
    run.meta['cleanup']=cleanup
    run.persist()
   run.end=EVIDENCE_END
+  if failures:
+   def progress_deadline():
+    if time.monotonic()>=start+EVIDENCE_END:raise TimeoutError('original native evidence deadline')
+   record_native_failure_progress(run,SCOPE,progress_deadline)
   try:
    assert (SCOPE/'result.xcresult').is_dir()
    for kind in ['summary','tests']:
