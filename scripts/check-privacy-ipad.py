@@ -37,16 +37,18 @@ CASE = 'PrivacySupportUITests/testRussianOfflineInformationAtSystemAX5OnLandscap
 AX5 = 'accessibility-extra-extra-extra-large'
 # Cold hosted AX5 requests can exhaust 30s after bootstatus succeeds.
 # Each finite 60s cap is clipped to the original work deadline while preserving
-# the full 360s XCTest command plus 4s stop reservation.
+# the minimum 360s XCTest command window plus 4s stop reservation.
 AX5_SET_LIMIT, AX5_READ_LIMIT = 60, 60
-# Reserve launch and result completion around the unchanged240s selected case.
-# Planning allowances90+240+30 share one finite command cap, not renewed phases.
-# This transfers60s from startup; original work/cleanup/evidence endpoints remain.
-# Run.command rechecks the full360+4 admission immediately before spawning.
-XCTEST_COMMAND_LIMIT = 360
+# Unused preparation time may cover a cold XCTest launch. The planned maximum
+# is 300 launch + 240 selected case + 30 completion, not separate timed phases.
+# Run.command clips this cap to remaining work minus its unchanged 4s stop
+# reserve. Late preparation still admits only the original minimum 360s window;
+# no command or observed log event renews the work/cleanup/evidence deadlines.
+XCTEST_COMMAND_LIMIT = 570
+XCTEST_MINIMUM_WINDOW = 360
 TOTAL = 960
 WORK_END = 740
-TEST_ADMISSION = XCTEST_COMMAND_LIMIT + 4
+TEST_ADMISSION = XCTEST_MINIMUM_WINDOW + 4
 STARTUP_END = WORK_END - TEST_ADMISSION
 READINESS_LIMIT = 300
 RECOVERY_END, SHUTDOWN_END, DELETE_END, CLEANUP_END = 762, 799, 818, 840
@@ -274,7 +276,7 @@ class Run:
                         if allowance <= 0:
                             raise TimeoutError('No phase budget before ' + name)
                         if command_args[:2] == ['xcodebuild', 'test-without-building']:
-                            assert phase_remaining >= TEST_ADMISSION, 'No full XCTest/stop budget before spawn'
+                            assert phase_remaining >= TEST_ADMISSION, 'No minimum XCTest/stop budget before spawn'
                         command_end = spawn_time + allowance
                         item.update(timeout_seconds=allowance, command_deadline_monotonic=command_end)
                         proc = subprocess.Popen(item['args'], cwd=ROOT, env=ENV, stdout=log,
@@ -742,7 +744,7 @@ def worker():
         run.persist()
         run.check()
         run.end = WORK_END
-        assert run.remaining() >= TEST_ADMISSION, 'No full XCTest/stop budget left; do not start XCTest'
+        assert run.remaining() >= TEST_ADMISSION, 'No minimum XCTest/stop budget left; do not start XCTest'
         run.meta['xcodebuild_returncode'] = run.command(
             ['xcodebuild', 'test-without-building', '-xctestrun', config,
              '-destination', 'platform=iOS Simulator,id=' + uid, '-parallel-testing-enabled', 'NO',
