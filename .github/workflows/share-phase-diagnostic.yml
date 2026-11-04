@@ -1,6 +1,6 @@
 {
   "name": "One-shot Share phase diagnostic",
-  "on": {"push": {"branches": ["diagnostics/sanitizer14-share-phase-settings"]}},
+  "on": {"push": {"branches": ["diagnostics/sanitizer14-share-phase-timing"]}},
   "permissions": {"contents": "read"},
   "concurrency": {"group": "sanitizer14-share-phase", "cancel-in-progress": false},
   "jobs": {
@@ -14,6 +14,8 @@
       },
       "steps": [
         {"uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "with": {"persist-credentials": false}},
+        {"name": "Validate bounded diagnostic controls", "timeout-minutes": 2,
+         "run": "python3 -B -m unittest scripts/test_release_smoke.py scripts/test_share_phase_diagnostic.py scripts/test_share_lifecycle_timing.py scripts/test_share_phase_trace.py"},
         {"name": "Build source-bound instrumented Release locally", "id": "prepare", "timeout-minutes": 8,
          "run": "python3 -B scripts/release_smoke/diagnostic.py"},
         {"name": "Keep the original Share verdict and capture phases", "timeout-minutes": 16,

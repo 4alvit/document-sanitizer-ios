@@ -170,6 +170,26 @@ def failure_detail(error):
  return {'type':type(error).__name__,'frames':frames[-4:]}
 
 
+def retain_worker_failure(intent,meta):
+ # Copy only the existing bounded, text-free worker diagnosis. The supervisor's
+ # own exit/error/status remains authoritative and is never replaced here.
+ detail=meta.get('primary_error')
+ if detail is None:return
+ if (not isinstance(detail,dict) or set(detail)!={'type','frames'}
+     or not isinstance(detail['type'],str) or not 0<len(detail['type'])<=128
+     or not isinstance(detail['frames'],list) or len(detail['frames'])>4):
+  intent['worker_primary_error_unavailable']=True;return
+ frames=[]
+ for frame in detail['frames']:
+  if (not isinstance(frame,dict) or set(frame)!={'file','function','line'}
+      or any(not isinstance(frame[k],str) or not 0<len(frame[k])<=256 for k in ('file','function'))
+      or '/' in frame['file'] or '\\' in frame['file']
+      or type(frame['line']) is not int or not 0<frame['line']<10000000):
+   intent['worker_primary_error_unavailable']=True;return
+  frames.append(dict(frame))
+ intent['worker_primary_error']={'type':detail['type'],'frames':frames}
+
+
 def save_installed_runner(path,value,check):
  check();raw=(json.dumps(value,indent=2)+'\n').encode();check();assert len(raw)<=1024*1024
  with path.open('xb') as stream:
@@ -348,7 +368,7 @@ def worker(start,grant):
  run=l.Run();run.start=start
  run.meta.update(owner_worker_pid=os.getpid(),binary_kind='exact verified shipped adhoc simulator ZIP; same-run provenance-bound Release UI runner',build_configuration='Release',build_scheme=None,test_plan=None,context_sha256=sha(Path(sys.argv[1])),head=HEAD)
  phase_trace=grant.get('mode')=='share-phase-trace-v1'
- if phase_trace:run.meta.update(binary_kind='diagnostic-only instrumented Release; not release acceptance',release_qualification=False)
+ if phase_trace:run.meta.update(binary_kind='diagnostic-only instrumented Release; not release acceptance',release_qualification=False,diagnostic_lifecycle_timing=True)
  resources=Resources(start);uid=None;failures=[];sampler=None;expected=None;installed_runner_baseline=None;observation_roots=None
  def interrupted(*_):
   if run.meta.get('cleanup_phase'):return
@@ -705,6 +725,7 @@ def supervise(grant_path,grant):
    except BaseException as error:intent.update(status='failed',worker_group_closure_error=repr(error),owned_group_absent=False)
   try:
    meta=json.loads(final_read(SCOPE/'metadata.json',start+LIMITS.TOTAL))
+   if grant.get('mode')=='share-phase-trace-v1':retain_worker_failure(intent,meta)
    intent['owned_command_groups']=aggregate_command_groups(meta,start)
    if not intent['owned_command_groups']['all_absent']:intent['status']='failed'
   except BaseException as error:intent.update(status='failed',owned_command_groups={'all_absent':False,'error':repr(error)})

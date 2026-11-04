@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -106,6 +107,15 @@ def runtime_context():
     return context
 
 
+def diagnostic_stamp(slot, key):
+    """Optional numeric observation; a failed sample cannot prevent cleanup."""
+    if slot is not None:
+        try:
+            slot[key] = time.monotonic()
+        except BaseException:
+            slot['clock_failed'] = True
+
+
 class Run:
     def __init__(self):
         self.start = time.monotonic()
@@ -141,6 +151,14 @@ class Run:
         if allowance <= 0:
             raise TimeoutError('No phase budget before ' + name)
         item = {'args': command_args, 'started_at': now(), 'timeout_seconds': allowance}
+        timing = None
+        if (self.meta.get('diagnostic_lifecycle_timing') is True
+                and len(command_args) == 5
+                and command_args[:3] == ['xcrun', 'simctl', 'bootstatus']
+                and command_args[-1] == '-b'):
+            timing = item['bootstatus_timing'] = {
+                'schema': 1, 'python_version': list(sys.version_info[:3])}
+            diagnostic_stamp(timing, 'prepared')
         if observe:
             item['runtime_observation'] = {'prepared_monotonic': time.monotonic(),
                                            'stdout_stderr': 'same regular file',
@@ -177,6 +195,7 @@ class Run:
                             raise TimeoutError('No phase budget before ' + name)
                         command_end = spawn_time + allowance
                         item.update(timeout_seconds=allowance, command_deadline_monotonic=command_end)
+                        diagnostic_stamp(timing, 'spawn_before')
                         proc = subprocess.Popen(item['args'], cwd=ROOT, env=ENV, stdout=log,
                                                 stderr=subprocess.STDOUT, start_new_session=True)
                     except BaseException as error:
@@ -189,6 +208,7 @@ class Run:
                                 failed(observation_error, 'spawn_observation')
                     else:
                         item['owned_process_group'] = proc.pid
+                        diagnostic_stamp(timing, 'spawn_after')
                         try:
                             if observe:
                                 item['runtime_observation']['spawn_returned_monotonic'] = time.monotonic()
@@ -200,6 +220,7 @@ class Run:
                                 if allowance <= 0:
                                     raise TimeoutError('No phase budget before wait ' + name)
                                 item['wait_timeout_seconds'] = allowance
+                                diagnostic_stamp(timing, 'wait_before')
                                 proc.wait(timeout=allowance)
                                 assert self.remaining() > 0, 'Original phase deadline after command'
                             except BaseException as error:
@@ -209,6 +230,7 @@ class Run:
                                 if observe:
                                     item['runtime_observation']['wait_error'] = type(error).__name__
                             finally:
+                                diagnostic_stamp(timing, 'wait_after')
                                 try:
                                     if observe:
                                         item['runtime_observation']['wait_finished_monotonic'] = time.monotonic()
@@ -274,6 +296,11 @@ def stop_group(proc, record=None):
     record = record if record is not None else {}
     record['owned_group_absent'] = False
     start = time.monotonic()
+    timing = record.get('bootstatus_timing')
+    cleanup_timing = None
+    if timing is not None:
+        cleanup_timing = timing['cleanup'] = {'started': start, 'deadline': start + 3,
+                                               'signal_decisions': []}
     interrupted = None
     observation = record.get('runtime_observation')
     if observation is not None:
@@ -312,20 +339,32 @@ def stop_group(proc, record=None):
         operation = 'leader_poll'
         cleanup['probe_count'] = min(counter_limit, cleanup['probe_count'] + 1)
         last = cleanup['last_probe'] = {}
+        probe_timing = None
+        if cleanup_timing is not None:
+            probe_timing = {}
+            cleanup_timing.setdefault('first_probe', probe_timing)
+            cleanup_timing['last_probe'] = probe_timing
         if observation is not None:
             observation['stop_probe_count'] = cleanup['probe_count']
             observation['last_stop_probe'] = last
         try:
-            reaped = proc.poll() is not None
+            diagnostic_stamp(probe_timing, 'poll_before')
+            try:
+                reaped = proc.poll() is not None
+            finally:
+                diagnostic_stamp(probe_timing, 'poll_after')
             last['leader_reaped'] = reaped
             operation = 'group_probe'
             try:
+                diagnostic_stamp(probe_timing, 'group_before')
                 os.killpg(proc.pid, 0)
                 last['group'] = 'PRESENT'
             except ProcessLookupError:
                 last['group'] = 'ABSENT'
                 record['owned_group_absent'] = reaped
                 return reaped
+            finally:
+                diagnostic_stamp(probe_timing, 'group_after')
         except BaseException as error:
             last.update(error=type(error).__name__, operation=operation)
             note(error, operation)
@@ -338,7 +377,12 @@ def stop_group(proc, record=None):
     if stopped():
         return completed()
     for sig, offset in ((signal.SIGTERM, 2), (signal.SIGKILL, 3)):
-        if time.monotonic() >= start + 3:
+        checked_at = time.monotonic()
+        if cleanup_timing is not None:
+            cleanup_timing['signal_decisions'].append({
+                'signal': int(sig), 'checked_at': checked_at,
+                'reserve_exhausted': checked_at >= start + 3})
+        if checked_at >= start + 3:
             break
         event = None
         try:

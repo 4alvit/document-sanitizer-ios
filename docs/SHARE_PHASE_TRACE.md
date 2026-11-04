@@ -67,7 +67,7 @@ replace Close with the empty remote container.
 ## One causal reproduction
 
 The isolated `share-phase-diagnostic.yml` workflow accepts only the **creation**
-push of `diagnostics/sanitizer14-share-phase-settings`, on attempt 1. Its Python guard also
+push of `diagnostics/sanitizer14-share-phase-timing`, on attempt 1. Its Python guard also
 checks the exact repository, workflow, branch, event before/after SHA, and current
 checkout. Updating that branch or rerunning a job cannot silently run another
 experiment. Create it only after reviewing the exact source and confirming the
@@ -124,3 +124,22 @@ queue lateness, concurrency, duration/event/file caps, lifecycle termination,
 invalid clocks, exclusive file creation and symlink refusal. A separate optimized
 build confirms the trace is compiled out without the condition. These tests do
 not claim native Share Sheet acceptance.
+
+### Pre-test lifecycle diagnosis
+
+The corrected metadata adapter built successfully on run `41805980308`, but the
+native test never ran: `simctl bootstatus` exceeded its unchanged 120-second
+command budget. Its output is not proof of process exit. The first cleanup probe
+reported an unreaped leader and a present group; the three-second cleanup reserve
+was exhausted before a signal could be attempted. The later supervisor found all
+process groups absent, but simulator deletion was not verified. The Share Sheet
+latency cause therefore remains unknown.
+
+Only the diagnostic grant enables numeric `bootstatus_timing`: preparation, spawn
+and wait boundaries, Python version numbers, first/last cleanup probe boundaries,
+and at most two signal-decision timestamps. A failed optional timestamp is marked
+without preventing the existing cleanup or replacing the original failure. No
+extra native query, retry, timeout increase, or stdout-based success is introduced.
+Ordinary runs perform no extra clock or process probes. The diagnostic supervisor
+may retain the worker's existing bounded error type/stack alongside its own exit
+error; this does not change its verdict or make the run release evidence.
