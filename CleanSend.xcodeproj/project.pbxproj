@@ -44,6 +44,7 @@
 		BAA6F7D5B0CB79E647147745 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 20A11EAF0A9C3AA4435FDCA2 /* PrivacyInfo.xcprivacy */; };
 		C94431F533B512B2EB1146DE /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F0F141D2379E5AB84525F6 /* Localization.swift */; };
 		D28BC7C8FB7CB6EB95EDC1EC /* PrivacySupportUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 895E45E36DBDC2BA5B62A722 /* PrivacySupportUITests.swift */; };
+		D44AD53EC6EE9EFC673460A8 /* SharePhaseTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CB741AE5104820DBDC6AE40 /* SharePhaseTrace.swift */; };
 		D4A36D9E378D64BE759515FA /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F0F141D2379E5AB84525F6 /* Localization.swift */; };
 		DC02C78BC3D1083EADCFF0E1 /* ImportAuthorizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6B5123CA6C0DF248348C8AD /* ImportAuthorizationTests.swift */; };
 		DCDB974BCC46921DC8CCBD2E /* ShareExtensionEntryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F28A35220593E5DAD914DB2 /* ShareExtensionEntryTests.swift */; };
@@ -122,6 +123,7 @@
 		4F28A35220593E5DAD914DB2 /* ShareExtensionEntryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareExtensionEntryTests.swift; sourceTree = "<group>"; };
 		5281E2A1430C9C03C28065A3 /* MaskPresetStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MaskPresetStore.swift; sourceTree = "<group>"; };
 		5C995CA1EE1069798ED45C40 /* ru */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ru; path = ru.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		5CB741AE5104820DBDC6AE40 /* SharePhaseTrace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharePhaseTrace.swift; sourceTree = "<group>"; };
 		5DB2E89D9FF08697759753DD /* CleanSend.storekit */ = {isa = PBXFileReference; path = CleanSend.storekit; sourceTree = "<group>"; };
 		637B2FB75D369E0CB0932D8F /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 		64013B171A75914F76625D4F /* PresetUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresetUITests.swift; sourceTree = "<group>"; };
@@ -281,6 +283,7 @@
 				4B7B823A6CBA9D2A48584E7A /* ProView.swift */,
 				68A8F3135D2EED158C4B68B1 /* ReviewView.swift */,
 				43E17E73DC14D2861FA9DF14 /* SharedInbox.swift */,
+				5CB741AE5104820DBDC6AE40 /* SharePhaseTrace.swift */,
 				0F8979100319BBA14D7019E5 /* StoreKitSource.swift */,
 				0194412E95A1C4AE569DDA81 /* Workspace.swift */,
 				C5C44C22C51D3DC5EE73B02C /* Resources */,
@@ -517,6 +520,7 @@
 				FA680BB70F754E2BF3ED3B0E /* ProStore.swift in Sources */,
 				F8CC789D662988F98B795355 /* ProView.swift in Sources */,
 				1799E80FD4387A50B53E07B8 /* ReviewView.swift in Sources */,
+				D44AD53EC6EE9EFC673460A8 /* SharePhaseTrace.swift in Sources */,
 				487F8A704317798E8CA0465F /* SharedInbox.swift in Sources */,
 				8BF198188B64673F3486B47B /* StoreKitSource.swift in Sources */,
 				877A98D37B563BD218C92F42 /* Workspace.swift in Sources */,

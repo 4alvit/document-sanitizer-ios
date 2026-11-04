@@ -79,7 +79,15 @@ struct ReviewView: View {
             }
             .sheet(item: $workspace.exported) { export in
                 ShareSheet(urls: export.urls) { workspace.cleanExport(export) }
-                    .onDisappear { workspace.cleanExport(export) }
+                    #if CLEANSEND_SHARE_TRACE && targetEnvironment(simulator)
+                    .onAppear { SharePhaseTrace.record(.appeared) }
+                    #endif
+                    .onDisappear {
+                        #if CLEANSEND_SHARE_TRACE && targetEnvironment(simulator)
+                        SharePhaseTrace.record(.disappeared)
+                        #endif
+                        workspace.cleanExport(export)
+                    }
             }
             .alert(L10n.text("Export could not complete"), isPresented: Binding(get: { workspace.errorMessage != nil }, set: { if !$0 { workspace.errorMessage = nil } })) {
                 Button(L10n.text("OK"), role: .cancel) { workspace.errorMessage = nil }
@@ -92,9 +100,24 @@ struct ShareSheet: UIViewControllerRepresentable {
     let urls: [URL]
     let completion: () -> Void
     func makeUIViewController(context: Context) -> UIActivityViewController {
+        #if CLEANSEND_SHARE_TRACE && targetEnvironment(simulator)
+        SharePhaseTrace.record(.controllerBegin)
+        #endif
         let controller = UIActivityViewController(activityItems: urls, applicationActivities: nil)
+        #if CLEANSEND_SHARE_TRACE && targetEnvironment(simulator)
+        SharePhaseTrace.record(.controllerInitialized)
+        SharePhaseTrace.record(.viewLoadBegin)
+        #endif
         controller.view.accessibilityIdentifier = "export-share-sheet"
-        controller.completionWithItemsHandler = { _, _, _, _ in DispatchQueue.main.async { completion() } }
+        #if CLEANSEND_SHARE_TRACE && targetEnvironment(simulator)
+        SharePhaseTrace.record(.viewLoaded)
+        #endif
+        controller.completionWithItemsHandler = { _, _, _, _ in
+            #if CLEANSEND_SHARE_TRACE && targetEnvironment(simulator)
+            SharePhaseTrace.record(.completion)
+            #endif
+            DispatchQueue.main.async { completion() }
+        }
         return controller
     }
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}

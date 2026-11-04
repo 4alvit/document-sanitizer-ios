@@ -20,7 +20,7 @@ def verify_runner(binding):
  assert actual==binding['runner_entries'],'runner content/mode/identity mismatch'
  return actual
 
-def prepare(app,developer,output,binding_path,template_path,head,tree,diagnostic=None):
+def prepare(app,developer,output,binding_path,template_path,head,tree,diagnostic=None,*,phase_trace=False):
  def stage(value):
   if diagnostic is not None:diagnostic['stage']=value
  stage('immutable_binding')
@@ -63,6 +63,10 @@ def prepare(app,developer,output,binding_path,template_path,head,tree,diagnostic
  frameworks=[str(runner/'Frameworks'),str(framework)] if (runner/'Frameworks').is_dir() else [str(framework)]
  target['TestingEnvironmentVariables'].update(DYLD_FRAMEWORK_PATH=':'.join(frameworks),DYLD_LIBRARY_PATH=str(libraries),__XCODE_BUILT_PRODUCTS_DIR_PATHS=str(app.parent)+':'+str(runner.parent),__XPC_DYLD_FRAMEWORK_PATH=':'.join(frameworks),__XPC_DYLD_LIBRARY_PATH=str(libraries))
  target.update(OnlyTestIdentifiers=[CASE],SkipTestIdentifiers=[],TestLanguage='en',TestRegion='US',TestTimeoutsEnabled=True,DefaultTestExecutionTimeAllowance=120,MaximumTestExecutionTimeAllowance=240,UserAttachmentLifetime='keepAlways',SystemAttachmentLifetime='keepAlways',UITargetAppEnvironmentVariables={},UITargetAppCommandLineArguments=[],DependentProductPaths=[str(app),str(app/'PlugIns/CleanSendShare.appex'),str(runner),str(runner/'PlugIns/CleanSendUITests.xctest')])
+ if phase_trace:
+  # The separately validated diagnostic context is the only caller opting in.
+  assert type(phase_trace) is bool
+  target.setdefault('EnvironmentVariables',{})['CLEANSEND_SHARE_TRACE']='1'
  stage('dependent_products')
  assert all(Path(p).exists() for p in target['DependentProductPaths'])
  data=resolve(data);data.pop('CodeCoverageBuildableInfos',None);data['TestConfigurations'][0]['TestTargets']=[target]

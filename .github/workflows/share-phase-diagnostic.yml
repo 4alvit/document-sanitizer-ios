@@ -1,0 +1,35 @@
+{
+  "name": "One-shot Share phase diagnostic",
+  "on": {"push": {"branches": ["diagnostics/sanitizer14-share-phase"]}},
+  "permissions": {"contents": "read"},
+  "concurrency": {"group": "sanitizer14-share-phase", "cancel-in-progress": false},
+  "jobs": {
+    "diagnostic": {
+      "if": "github.event.created && !github.event.deleted && github.run_attempt == 1",
+      "runs-on": "macos-15",
+      "timeout-minutes": 30,
+      "env": {
+        "DEVELOPER_DIR": "/Applications/Xcode_16.4.app/Contents/Developer",
+        "EXPECTED_HEAD_SHA": "${{ github.sha }}"
+      },
+      "steps": [
+        {"uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "with": {"persist-credentials": false}},
+        {"name": "Build source-bound instrumented Release locally", "id": "prepare", "timeout-minutes": 8,
+         "run": "python3 -B scripts/release_smoke/diagnostic.py"},
+        {"name": "Keep the original Share verdict and capture phases", "timeout-minutes": 16,
+         "env": {"RELEASE_SMOKE_CONTEXT_SHA": "${{ steps.prepare.outputs.context_sha256 }}",
+                 "RELEASE_SMOKE_CONTEXT": "${{ steps.prepare.outputs.context }}"},
+         "run": "python3 -B scripts/release_smoke/run.py \"$RELEASE_SMOKE_CONTEXT\""},
+        {"name": "Remove owned diagnostic products after process and device cleanup", "if": "always()", "timeout-minutes": 1,
+         "run": "python3 -B scripts/release_smoke/diagnostic.py cleanup"},
+        {"name": "Save diagnostic evidence only", "if": "always()", "timeout-minutes": 3,
+         "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+         "with": {
+           "name": "share-phase-diagnostic-${{ github.run_id }}-attempt-${{ github.run_attempt }}",
+           "if-no-files-found": "error", "retention-days": 7,
+           "path": "${{ runner.temp }}/redact-share-phase-*-attempt-1/*.json\n${{ runner.temp }}/redact-share-phase-*-attempt-1/*.log\n${{ runner.temp }}/redact-share-phase-*-attempt-1/native/*.json\n${{ runner.temp }}/redact-share-phase-*-attempt-1/native/*.jsonl\n${{ runner.temp }}/redact-share-phase-*-attempt-1/native/*.log\n${{ runner.temp }}/redact-share-phase-*-attempt-1/native/config/*.json\n${{ runner.temp }}/redact-share-phase-*-attempt-1/native/attachments/*.png\n${{ runner.temp }}/redact-share-phase-*-attempt-1/native/attachments/*.txt\n${{ runner.temp }}/redact-share-phase-*-attempt-1/native/attachments/*.json"
+         }}
+      ]
+    }
+  }
+}

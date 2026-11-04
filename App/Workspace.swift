@@ -410,6 +410,9 @@ final class Workspace: ObservableObject {
         let snapshot = pages
         let operation = begin(L10n.text("Writing clean copies…"))
         let directory = root.appendingPathComponent("export-\(UUID().uuidString)", isDirectory: true)
+        #if CLEANSEND_SHARE_TRACE && targetEnvironment(simulator)
+        SharePhaseTrace.begin()
+        #endif
         runningTask = Task {
             do {
                 let urls = try await offMain {
@@ -418,14 +421,26 @@ final class Workspace: ObservableObject {
                         let urls = try RasterExporter.export(pages: snapshot, format: format, to: directory)
                         for url in urls { try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path) }
                         try Task.checkCancellation()
+                        #if CLEANSEND_SHARE_TRACE && targetEnvironment(simulator)
+                        SharePhaseTrace.record(.workerComplete)
+                        #endif
                         return urls
                     } catch {
                         try? FileManager.default.removeItem(at: directory)
                         throw error
                     }
                 }
+                #if CLEANSEND_SHARE_TRACE && targetEnvironment(simulator)
+                SharePhaseTrace.record(.mainResume)
+                #endif
                 guard operationID == operation else { try? FileManager.default.removeItem(at: directory); return }
+                #if CLEANSEND_SHARE_TRACE && targetEnvironment(simulator)
+                SharePhaseTrace.record(.publicationBegin)
+                #endif
                 exported = ExportPacket(directory: directory, urls: urls); finish(operation)
+                #if CLEANSEND_SHARE_TRACE && targetEnvironment(simulator)
+                SharePhaseTrace.record(.publicationEnd)
+                #endif
             } catch { fail(error, operation) }
         }
     }

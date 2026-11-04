@@ -76,6 +76,11 @@ final class ShareExtensionEntryTests: XCTestCase {
             "Requires the largest system content size. Set CLEANSEND_TEST_CONTENT_SIZE=accessibility-extra-extra-extra-large and CLEANSEND_EXPECT_TEST_COUNT=3 with scripts/check-ios-tests.sh for this suite.")
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        #if CLEANSEND_SHARE_TRACE && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.environment["CLEANSEND_SHARE_TRACE"] == "1" {
+            app.launchEnvironment["CLEANSEND_SHARE_TRACE"] = "1"
+        }
+        #endif
         app.launch()
         guard app.buttons["sample-button"].waitForExistence(timeout: 10) else {
             XCTFail("The initial workspace did not become ready after launch.")
@@ -107,6 +112,11 @@ final class ShareExtensionEntryTests: XCTestCase {
     @MainActor
     private func waitForSystemShareSheet(in app: XCUIApplication) throws {
         let started = ProcessInfo.processInfo.systemUptime
+        #if CLEANSEND_SHARE_TRACE && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.environment["CLEANSEND_SHARE_TRACE"] == "1" {
+            FileHandle.standardOutput.write(Data("REDACT_SHARE_TRACE_WAIT uptime_us=\(UInt64(started * 1_000_000))\n".utf8))
+        }
+        #endif
         let ready = app.buttons["Close"].waitForExistence(timeout: 10)
         func record(_ phase: String, appeared: Bool) {
             let elapsed = ProcessInfo.processInfo.systemUptime - started

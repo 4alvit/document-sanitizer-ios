@@ -25,16 +25,26 @@ def load(name):
 LIMITS=load('bounded_lifecycle')
 
 def validate_grant(path):
- global CONTEXT,SCOPE,OWNED_ROOT,ASSETS,ZIP,BUNDLE,BINDING,TEMPLATE,ZIP_SHA,PAYLOAD_SHA,HEAD
+ global CONTEXT,SCOPE,OWNED_ROOT,ASSETS,ZIP,BUNDLE,BINDING,TEMPLATE,ZIP_SHA,PAYLOAD_SHA,HEAD,FLOOR
  if not __debug__:raise SystemExit('Python assertions must be enabled')
- assert os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('GITHUB_EVENT_NAME')=='pull_request'
+ assert os.environ.get('GITHUB_ACTIONS')=='true'
  assert os.uname().machine=='arm64','reviewed ARM host profile required'
  raw=path.read_bytes();assert len(raw)<=1024*1024 and hashlib.sha256(raw).hexdigest()==os.environ['RELEASE_SMOKE_CONTEXT_SHA']
  grant=json.loads(raw)
+ assert grant.get('mode') in (None,'share-phase-trace-v1')
+ phase_trace=grant.get('mode')=='share-phase-trace-v1'
+ if phase_trace:
+  load('diagnostic').validate(grant,os.environ)
+  FLOOR=16*2**30
+ else:
+  assert os.environ.get('GITHUB_EVENT_NAME')=='pull_request'
+  assert 'phase_trace' not in grant
+  FLOOR=12*2**30
  assert grant['host_architecture']==os.uname().machine=='arm64'
  assert grant['repository']==os.environ['GITHUB_REPOSITORY']=='4alvit/document-sanitizer-ios'
  assert grant['head']==os.environ['EXPECTED_HEAD_SHA'] and grant['run']==os.environ['GITHUB_RUN_ID'] and grant['attempt']==os.environ['GITHUB_RUN_ATTEMPT'] and grant['checkout']==os.environ['GITHUB_SHA']
- expected=Path(os.environ['RUNNER_TEMP'])/f"redact-package-smoke-{grant['run']}-attempt-{grant['attempt']}"
+ prefix='redact-share-phase' if phase_trace else 'redact-package-smoke'
+ expected=Path(os.environ['RUNNER_TEMP'])/f"{prefix}-{grant['run']}-attempt-{grant['attempt']}"
  assert Path(grant['base'])==expected and Path(grant['scope'])==expected/'native'
  assert grant['seconds']==LIMITS.TOTAL and grant['owned_cap_bytes']==CAP and grant['free_floor_bytes']==FLOOR
  assert grant['get_count']==0 and grant['native_worker_count']==1 and grant['retry_authorized'] is False
@@ -337,7 +347,9 @@ def worker(start,grant):
  l.OUT=SCOPE;l.ROOT=HERE;l.CONFIGURATION='Release'
  run=l.Run();run.start=start
  run.meta.update(owner_worker_pid=os.getpid(),binary_kind='exact verified shipped adhoc simulator ZIP; same-run provenance-bound Release UI runner',build_configuration='Release',build_scheme=None,test_plan=None,context_sha256=sha(Path(sys.argv[1])),head=HEAD)
- resources=Resources(start);uid=None;failures=[];sampler=None;expected=None;installed_runner_baseline=None
+ phase_trace=grant.get('mode')=='share-phase-trace-v1'
+ if phase_trace:run.meta.update(binary_kind='diagnostic-only instrumented Release; not release acceptance',release_qualification=False)
+ resources=Resources(start);uid=None;failures=[];sampler=None;expected=None;installed_runner_baseline=None;observation_roots=None
  def interrupted(*_):
   if run.meta.get('cleanup_phase'):return
   raise InterruptedError('SIGTERM')
@@ -386,7 +398,7 @@ def worker(start,grant):
   appinfo=plistlib.loads((BUNDLE/'Info.plist').read_bytes());assert version(appinfo['MinimumOSVersion'])<=version(grant['runtime_version'])
   run.meta['runtime']=runtime[0];run.meta['device_type']=device[0]
   run.meta['phase']='config.prepare';run.meta['config_preparation']={};run.persist()
-  c.prepare(BUNDLE,developer,SCOPE/'config',BINDING,TEMPLATE,HEAD,grant['tree'],run.meta['config_preparation'])
+  c.prepare(BUNDLE,developer,SCOPE/'config',BINDING,TEMPLATE,HEAD,grant['tree'],run.meta['config_preparation'],phase_trace=phase_trace)
   encoded=(SCOPE/'config/exact-package-share.xctestrun').read_bytes()
   assert b'storekit' not in encoded.lower() and b'commerce' not in encoded.lower(),'commerce configuration rejected'
   frozen=json.loads(BINDING.read_bytes())
@@ -414,6 +426,7 @@ def worker(start,grant):
   data=container('data','data-container.txt');group=container(GROUP,'group-container.txt')
   assert data!=group
   initial_roots=verify_observation_roots(data,group,resources.device,uid,b,resources.check)
+  if phase_trace:load('diagnostic').trace_read(data,b,resources.check,absent=True)
   run.meta['container_observation']={'before':initial_roots};run.persist()
   sampler=e.Observer(b,resources.check);sampler.started=start
   with (SCOPE/'container-events.jsonl').open('xb') as events:
@@ -478,6 +491,16 @@ def worker(start,grant):
  finally:
   mark_cleanup(run,start,failures,l)
   run.end=l.RECOVERY_END
+  if phase_trace and observation_roots is not None:
+   try:
+    check=lambda:resources.check(l.RECOVERY_END)
+    verify_observation_roots(data,group,resources.device,uid,b,check,baseline=observation_roots)
+    run.meta['phase_trace']=load('diagnostic').capture(data,SCOPE/'share-phase-trace.jsonl',b,check)
+    verify_observation_roots(data,group,resources.device,uid,b,check,baseline=observation_roots)
+    if run.meta['phase_trace']['status']=='unavailable':failures.append('phase trace unavailable')
+   except BaseException as error:
+    run.meta['phase_trace']={'status':'unavailable','error_type':type(error).__name__}
+    failures.append('phase trace unavailable')
   if not uid and run.meta.get('owned_device_name'):
    try:
     devices=json.loads(run.output(['xcrun','simctl','list','devices','--json'],'create-recovery.json'))['devices']
@@ -496,13 +519,16 @@ def worker(start,grant):
    run.persist()
   run.end=(LIMITS.TOTAL-8)
   try:
-   assert run.meta.get('xcodebuild_returncode')==0
+   if not phase_trace:assert run.meta.get('xcodebuild_returncode')==0
    for kind in ['summary','tests']:
     run.command(['xcrun','xcresulttool','get','test-results',kind,'--path',SCOPE/'result.xcresult','--format','json'],kind+'.json',15)
    summary=json.loads((SCOPE/'summary.json').read_bytes())
+   if phase_trace:
+    run.command(['xcrun','xcresulttool','export','attachments','--path',SCOPE/'result.xcresult','--output-path',SCOPE/'attachments'],'attachments-export.log',40)
+   assert run.meta.get('xcodebuild_returncode')==0
    assert tuple(summary.get(k) for k in ['passedTests','failedTests','skippedTests','totalTestCount'])==(1,0,0,1)
    assert 'testPDFReceivedByExtensionThenImported' in (SCOPE/'tests.json').read_text()
-   run.command(['xcrun','xcresulttool','export','attachments','--path',SCOPE/'result.xcresult','--output-path',SCOPE/'attachments'],'attachments-export.log',40)
+   if not phase_trace:run.command(['xcrun','xcresulttool','export','attachments','--path',SCOPE/'result.xcresult','--output-path',SCOPE/'attachments'],'attachments-export.log',40)
   except BaseException as error:failures.append('result evidence: '+repr(error))
   try:
    resources.check((LIMITS.TOTAL-8))
