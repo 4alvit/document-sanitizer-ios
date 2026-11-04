@@ -51,7 +51,7 @@ class SharePhaseTraceTests(unittest.TestCase):
             if path.name == "share-phase-diagnostic.yml":
                 # The exception remains isolated by semantics, not filename alone.
                 workflow = json.loads(path.read_text())
-                self.assertEqual(workflow["on"], {"push": {"branches": ["diagnostics/sanitizer14-share-phase"]}})
+                self.assertEqual(workflow["on"], {"push": {"branches": ["diagnostics/sanitizer14-share-phase-settings"]}})
                 self.assertEqual(workflow["permissions"], {"contents": "read"})
                 self.assertEqual(set(workflow["jobs"]), {"diagnostic"})
                 self.assertEqual(workflow["jobs"]["diagnostic"]["if"],

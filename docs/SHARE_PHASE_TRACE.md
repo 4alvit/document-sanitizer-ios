@@ -67,7 +67,7 @@ replace Close with the empty remote container.
 ## One causal reproduction
 
 The isolated `share-phase-diagnostic.yml` workflow accepts only the **creation**
-push of `diagnostics/sanitizer14-share-phase`, on attempt 1. Its Python guard also
+push of `diagnostics/sanitizer14-share-phase-settings`, on attempt 1. Its Python guard also
 checks the exact repository, workflow, branch, event before/after SHA, and current
 checkout. Updating that branch or rerunning a job cannot silently run another
 experiment. Create it only after reviewing the exact source and confirming the
@@ -76,6 +76,11 @@ a release.
 
 The preparation stage has a 420-second deadline and a 2-GiB owned-data cap,
 requires 16 GiB free plus its cap at admission, and runs one Release build.
+Settings-only queries omit `-testPlan`, which Xcode accepts only for testing;
+the actual build retains the test plan and selected test. Metadata commands
+capture stderr separately (at most 64 KiB), without mixing it into JSON stdout
+or replacing the original command failure.
+
 Resolved ordinary/diagnostic build settings must agree on optimization (`-O`),
 testability, coverage, architecture and SDK before compilation. Both compiled
 products must contain their diagnostic marker. No package is downloaded or

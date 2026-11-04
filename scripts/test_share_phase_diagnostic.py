@@ -9,7 +9,10 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import subprocess
 import tempfile
+import sys
+import time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -68,6 +71,102 @@ class DiagnosticControls(unittest.TestCase):
         self.assertFalse(any('SWIFT_OPTIMIZATION_LEVEL=' in v for v in args))
         self.assertNotIn('test', args)
         self.assertNotIn('archive', args)
+
+    def test_settings_queries_remove_only_test_action_options(self):
+        build = M.build_arguments(self.root / 'build')
+        for enabled in (False, True):
+            settings = M.settings_arguments(self.root / 'build', diagnostic=enabled)
+            self.assertNotIn('-testPlan', settings)
+            self.assertNotIn('build-for-testing', settings)
+            self.assertFalse(any(a.startswith('-only-testing:') for a in settings))
+            expected = build[:-2]
+            index = expected.index('-testPlan')
+            del expected[index:index + 2]
+            if not enabled:
+                expected = [a for a in expected if not a.startswith('SWIFT_ACTIVE_COMPILATION_CONDITIONS=')]
+            self.assertEqual(settings, expected + ['-showBuildSettings', '-json'])
+        self.assertEqual(build[build.index('-testPlan') + 1], 'CleanSendPrivacyRelease')
+
+    def metadata_command(self, source, label):
+        transport = M.load('transport')
+        capture = M.StderrCapture()
+        deadline = time.monotonic() + 8
+        client = transport.Transport(deadline, str(self.root), M.metadata_ops(transport, capture, lambda: None))
+        output = bytearray()
+        error = None
+        row = {}
+        try:
+            with client.command('probe', 6, 65536, lambda _: [sys.executable, '-c', source],
+                                {'PATH': os.environ.get('PATH', ''), 'HOME': str(self.root)}) as stream:
+                while block := stream.read(4096):
+                    output.extend(block)
+        except BaseException as caught:
+            error = caught
+        finally:
+            M.finish_stderr(capture, self.root / (label + '.log'), row, deadline, primary_failed=error is not None)
+        self.assertTrue(client.report['probe']['cleanup_confirmed'])
+        return bytes(output), (self.root / (label + '.log')).read_bytes(), row, error
+
+    def test_real_metadata_stderr_never_corrupts_json_or_loses_late_error(self):
+        output, errorlog, row, error = self.metadata_command(
+            'import os,time;os.write(1,b"{\\"ok\\":true}");os.close(1);time.sleep(.05);os.write(2,b"diagnostic only\\n")', 'success')
+        self.assertIsNone(error)
+        self.assertEqual(json.loads(output), {'ok': True})
+        self.assertEqual(errorlog, b'diagnostic only\n')
+        self.assertTrue(row['stderr']['complete'])
+
+    def test_real_metadata_nonzero_retains_stderr_and_original_exit(self):
+        output, errorlog, row, error = self.metadata_command(
+            'import os;os.write(2,b"The flag -testPlan is only supported when testing.\\n");os._exit(64)', 'failure')
+        self.assertIsNotNone(error)
+        self.assertEqual(output, b'')
+        self.assertIn(b'-testPlan', errorlog)
+        self.assertEqual(row['stderr']['process_returncode'], 64)
+
+    def test_real_metadata_stderr_is_capped_and_closed(self):
+        _, errorlog, row, error = self.metadata_command(
+            'import os,time;os.write(2,b"x"*100000);time.sleep(5)', 'oversize')
+        self.assertIsNotNone(error)
+        self.assertEqual(len(errorlog), 65536)
+        self.assertTrue(row['stderr']['truncated'])
+
+    def test_stderr_drain_without_selector_never_blocks_on_open_writer(self):
+        code = '''import os,runpy
+Capture=runpy.run_path("scripts/release_smoke/diagnostic.py")["StderrCapture"]
+r,w=os.pipe();capture=Capture();capture.stream=os.fdopen(r,"rb",buffering=0)
+assert os.get_blocking(r)
+try:
+ capture.drain()
+ assert not os.get_blocking(r) and capture.raw==b"" and not capture.complete
+ print("nonblocking")
+finally:
+ capture.close();os.close(w)
+'''
+        result = subprocess.run([sys.executable, '-B', '-c', code], cwd=ROOT,
+                                check=True, capture_output=True, text=True, timeout=2)
+        self.assertEqual(result.stdout.strip(), 'nonblocking')
+
+    def test_stderr_nonblocking_setup_failure_does_not_attempt_read(self):
+        r, w = os.pipe()
+        capture = M.StderrCapture()
+        capture.stream = os.fdopen(r, 'rb', buffering=0)
+        try:
+            with mock.patch.object(M.os, 'set_blocking', side_effect=OSError('synthetic')), \
+                 mock.patch.object(M.os, 'read') as read:
+                with self.assertRaises(OSError): capture.drain()
+                read.assert_not_called()
+        finally:
+            capture.close(); os.close(w)
+
+    def test_stderr_recording_failure_cannot_mask_primary(self):
+        capture = M.StderrCapture()
+        row = {}
+        with mock.patch.object(Path, 'open', side_effect=PermissionError('synthetic')):
+            M.finish_stderr(capture, self.root / 'error', row, time.monotonic() + 1, primary_failed=True)
+        self.assertEqual(row['stderr_error'], 'PermissionError')
+        with mock.patch.object(Path, 'open', side_effect=PermissionError('synthetic')):
+            with self.assertRaises(PermissionError):
+                M.finish_stderr(capture, self.root / 'error', {}, time.monotonic() + 1, primary_failed=False)
 
     def settings(self):
         base = {'CONFIGURATION': 'Release', 'SWIFT_OPTIMIZATION_LEVEL': '-O', 'ENABLE_TESTABILITY': 'NO',

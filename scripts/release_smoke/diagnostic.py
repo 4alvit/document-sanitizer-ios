@@ -17,7 +17,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 MODE = 'share-phase-trace-v1'
 FLAG = 'CLEANSEND_SHARE_TRACE'
-BRANCH = 'refs/heads/diagnostics/sanitizer14-share-phase'
+BRANCH = 'refs/heads/diagnostics/sanitizer14-share-phase-settings'
 WORKFLOW = '.github/workflows/share-phase-diagnostic.yml'
 REPO = '4alvit/document-sanitizer-ios'
 TRACE = 'cleansend-share-phase-trace-v1.jsonl'
@@ -83,6 +83,134 @@ def build_arguments(derived):
             'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-',
             'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) ' + FLAG,
             'build-for-testing', '-only-testing:' + CASE]
+
+
+def settings_arguments(derived, *, diagnostic):
+    args = build_arguments(derived)[:-2]
+    # Xcode rejects -testPlan unless the action is a test/build-for-testing.
+    index = args.index('-testPlan')
+    del args[index:index + 2]
+    if not diagnostic:
+        args = [a for a in args if not a.startswith('SWIFT_ACTIVE_COMPILATION_CONDITIONS=')]
+    return [*args, '-showBuildSettings', '-json']
+
+
+class StderrCapture:
+    """Bounded independent metadata diagnostics; never append them to JSON stdout."""
+    limit = 65536
+
+    def __init__(self):
+        self.stream = None
+        self.process = None
+        self.raw = bytearray()
+        self.complete = False
+        self.truncated = False
+
+    def attach(self, process):
+        self.process = process
+        self.stream = process.stderr
+
+    def drain(self):
+        if self.stream is None or self.complete:
+            return
+        # A spawn/ownership failure can reach finalization before a selector
+        # exists. Never assume it has already made this pipe nonblocking.
+        os.set_blocking(self.stream.fileno(), False)
+        assert not os.get_blocking(self.stream.fileno())
+        while True:
+            try:
+                block = os.read(self.stream.fileno(), min(16384, self.limit - len(self.raw) + 1))
+            except BlockingIOError:
+                return
+            if not block:
+                self.complete = True
+                return
+            remaining = self.limit - len(self.raw)
+            self.raw.extend(block[:remaining])
+            if len(block) > remaining:
+                self.truncated = True
+                raise RuntimeError('Metadata stderr exceeded its fixed cap')
+
+    def close(self):
+        if self.stream is not None:
+            self.stream.close()
+
+
+def finish_stderr(capture, path, row, deadline, *, primary_failed):
+    error = None
+    try:
+        if not capture.truncated:
+            capture.drain()
+    except BaseException as caught:
+        error = caught
+    finally:
+        try:
+            capture.close()
+        except BaseException as caught:
+            error = error or caught
+    try:
+        assert time.monotonic() < deadline
+        with path.open('xb') as stream:
+            assert stream.write(capture.raw) == len(capture.raw)
+        row['stderr'] = {'bytes': len(capture.raw), 'complete': capture.complete,
+                         'truncated': capture.truncated,
+                         'process_returncode': capture.process.returncode if capture.process else None,
+                         'sha256': hashlib.sha256(capture.raw).hexdigest()}
+    except BaseException as caught:
+        error = error or caught
+    if error:
+        row['stderr_error'] = type(error).__name__
+        if not primary_failed:
+            raise error
+
+
+def metadata_ops(transport, capture, check):
+    class CheckedSelector:
+        def __init__(self):
+            self.inner = selectors.DefaultSelector()
+            self.error_fd = capture.stream.fileno()
+            os.set_blocking(self.error_fd, False)
+            self.inner.register(self.error_fd, selectors.EVENT_READ)
+
+        def register(self, *args):
+            return self.inner.register(*args)
+
+        def select(self, timeout=None):
+            check()
+            events = self.inner.select(min(.05, timeout if timeout is not None else .05))
+            if not capture.complete:
+                capture.drain()
+                if capture.complete:
+                    self.inner.unregister(self.error_fd)
+            return [(key, mask) for key, mask in events if key.fd != self.error_fd]
+
+        def close(self):
+            self.inner.close()
+
+    class Ops(transport.Ops):
+        selector = CheckedSelector
+
+        @staticmethod
+        def popen(*args, **kwargs):
+            import subprocess
+            kwargs['stderr'] = subprocess.PIPE
+            process = subprocess.Popen(*args, **kwargs)
+            capture.attach(process)
+            return process
+
+        @staticmethod
+        def read(fd, size):
+            raw = os.read(fd, size)
+            if not raw and not capture.complete:
+                # stdout may close first; continue draining stderr under the
+                # existing transport deadline instead of accepting an incomplete log.
+                capture.drain()
+                if not capture.complete:
+                    time.sleep(.005)
+                    raise BlockingIOError()
+            return raw
+
+    return Ops()
 
 
 def verify_settings(normal, diagnostic):
@@ -233,14 +361,26 @@ def prepare():
                 if name == 'build.log':
                     kwargs['stderr'] = subprocess.STDOUT
                 return subprocess.Popen(*args, **kwargs)
-        client = transport.Transport(start + BUILD_SECONDS, str(ROOT), Ops())
-        report['commands'].append({'args': args, 'transport': client.report})
+        capture = StderrCapture() if name != 'build.log' else None
+        ops = metadata_ops(transport, capture, check) if capture else Ops()
+        client = transport.Transport(start + BUILD_SECONDS, str(ROOT), ops)
+        row = {'args': args, 'transport': client.report}
+        report['commands'].append(row)
         environment = load('lifecycle').child_environment(os.environ)
-        with (base / name).open('xb') as output:
-            with client.command('build', limit, cap, lambda _: args, environment) as source:
-                while block := source.read(65536):
-                    check()
-                    assert output.write(block) == len(block)
+        primary = None
+        try:
+            with (base / name).open('xb') as output:
+                with client.command('build', limit, cap, lambda _: args, environment) as source:
+                    while block := source.read(65536):
+                        check()
+                        assert output.write(block) == len(block)
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            if capture:
+                finish_stderr(capture, base / (name + '.stderr.log'), row,
+                              start + BUILD_SECONDS, primary_failed=primary is not None)
         check()
         return (base / name).read_bytes() if cap <= 2 * 2**20 else None
     def save(name, value):
@@ -263,8 +403,8 @@ def prepare():
         assert command(['xcodebuild', '-version'], 'xcode.txt').decode().strip() == 'Xcode 16.4\nBuild version 16F6'
         assert command(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], 'sdk.txt').strip() == b'18.5'
         args = build_arguments(base / 'build')
-        settings_args = args[:-2] + ['-showBuildSettings', '-json']
-        normal_args = [arg for arg in settings_args if not arg.startswith('SWIFT_ACTIVE_COMPILATION_CONDITIONS=')]
+        settings_args = settings_arguments(base / 'build', diagnostic=True)
+        normal_args = settings_arguments(base / 'build', diagnostic=False)
         normal = json.loads(command(normal_args, 'normal-settings.json', 30, 2 * 2**20))
         diagnostic = json.loads(command(settings_args, 'diagnostic-settings.json', 30, 2 * 2**20))
         report['resolved_settings_targets'] = verify_settings(normal, diagnostic)

@@ -1,6 +1,6 @@
 {
   "name": "One-shot Share phase diagnostic",
-  "on": {"push": {"branches": ["diagnostics/sanitizer14-share-phase"]}},
+  "on": {"push": {"branches": ["diagnostics/sanitizer14-share-phase-settings"]}},
   "permissions": {"contents": "read"},
   "concurrency": {"group": "sanitizer14-share-phase", "cancel-in-progress": false},
   "jobs": {
