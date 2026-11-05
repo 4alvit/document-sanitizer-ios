@@ -32,6 +32,7 @@ DELETE_END = WORK_END + 78
 CLEANUP_END = WORK_END + 100
 TOTAL = CLEANUP_END + 120
 NATIVE_CONTEXT_KEYS = ('XPC_SERVICE_NAME', 'XPC_FLAGS', '__CF_USER_TEXT_ENCODING')
+RUNTIME_DIAGNOSTICS = None
 
 
 def child_environment(parent):
@@ -132,8 +133,11 @@ class Run:
 
     def command(self, args, name, limit=15, required=True):
         assert not any(c.get('owned_group_absent') is False for c in self.meta['commands']), 'Prior owned child group unresolved; no additional native child work'
+        assert not self.meta.get('diagnostic_cleanup_unconfirmed'), 'Diagnostic child group unresolved; no additional native child work'
         command_args = list(map(str, args))
         observe = command_args == ['xcrun', 'simctl', 'list', 'runtimes', '--json']
+        if observe and RUNTIME_DIAGNOSTICS is not None:
+            RUNTIME_DIAGNOSTICS.preflight(self, OUT, ENV, ROOT)
         if observe and self.remaining() > 4:
             self.meta['runtime_discovery_context'] = runtime_context()
         # Context work consumes the existing phase budget; it never extends the allowance.
@@ -200,7 +204,10 @@ class Run:
                                 if allowance <= 0:
                                     raise TimeoutError('No phase budget before wait ' + name)
                                 item['wait_timeout_seconds'] = allowance
-                                proc.wait(timeout=allowance)
+                                if observe and RUNTIME_DIAGNOSTICS is not None:
+                                    RUNTIME_DIAGNOSTICS.wait_runtime(proc, command_end, item, OUT, ENV, ROOT, run=self)
+                                else:
+                                    proc.wait(timeout=allowance)
                                 assert self.remaining() > 0, 'Original phase deadline after command'
                             except BaseException as error:
                                 # Capture before sampling: a later diagnostic cannot replace wait().
@@ -238,7 +245,12 @@ class Run:
                     cleanup_required = True
                 finally:
                     try:
-                        if proc is not None and cleanup_required:
+                        if proc is not None and item.get('runtime_observation', {}).get('ownership_lost'):
+                            # Never signal a PID after an external reaper invalidated
+                            # our reservation. Fail with cleanup explicitly unknown.
+                            item['owned_group_absent'] = False
+                            item['cleanup_error'] = 'Child ownership lost; no signal sent'
+                        elif proc is not None and cleanup_required:
                             item['owned_group_absent'] = False
                             try:
                                 stop_group(proc, item)
@@ -374,7 +386,7 @@ def stop_group(proc, record=None):
 def stop_recorded_children(worker_pid, metadata, deadline):
     """Last-resort active command signal; group absence is not implied."""
     active = [c['owned_process_group'] for c in metadata.get('commands', [])
-              if 'owned_process_group' in c and
+              if c.get('kind') != 'diagnostic' and 'owned_process_group' in c and
               ('finished_at' not in c or c.get('owned_group_absent') is False)]
     candidates = active[-1:]
     outcomes = []
