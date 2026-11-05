@@ -93,7 +93,7 @@ final class PrivacySupportUITests: XCTestCase {
         information.tap()
         waitForInformation(in: app, language: language)
         verifySameOpeningParagraph(in: app, expected: firstRead[paragraphIDs[0]])
-        waitForStableFrame(app.staticTexts[paragraphIDs[0]])
+        guard waitForStableReading(identifier: paragraphIDs[0], in: app) else { return }
         capture(app, name: "privacy-\(language)-opened-from-pro")
         dismissInformation(in: app)
         XCTAssertTrue(pro.waitForExistence(timeout: 5), "Closing information opened from Pro must return to Pro.")
@@ -326,7 +326,7 @@ final class PrivacySupportUITests: XCTestCase {
                                      "Paragraphs must wrap within the information list.")
             read[identifier] = label
             if let name = capturePoints[identifier] {
-                waitForStableFrame(paragraph)
+                guard waitForStableReading(identifier: identifier, in: app) else { return read }
                 capture(app, name: "\(prefix)-\(name)")
             }
         }
@@ -349,33 +349,8 @@ final class PrivacySupportUITests: XCTestCase {
         for _ in 0..<16 {
             let sample: PrivacyReadingSample
             do {
-                sample = try PrivacyReadingSample.read(
-                    listIdentifier: "privacy-support-list", targetIdentifier: identifier,
-                    needsCenter: needsCenter,
-                    snapshot: {
-                        let root = try app.snapshot()
-                        var elements: [PrivacyReadingElement] = []
-                        var bars: [PrivacyReadingElement] = []
-                        @MainActor func visit(_ node: XCUIElementSnapshot) {
-                            let value = PrivacyReadingElement(identifier: node.identifier,
-                                                              label: node.label, frame: node.frame)
-                            if value.identifier == "privacy-support-list" || value.identifier == identifier {
-                                elements.append(value)
-                            }
-                            if node.elementType == .navigationBar { bars.append(value) }
-                            for child in node.children { visit(child) }
-                        }
-                        visit(root)
-                        return PrivacyReadingTree(appFrame: root.frame, elements: elements, navigationBars: bars)
-                    },
-                    navigationBarIsHittable: { bar in
-                        let matches = app.navigationBars.matching(NSPredicate(
-                            format: "identifier == %@ AND label == %@", bar.identifier, bar.label))
-                        guard matches.count == 1 else {
-                            throw PrivacyReadingSample.Invalid.ambiguousNavigationBar
-                        }
-                        return matches.element.isHittable
-                    },
+                let position = try readingPosition(identifier: identifier, in: app, needsCenter: needsCenter)
+                sample = PrivacyReadingSample(position: position,
                     // Preserve the caller's typed target (StaticText for paragraphs).
                     targetIsHittable: { element.isHittable })
             } catch {
@@ -399,6 +374,43 @@ final class PrivacySupportUITests: XCTestCase {
         capture(app, name: "privacy-unreachable-\(identifier)")
         XCTFail("Could not reveal \(identifier) within the natural scroll viewport.")
         return nil
+    }
+
+    @MainActor
+    private func readingPosition(identifier: String, in app: XCUIApplication,
+                                 needsCenter: Bool = false,
+                                 expectedTargetType: XCUIElement.ElementType? = nil) throws -> PrivacyReadingSample.Position {
+        try PrivacyReadingSample.readPosition(
+            listIdentifier: "privacy-support-list", targetIdentifier: identifier,
+            needsCenter: needsCenter,
+            snapshot: {
+                let root = try app.snapshot()
+                var elements: [PrivacyReadingElement] = []
+                var bars: [PrivacyReadingElement] = []
+                @MainActor func visit(_ node: XCUIElementSnapshot) throws {
+                    let value = PrivacyReadingElement(identifier: node.identifier,
+                                                      label: node.label, frame: node.frame)
+                    if value.identifier == identifier, let expectedTargetType,
+                       node.elementType != expectedTargetType {
+                        throw PrivacyReadingSample.Invalid.unexpectedTargetType
+                    }
+                    if value.identifier == "privacy-support-list" || value.identifier == identifier {
+                        elements.append(value)
+                    }
+                    if node.elementType == .navigationBar { bars.append(value) }
+                    for child in node.children { try visit(child) }
+                }
+                try visit(root)
+                return PrivacyReadingTree(appFrame: root.frame, elements: elements, navigationBars: bars)
+            },
+            navigationBarIsHittable: { bar in
+                let matches = app.navigationBars.matching(NSPredicate(
+                    format: "identifier == %@ AND label == %@", bar.identifier, bar.label))
+                guard matches.count == 1 else {
+                    throw PrivacyReadingSample.Invalid.ambiguousNavigationBar
+                }
+                return matches.element.isHittable
+            })
     }
 
     @MainActor
@@ -479,23 +491,29 @@ final class PrivacySupportUITests: XCTestCase {
     }
 
     @MainActor
-    private func waitForStableFrame(_ element: XCUIElement) {
-        var previous = CGRect.null
-        var stableSince = Date()
-        waitUntil("The reading position must settle before capture") {
-            guard element.exists, element.isHittable else {
-                previous = .null
-                stableSince = Date()
-                return false
+    private func waitForStableReading(identifier: String, in app: XCUIApplication) -> Bool {
+        var stability = PrivacyReadingStability()
+        var failure: Error?
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            do {
+                let position = try self.readingPosition(identifier: identifier, in: app,
+                                                        expectedTargetType: .staticText)
+                return stability.observe(position, at: ProcessInfo.processInfo.systemUptime)
+            } catch {
+                failure = error
+                return true // Stop immediately; never retry an invalid or ambiguous snapshot.
             }
-            let frame = element.frame
-            if frame != previous {
-                previous = frame
-                stableSince = Date()
-                return false
-            }
-            return Date().timeIntervalSince(stableSince) >= 0.5
+        }, object: nil)
+        let result = XCTWaiter.wait(for: [expectation], timeout: 6)
+        if let failure {
+            XCTFail("Could not sample the stable privacy reading position: \(failure)")
+            return false
         }
+        guard result == .completed else {
+            XCTFail("The reading position must settle before capture")
+            return false
+        }
+        return true
     }
 
     @MainActor

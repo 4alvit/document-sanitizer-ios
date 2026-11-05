@@ -67,9 +67,11 @@ def directory(path):
     fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         for part in path.parts[1:]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-            os.close(fd)
-            fd = child
+            parent = fd
+            fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            # Own the child before closing its parent so a close error cannot
+            # leave the child untracked or cause the parent to be closed twice.
+            os.close(parent)
         yield fd
     finally:
         os.close(fd)

@@ -19,6 +19,7 @@ COLD_BOOT_LIMIT=300
 STARTUP_END=376;TEST_LATEST_START=526
 TEST_BODY_END=826;TEST_STOP_END=830;FINAL_VERIFY_END=WORK_END
 TEST_ADMISSION=454
+NATIVE_OBSERVATION_AFTER=225;NATIVE_OBSERVATION_SECONDS=5
 SHUTDOWN_LIMIT=45;DELETE_LIMIT=25
 NATIVE_PHASES={'startup':STARTUP_END,'test_latest_start':TEST_LATEST_START,
  'test_body':TEST_BODY_END,'test_stop':TEST_STOP_END,'final_verification':FINAL_VERIFY_END,
@@ -250,6 +251,7 @@ def validate_context(path,start):
 class Resources:
  def __init__(self,start):
   self.start=start;self.device=None;self.last=0;self.maximum=0;self.first_failure=None
+  self.scan_totals={'count':0,'total_seconds':0.0,'max_seconds':0.0,'total_lstat_calls':0,'max_lstat_calls':0,'max_directory_visits':0}
  def check(self,phase=WORK_END):
   total=0;count=0;stat_calls=0;directories=0;root_label=None;root_start=None;root_progress={};traversal_complete=False;operation='phase_admission'
   observed=time.monotonic();scan_started=observed
@@ -295,6 +297,12 @@ class Resources:
    self.maximum=max(self.maximum,total);self.last=time.monotonic()
    operation='allocation_cap'
    assert total<=CAP,'owned allocation cap'
+   elapsed=self.last-scan_started
+   self.scan_totals['count']+=1;self.scan_totals['total_seconds']+=elapsed
+   self.scan_totals['max_seconds']=max(self.scan_totals['max_seconds'],elapsed)
+   self.scan_totals['total_lstat_calls']+=stat_calls
+   self.scan_totals['max_lstat_calls']=max(self.scan_totals['max_lstat_calls'],stat_calls)
+   self.scan_totals['max_directory_visits']=max(self.scan_totals['max_directory_visits'],directories)
   except BaseException as error:
    # Fixed in-memory evidence only; no paths, exception text, I/O or new window.
    # Later final-integrity scans must not overwrite the first failed observation.
@@ -380,6 +388,53 @@ def observed_native_case_start(tail):
     return 'ProStoreTests/'+name
  return None
 
+def read_native_output(reader,tail,total,deadline):
+ # Drain the regular file to its current EOF before deciding whether startup is
+ # still pending; retain observations even if a long tail later rotates them out.
+ host=observed_inert_unit_host(tail);case=observed_native_case_start(tail)
+ while True:
+  assert time.monotonic()<deadline,'native test output deadline'
+  chunk=reader.read(65536);total+=len(chunk);assert total<=16*2**20
+  assert time.monotonic()<deadline,'native test output deadline after read'
+  if not chunk:return tail,total,host,case
+  tail=(tail+chunk)[-131072:]
+  host=host or observed_inert_unit_host(tail);case=case or observed_native_case_start(tail)
+
+
+def observe_native_startup(run,proc,item,test_started,test_end,started_case,env):
+ # Read-only process state, never attach or infer test acceptance.
+ now=time.monotonic()
+ if now-test_started<NATIVE_OBSERVATION_AFTER or started_case or run.meta.get('first_started_native_case') or 'startup_observation' in item:
+  return False
+ observation=item['startup_observation']={'diagnostic_only':True,'after_seconds':NATIVE_OBSERVATION_AFTER,
+  'elapsed_seconds':now-test_started,'status':'PENDING','commands':[]}
+ run.persist()
+ try:
+  r=load('readiness')
+  if not r.supported():
+   observation['status']='UNAVAILABLE_WNOWAIT';return True
+  if test_end-time.monotonic()<=r.CLEANUP_RESERVE:
+   observation['status']='NOT_STARTED_DEADLINE';return True
+  try:exited=r.observe_owned(proc)
+  except r.OwnershipLost:
+   # No subsequent signal may use this numeric PID after direct ownership loss.
+   item.update(ownership_lost=True,owned_group_absent=False)
+   observation['status']='OWNERSHIP_LOST';raise
+  if exited:
+   observation['status']='NOT_STARTED_CHILD_EXITED';return True
+  observation_end=min(now+NATIVE_OBSERVATION_SECONDS,test_end)
+  observation['deadline_monotonic']=observation_end
+  if os.path.lexists(SCOPE/'native-startup-process.txt'):
+   raise r.CleanupUnknown('Unexpected existing native process output')
+  # WNOWAIT keeps this read-only snapshot tied to the direct child until the
+  # observer returns. Only fixed process fields are emitted, not args or env.
+  r.command(['/bin/ps','-p',str(proc.pid),'-o','pid=,ppid=,pgid=,stat=,pcpu=,time=,wchan=,comm='],
+   'native-startup-process.txt',observation_end,SCOPE,env,ROOT,observation['commands'],run=run)
+  observation['status']=observation['commands'][-1]['status']
+  return True
+ finally:run.persist()
+
+
 def native_test_end(run,now):
  assert run.remaining()>=TEST_ADMISSION,'300s XCTest and final verification admission unavailable'
  return min(now+300,run.start+TEST_BODY_END)
@@ -391,7 +446,8 @@ def native_session_milestones(scope,check):
           ('Test runner session acquired connection.','runner_connected'),
           (': Installing app at path:','app_install_requested'),
           (': Installed app at path:','app_installed'),
-          (': Launching app with identifier:','app_launch_requested'))
+          (': Launching app with identifier:','app_launch_requested'),
+           (': Launched app with identifier:','app_launched'))
  entries=0;sessions=[];total=0
  flags=os.O_RDONLY|os.O_NOFOLLOW|os.O_DIRECTORY
  def visit(directory,depth):
@@ -540,16 +596,20 @@ def worker(start,context):
   proc=None;tail=b'';log_read=0;previous_end=run.end;inert_host_observed=False
   try:
    with (SCOPE/'test.log').open('xb') as log:
-    end=native_test_end(run,time.monotonic());run.end=min(previous_end,end-start)
+    test_started=time.monotonic();end=native_test_end(run,test_started);run.end=min(previous_end,end-start)
     proc=subprocess.Popen(argv,cwd=ROOT,env=l.ENV,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
     item['owned_process_group']=proc.pid;run.persist()
     with (SCOPE/'test.log').open('rb') as reader:
      while proc.poll() is None:
       resources.check(run.end);assert time.monotonic()<end,'native StoreKit outer300s limit'
-      chunk=reader.read(65536);log_read+=len(chunk);assert log_read<=16*2**20
-      tail=(tail+chunk)[-131072:]
-      inert_host_observed=inert_host_observed or observed_inert_unit_host(tail)
-      started_case=observed_native_case_start(tail)
+      tail,log_read,host_seen,started_case=read_native_output(reader,tail,log_read,end)
+      inert_host_observed=inert_host_observed or host_seen
+      if observe_native_startup(run,proc,item,test_started,end,started_case,l.ENV):
+       # Capture output that arrived during the bounded observation, even if the child
+       # has exited. The original clock and byte limits still govern this read.
+       assert time.monotonic()<end,'native StoreKit outer300s limit after observation'
+       tail,log_read,host_seen,started_case=read_native_output(reader,tail,log_read,end)
+       inert_host_observed=inert_host_observed or host_seen
       if not during and started_case:
        run.meta['first_started_native_case']=started_case
        installed('installed-during.json',initial_install=True);during=True
@@ -560,7 +620,10 @@ def worker(start,context):
    assert proc.returncode==0 and during and inert_host_observed
   finally:
    if proc is not None:
-    l.stop_group(proc,item);item['returncode']=proc.returncode
+    if item.get('ownership_lost'):
+     item['cleanup_error']='Direct child ownership lost; no numeric-PID signal'
+    else:l.stop_group(proc,item)
+    item['returncode']=proc.returncode
     assert time.monotonic()<start+TEST_STOP_END,'original native test stop deadline'
    item['finished_at']=l.now();run.end=previous_end;run.persist()
   with work_phase(run,resources,FINAL_VERIFY_END):
@@ -619,7 +682,7 @@ def worker(start,context):
    assert expected and e.payload_inventory(host,b,lambda:resources.check(EVIDENCE_END))==expected
    run.meta['source_and_compiled_host_unchanged']=True
   except BaseException as error:failures.append({'phase':'final integrity',**safe_failure(error)})
-  run.meta.update(result='failed' if failures else 'passed_pending_independent_review',failures=failures,finished_at=l.now(),elapsed_seconds=time.monotonic()-start,maximum_observed_owned_allocation=resources.maximum,resource_scan_first_failure=resources.first_failure)
+  run.meta.update(result='failed' if failures else 'passed_pending_independent_review',failures=failures,finished_at=l.now(),elapsed_seconds=time.monotonic()-start,maximum_observed_owned_allocation=resources.maximum,resource_scan_first_failure=resources.first_failure,resource_successful_scans=dict(resources.scan_totals))
   run.persist()
  return 1 if failures else 0
 
@@ -712,14 +775,16 @@ def aggregate_command_groups(meta,start,clock=time.monotonic,probe=os.killpg):
   if pid is None:continue
   assert type(pid) is int and pid>1
   row={'pid':pid,'args':command.get('args'),'leader_returncode':command.get('returncode'),'owner_worker':meta.get('owner_worker_pid'),'cleanup_observation':command.get('cleanup_observation'),'cleanup_error':command.get('cleanup_error')}
-  if command.get('owned_group_absent') is True:row.update(absent=True,basis='worker recorded bounded group closure')
+  if command.get('ownership_lost') or (command.get('kind')=='diagnostic' and command.get('owned_group_absent') is not True):
+   row.update(absent=False,basis='ownership or diagnostic cleanup unresolved; absence cannot be inferred')
+  elif command.get('owned_group_absent') is True:row.update(absent=True,basis='worker recorded bounded group closure')
   else:
    try:probe(pid,0);row.update(absent=False,basis='group still present; no blind signal after worker exit')
    except ProcessLookupError:row.update(absent=True,basis='terminal read-only group probe absent; leader reap only if recorded')
    except OSError as error:row.update(absent=False,basis='group proof unavailable',error=repr(error))
   assert clock()<start+TOTAL,'whole deadline after owned-command group proof'
   groups.append(row)
- return {'all_absent':all(row['absent'] for row in groups),'groups':groups,
+ return {'all_absent':not meta.get('diagnostic_cleanup_unconfirmed') and all(row['absent'] for row in groups),'groups':groups,
          'unresolved_group_ids':[row['pid'] for row in groups if not row['absent']]}
 
 
@@ -780,7 +845,7 @@ def supervise(grant_path,grant,start):
     proc.wait(timeout=min(3,max(.01,start+TOTAL-5-time.monotonic())))
    except (ProcessLookupError,subprocess.TimeoutExpired):
     try:
-     meta=json.loads((SCOPE/'metadata.json').read_bytes());active=[c for c in meta['commands'] if 'owned_process_group' in c and ('finished_at' not in c or c.get('owned_group_absent') is False)]
+     meta=json.loads((SCOPE/'metadata.json').read_bytes());active=[c for c in meta['commands'] if not c.get('ownership_lost') and 'owned_process_group' in c and ('finished_at' not in c or c.get('owned_group_absent') is False)]
      assert len(active)<=2;intent['last_resort_children']=[]
      for child in active:intent['last_resort_children']+=l.stop_recorded_children(proc.pid,{'commands':[child]},min(start+TOTAL-2,time.monotonic()+2))
     except BaseException as error:intent['last_resort_error']=repr(error)
@@ -796,7 +861,9 @@ def supervise(grant_path,grant,start):
   except BaseException as error:intent.update(status='failed',owned_command_groups={'all_absent':False,'error':repr(error)})
   retain_cleanup_obligation(intent,start)
   if not intent['cleanup_obligation'].get('absence_verified'):intent['status']='failed'
-  if monitor is not None:intent['resource_scan_first_failure']=monitor.first_failure
+  if monitor is not None:
+   intent['resource_scan_first_failure']=monitor.first_failure
+   intent['resource_successful_scans']=dict(monitor.scan_totals)
   intent.update(returncode=proc.returncode if proc else None,elapsed_seconds=time.monotonic()-start)
   if intent['elapsed_seconds']>=TOTAL:intent['status']='failed'
   try:intent['terminal_receipt']=final_write(intent,start)

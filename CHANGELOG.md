@@ -2,6 +2,8 @@
 
 ## 0.1.0 — unreleased
 
+- Keep release-diagnostic descriptors tracked and attempt every close after a
+  cleanup error; preserve user cancellation while recording an earlier failure.
 - Preserve the original attachment order when importing older shared batches
   with ten or more files, including through PDF export.
 - Clear only displayed, completed shared batches. Preserve active extension

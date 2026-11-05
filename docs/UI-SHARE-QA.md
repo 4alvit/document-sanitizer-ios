@@ -116,6 +116,10 @@ This hosted profile is an iPad Pro 13-inch M4 (16 GB), portrait, iOS 18.5,
 Xcode 16.4, with the actual system AX5 size. Fresh inventory must confirm that
 exact installed runtime/device/toolchain before creating the private simulator.
 Installed app and runner payloads are compared before, during and after the case.
+The during-case comparison waits for the existing selected PDF workspace-ready
+marker, after XCTest has completed any AUT reinstall and launch. It still requires
+the exact published app bytes and accepted runner payload before observing exports;
+a test-case-start line alone does not establish the installed AUT location.
 No native StoreKit test, purchase, App Store release or physical-device result is
 implied by this development Simulator check.
 
@@ -136,6 +140,15 @@ and retains the full 300-second test window plus its four-second stop reserve.
 All deadlines use the original start; cleanup and evidence durations, disk
 limits and payload checks are unchanged. Local admission tests cover the
 observed delay and late preparation; a successful hosted case is still required.
+
+The single owned `simctl bootstatus` command has a 300-second ceiling, matching
+this repository's cold privacy and StoreKit readiness policy. It remains clipped
+to the original 376-second preparation boundary, with four seconds reserved for
+stopping the command. It cannot borrow the 300-second XCTest window or extend
+the 680/780/900-second work, cleanup and total deadlines. This is bounded startup
+headroom, not a diagnosis or fix for the underlying Simulator stall. The observed
+120-second boot wait timed out before app installation; a successful full
+current-source run and exact-package Share case are still required.
 
 ## Busy-state layout evidence
 

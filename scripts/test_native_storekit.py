@@ -1,5 +1,5 @@
 """Pure binding/admission controls for the one native payment command; no native/network."""
-import plistlib,copy
+import plistlib,copy,sys
 import contextlib,datetime as dt,hashlib,importlib.util,io,json,os,signal,subprocess,tempfile,time,unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,15 +35,16 @@ class NativeFailureProgressTests(unittest.TestCase):
              '01:15:32.869 xcodebuild[50:60] UUID: Installing app at path: /private/SENSITIVE\n'
              '01:15:51.515 xcodebuild[50:60] UUID: Installed app at path: /private/SENSITIVE\n'
              '01:15:52.941 xcodebuild[50:60] UUID: Launching app with identifier: SECRET and options: {\n'
-             ' environment = {TOKEN = SENSITIVE;}\n').encode()
+             ' environment = {TOKEN = SENSITIVE;}\n'
+             '01:24:36.281 xcodebuild[50:60] UUID: Launched app with identifier: SECRET (pid = 123)\n').encode()
         (self.staging/'Session-synthetic.log').write_bytes(raw)
         result=self.collect();self.assertTrue(result['diagnostic_only'])
         self.assertEqual(result['stdout_markers']['first_case_start_observed'],None)
         record=result['sessions'][0]
         self.assertEqual(record['sha256'],hashlib.sha256(raw).hexdigest())
         self.assertEqual([e['kind'] for e in record['milestones']],
-            ['session_started','runner_connected','app_install_requested','app_installed','app_launch_requested'])
-        self.assertEqual(record['milestones'][-1]['time'],'01:15:52.941')
+            ['session_started','runner_connected','app_install_requested','app_installed','app_launch_requested','app_launched'])
+        self.assertEqual(record['milestones'][-1]['time'],'01:24:36.281')
         for forbidden in ('SENSITIVE','SECRET','Private-Session','TOKEN','/private/'):
             self.assertNotIn(forbidden,json.dumps(result))
     def test_malformed_and_unrelated_lines_do_not_fabricate_progress(self):
@@ -525,6 +526,19 @@ class NativeResourceScanTests(unittest.TestCase):
         self.assertEqual(names.count(device+'/link'),1);self.assertNotIn('link',device_dirs)
         self.assertEqual([call.kwargs for call in walk.call_args_list],[{'followlinks':False}]*2)
         self.assertIsNone(resources.first_failure)
+    def test_successful_scan_counters_measure_existing_work_without_extra_walks(self):
+        root=str(self.m.OWNED_ROOT);resources=self.m.Resources(100)
+        def observe(path):self.clock[0]+=.1;return self.info(1,0o040700)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]) as walk,mock.patch.object(os,'lstat',side_effect=observe):
+            resources.check(196);resources.check(196)
+            self.assertEqual(walk.call_count,1)
+            self.clock[0]+=2;resources.check(196);self.assertEqual(walk.call_count,2)
+        self.assertEqual(resources.scan_totals['count'],2)
+        self.assertEqual(resources.scan_totals['total_lstat_calls'],2)
+        self.assertEqual(resources.scan_totals['max_lstat_calls'],1)
+        self.assertEqual(resources.scan_totals['max_directory_visits'],1)
+        self.assertAlmostEqual(resources.scan_totals['total_seconds'],.2)
+        self.assertAlmostEqual(resources.scan_totals['max_seconds'],.1)
     def test_changed_or_replaced_directory_is_reobserved_at_traversal(self):
         root=str(self.m.OWNED_ROOT);seen=[]
         def observe(path):
@@ -718,11 +732,11 @@ class SingleInstallerWorkerTests(unittest.TestCase):
         self.expected={'.':{'directory':True,'mode':'0755'},'CleanSend':{'mode':'0755','sha256':'a'*64},'PlugIns/CleanSendTests.xctest/CleanSendTests':{'mode':'0755','sha256':'b'*64}}
         self.commands=[];self.inventories=[];self.lookup_count=0;self.lifecycle=self.m.load('lifecycle')
         self.toolchain='Xcode 26.3\nBuild version 17C529';self.runtime_version='26.2';self.runtime_identifier=self.m.RUNTIME
-    def exercise(self,*,start_case=True,changed_container=False,changed_bytes=False,profile_rejected=False):
-        m=self.m;clock=[100.0];phase_checks=[]
+    def exercise(self,*,start_case=True,changed_container=False,changed_bytes=False,profile_rejected=False,start_case_after=0,case_during_observation=False):
+        m=self.m;clock=[100.0];phase_checks=[];sample_state={};self.sample_calls=0
         def check(phase):
             phase_checks.append(phase);assert clock[0]<90+phase
-        resource=SimpleNamespace(device=None,maximum=0,first_failure=None,check=check)
+        resource=SimpleNamespace(device=None,maximum=0,first_failure=None,scan_totals={},check=check)
         def payload(path,budget,guard):
             guard();self.inventories.append(str(path));result=copy.deepcopy(self.expected)
             if changed_bytes and path!=self.host and self.lookup_count==2:result['CleanSend']['sha256']='c'*64
@@ -760,16 +774,26 @@ class SingleInstallerWorkerTests(unittest.TestCase):
             text=b'NATIVE_STOREKIT_HOST '+json.dumps(marker).encode()+b'\n'
             if start_case:text+=("Test Case '-[CleanSendTests.ProStoreTests "+m.CASE_NAMES[0]+"]' started.\n").encode()
             else:text+=b"Test Suite 'ProStoreTests' started.\n"
-            kwargs['stdout'].write(text);kwargs['stdout'].flush()
-            process=SimpleNamespace(pid=99,returncode=None);polls=[0]
+            process=SimpleNamespace(pid=99,returncode=None);command_start=clock[0];written=[False]
             def poll():
-                polls[0]+=1
-                if polls[0]>1:process.returncode=0
+                elapsed=clock[0]-command_start
+                if elapsed>=start_case_after and not written[0]:
+                    kwargs['stdout'].write(text);kwargs['stdout'].flush();written[0]=True
+                if elapsed>=start_case_after+1:process.returncode=0
                 return process.returncode
-            process.poll=poll;return process
+            process.poll=poll
+            def emit_during_sample():
+                kwargs['stdout'].write(text);kwargs['stdout'].flush();written[0]=True;process.returncode=0
+            sample_state['emit']=emit_during_sample
+            return process
         def close(process,row):process.returncode=0;row['owned_group_absent']=True
+        def sample_command(args,name,deadline,out,env,cwd,rows,*,run):
+            self.sample_calls+=1;sample_state['emit']()
+            rows.append({'kind':'diagnostic','status':'RETURNED','returncode':0,'owned_group_absent':True})
+            run.meta['commands'].append(rows[-1])
+        sampling=SimpleNamespace(supported=lambda:case_during_observation,CLEANUP_RESERVE=2,observe_owned=lambda proc:False,command=sample_command,OwnershipLost=RuntimeError)
         context={'head':'a'*40,'checkout':'a'*40,'run':'123','attempt':'1','job_admission':{'fixture':True}}
-        with mock.patch.object(m,'load',side_effect=lambda name:{'window':budget,'evidence':evidence,'lifecycle':self.lifecycle}[name]),mock.patch.object(m,'Resources',return_value=resource),mock.patch.object(m,'bind_unit_test_host',side_effect=bind),mock.patch.object(self.lifecycle.Run,'command',new=command),mock.patch.object(self.lifecycle,'stop_group',side_effect=close),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(signal,'signal'),mock.patch.object(time,'monotonic',side_effect=lambda:clock[0]),mock.patch.object(time,'sleep'),mock.patch.object(Path,'home',return_value=self.root/'home'),mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='arm64')):
+        with mock.patch.object(m,'load',side_effect=lambda name:{'window':budget,'evidence':evidence,'lifecycle':self.lifecycle,'readiness':sampling}[name]),mock.patch.object(m,'Resources',return_value=resource),mock.patch.object(m,'bind_unit_test_host',side_effect=bind),mock.patch.object(self.lifecycle.Run,'command',new=command),mock.patch.object(self.lifecycle,'stop_group',side_effect=close),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(signal,'signal'),mock.patch.object(time,'monotonic',side_effect=lambda:clock[0]),mock.patch.object(time,'sleep',side_effect=lambda seconds:clock.__setitem__(0,clock[0]+seconds)),mock.patch.object(Path,'home',return_value=self.root/'home'),mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='arm64')):
             result=m.worker(90,context)
         metadata=json.loads((self.scope/'metadata.json').read_bytes())
         self.assertFalse(any(row[:3]==['xcrun','simctl','install'] for row in self.commands))
@@ -788,6 +812,25 @@ class SingleInstallerWorkerTests(unittest.TestCase):
         self.assertEqual(metadata['cleanup'],{'shutdown':0,'delete':0});self.assertTrue(metadata['device_removed'])
         self.assertEqual(metadata['native_phase_deadlines_seconds'],m.NATIVE_PHASES)
         return result,metadata
+    def test_late_first_case_still_fails_at_original300_and_cleans_up(self):
+        result,metadata=self.exercise(start_case_after=350)
+        self.assertEqual(result,1);self.assertEqual(metadata['native_storekit_tests'],0)
+        self.assertEqual(self.lookup_count,0);self.assertTrue(metadata['device_removed'])
+        command=next(row for row in metadata['commands'] if row['args'][:2]==['xcodebuild','test-without-building'])
+        self.assertEqual(command['timeout_seconds'],300)
+        self.assertEqual(command['startup_observation']['status'],'UNAVAILABLE_WNOWAIT')
+        self.assertTrue(command['owned_group_absent'])
+    def test_early_completion_does_not_start_observation(self):
+        result,metadata=self.exercise()
+        self.assertEqual(result,0)
+        command=next(row for row in metadata['commands'] if row['args'][:2]==['xcodebuild','test-without-building'])
+        self.assertNotIn('startup_observation',command)
+    def test_case_arriving_during_observation_is_read_even_if_child_exits(self):
+        result,metadata=self.exercise(start_case_after=280,case_during_observation=True)
+        self.assertEqual(self.sample_calls,1);self.assertEqual(result,0)
+        self.assertEqual(metadata['native_storekit_tests'],8)
+        self.assertEqual(metadata['first_started_native_case'],'ProStoreTests/'+self.m.CASE_NAMES[0])
+        self.assertTrue(metadata['installed_after_exact_baseline'])
     def test_one_install_authority_first_capture_after_real_start_and_exact_after(self):
         result,metadata=self.exercise();self.assertEqual(result,0)
         during=json.loads((self.scope/'installed-during.json').read_bytes());after=json.loads((self.scope/'installed-after.json').read_bytes())
@@ -838,6 +881,184 @@ class SingleInstallerWorkerTests(unittest.TestCase):
         self.assertEqual(self.m.observed_native_case_start(line),'ProStoreTests/'+name)
         for raw in (b"Test Suite 'ProStoreTests' started.",line.replace(b'started',b'passed'),line.replace(name.encode(),b'testUnknown'),line.replace(b'CleanSendTests',b'OtherTests'),line[:-1],b'command selector '+line):
             self.assertIsNone(self.m.observed_native_case_start(raw))
+
+
+
+class NativeStartupObservationTests(unittest.TestCase):
+    def setUp(self):
+        self.m=load('native_startup_observation',DRIVER)
+        self.r=self.m.load('readiness')
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.m.SCOPE=Path(self.tmp.name);self.m.ROOT=self.m.SCOPE
+        self.clock=[225.0];self.events=[]
+        self.run=SimpleNamespace(meta={'commands':[]},persist=lambda:self.events.append('persist'))
+        self.proc=SimpleNamespace(pid=999,returncode=None,
+            poll=mock.Mock(side_effect=AssertionError('must not reap target')),
+            wait=mock.Mock(side_effect=AssertionError('must not reap target')))
+        self.item={};self.calls=[]
+        def observe(proc):self.events.append('owned');return False
+        def command(args,name,deadline,out,env,cwd,rows,*,run):
+            self.calls.append((args,name,deadline));self.events.append('observation')
+            self.clock[0]+=1
+            row={'kind':'diagnostic','status':'RETURNED','returncode':0,'owned_group_absent':True}
+            rows.append(row);run.meta['commands'].append(row)
+        self.command=command
+        patches=(mock.patch.object(self.m,'load',return_value=self.r),
+            mock.patch.object(self.r,'supported',return_value=True),
+            mock.patch.object(self.r,'observe_owned',side_effect=observe),
+            mock.patch.object(self.r,'command',side_effect=command),
+            mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]))
+        for patch in patches:patch.start();self.addCleanup(patch.stop)
+    def observation(self,end=300,case=None):
+        return self.m.observe_native_startup(self.run,self.proc,self.item,0,end,case,{})
+    def test_trigger_is_one_shot_and_preserves_exact_deadline(self):
+        self.assertTrue(self.observation());self.assertFalse(self.observation())
+        self.assertEqual(len(self.calls),1);self.assertEqual(self.calls[0][2],230)
+        self.assertLess(self.events.index('owned'),self.events.index('observation'))
+        self.assertEqual(self.calls[0][0],['/bin/ps','-p','999','-o','pid=,ppid=,pgid=,stat=,pcpu=,time=,wchan=,comm='])
+        self.proc.poll.assert_not_called();self.proc.wait.assert_not_called()
+        self.assertNotIn('native_storekit_tests',self.run.meta)
+    def test_initial_persistence_does_not_renew_five_second_window(self):
+        count=[0]
+        def persist():
+            count[0]+=1
+            if count[0]==1:self.clock[0]+=3
+        self.run.persist=persist
+        self.assertTrue(self.observation());self.assertEqual(self.calls[0][2],230)
+    def test_early_or_real_case_start_never_launches_observer(self):
+        self.clock[0]=224.999;self.assertFalse(self.observation())
+        self.clock[0]=225;self.assertFalse(self.observation(case='ProStoreTests/testActual'))
+        self.run.meta['first_started_native_case']='ProStoreTests/testActual'
+        self.assertFalse(self.observation());self.assertEqual(self.calls,[])
+    def test_already_exited_child_is_not_observationd(self):
+        with mock.patch.object(self.r,'observe_owned',return_value=True):self.assertTrue(self.observation())
+        self.assertEqual(self.item['startup_observation']['status'],'NOT_STARTED_CHILD_EXITED');self.assertEqual(self.calls,[])
+    def test_lost_direct_child_reservation_never_observees(self):
+        with mock.patch.object(self.r,'observe_owned',side_effect=self.r.OwnershipLost('gone')):
+            with self.assertRaises(self.r.OwnershipLost):self.observation()
+        self.assertTrue(self.item['ownership_lost']);self.assertFalse(self.item['owned_group_absent'])
+        self.assertEqual(self.calls,[])
+    def test_missing_wnowait_is_explicitly_unavailable(self):
+        with mock.patch.object(self.r,'supported',return_value=False):self.assertTrue(self.observation())
+        self.assertEqual(self.item['startup_observation']['status'],'UNAVAILABLE_WNOWAIT');self.assertEqual(self.calls,[])
+    def test_short_original_budget_is_not_extended(self):
+        self.assertTrue(self.observation(end=227));self.assertEqual(self.calls,[])
+        self.assertEqual(self.item['startup_observation']['status'],'NOT_STARTED_DEADLINE')
+        self.item={};self.assertTrue(self.observation(end=228));self.assertEqual(self.calls[0][2],228)
+    def test_existing_observation_path_is_never_overwritten(self):
+        (self.m.SCOPE/'native-startup-process.txt').write_bytes(b'unique')
+        with self.assertRaises(self.r.CleanupUnknown):self.observation()
+        self.assertEqual(self.calls,[]);self.assertEqual((self.m.SCOPE/'native-startup-process.txt').read_bytes(),b'unique')
+    def test_unavailable_observation_is_diagnostic_only(self):
+        def unavailable(args,name,deadline,out,env,cwd,rows,*,run):
+            row={'kind':'diagnostic','status':'UNAVAILABLE','error':'OSError'};rows.append(row);run.meta['commands'].append(row)
+        with mock.patch.object(self.r,'command',side_effect=unavailable):self.assertTrue(self.observation())
+        self.assertEqual(self.item['startup_observation']['status'],'UNAVAILABLE')
+        self.assertNotIn('native_storekit_tests',self.run.meta)
+    def test_unknown_cleanup_stays_fatal_even_with_later_esrch(self):
+        def failed(*args,**kwargs):
+            self.run.meta['commands'].append({'kind':'diagnostic','owned_process_group':998,'owned_group_absent':False})
+            self.run.meta['diagnostic_cleanup_unconfirmed']=True
+            raise self.r.CleanupUnknown('unknown')
+        with mock.patch.object(self.r,'command',side_effect=failed):
+            with self.assertRaises(self.r.CleanupUnknown):self.observation()
+        def missing(*args):raise ProcessLookupError()
+        result=self.m.aggregate_command_groups(self.run.meta,0,clock=lambda:226,probe=missing)
+        self.assertFalse(result['all_absent']);self.assertFalse(result['groups'][0]['absent'])
+    def test_ownership_loss_is_not_inferred_away_by_absence_probe(self):
+        row={'owned_process_group':999,'owned_group_absent':False,'ownership_lost':True}
+        probe=mock.Mock(side_effect=ProcessLookupError())
+        result=self.m.aggregate_command_groups({'commands':[row]},0,clock=lambda:226,probe=probe)
+        self.assertFalse(result['all_absent']);probe.assert_not_called()
+    def test_pre_pid_diagnostic_obligation_is_not_lost(self):
+        result=self.m.aggregate_command_groups({'commands':[{'kind':'diagnostic','owned_group_absent':False}],
+            'diagnostic_cleanup_unconfirmed':True},0,clock=lambda:226,probe=mock.Mock())
+        self.assertFalse(result['all_absent'])
+    def test_observation_output_cannot_satisfy_actual_test_log(self):
+        fake=("Test Case '-[CleanSendTests.ProStoreTests "+self.m.CASE_NAMES[0]+"]' started.\n").encode()
+        (self.m.SCOPE/'native-startup-process.txt').write_bytes(fake)
+        tail,count,host,case=self.m.read_native_output(io.BytesIO(b''),b'',0,300)
+        self.assertEqual(count,0);self.assertFalse(host);self.assertIsNone(case)
+    def test_test_log_byte_cap_and_io_failure_remain_fatal(self):
+        with self.assertRaises(AssertionError):self.m.read_native_output(io.BytesIO(b'x'),b'',16*2**20,300)
+        with self.assertRaises(OSError):self.m.read_native_output(SimpleNamespace(read=mock.Mock(side_effect=OSError('read'))),b'',0,300)
+
+    def test_log_drain_finds_case_after_first_chunk_and_retains_it_after_tail_rotates(self):
+        case=("Test Case '-[CleanSendTests.ProStoreTests "+self.m.CASE_NAMES[0]+"]' started.\n").encode()
+        raw=b'x'*65536+b'\n'+case+b'y'*262144
+        tail,count,host,observed=self.m.read_native_output(io.BytesIO(raw),b'',0,300)
+        self.assertEqual(count,len(raw));self.assertEqual(observed,'ProStoreTests/'+self.m.CASE_NAMES[0])
+        self.assertLessEqual(len(tail),131072);self.assertNotIn(case,tail)
+        self.assertFalse(self.observation(case=observed));self.assertEqual(self.calls,[])
+    def test_log_drain_never_extends_deadline(self):
+        reader=mock.Mock()
+        with self.assertRaises(AssertionError):self.m.read_native_output(reader,b'',0,225)
+        reader.read.assert_not_called()
+        def slow_read(size):self.clock[0]=301;return b'x'
+        with self.assertRaises(AssertionError):self.m.read_native_output(SimpleNamespace(read=slow_read),b'',0,300)
+
+class NativeObservationCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.m=load('native_observation_command',DRIVER);self.r=self.m.load('readiness')
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name);self.clock=[100.0]
+        self.run=SimpleNamespace(meta={'commands':[]},persist=lambda:None)
+    def test_expired_observer_slice_stops_before_spawn(self):
+        rows=[]
+        with mock.patch.object(self.r,'supported',return_value=True),mock.patch.object(subprocess,'Popen') as spawn:
+            self.r.command(['/bin/ps','-p','999','-o','pid='],'command.txt',time.monotonic()-1,self.root,{},self.root,rows,run=self.run)
+        spawn.assert_not_called();self.assertEqual(rows[0]['status'],'NOT_STARTED_DEADLINE')
+    def test_real_diagnostic_helper_records_spawn_failure_without_payload_execution(self):
+        rows=[]
+        with mock.patch.object(self.r,'supported',return_value=True),mock.patch.object(subprocess,'Popen',side_effect=OSError('cannot spawn')):
+            self.r.command(['/bin/ps','-p','999','-o','pid='],'command.txt',time.monotonic()+5,self.root,{},self.root,rows,run=self.run)
+        self.assertEqual(rows[0]['status'],'UNAVAILABLE');self.assertEqual(rows[0]['error'],'OSError')
+        self.assertFalse(self.run.meta['diagnostic_cleanup_unconfirmed'])
+    def test_real_diagnostic_helper_hang_uses_shared_five_second_budget_and_cleans(self):
+        proc=SimpleNamespace(pid=998,returncode=None);rows=[];closed=[]
+        def stop(p,deadline,row):
+            self.assertIs(p,proc);closed.append(deadline);self.clock[0]=104
+            row['cleanup_confirmed']=True;p.returncode=-15
+        with mock.patch.object(self.r,'supported',return_value=True),mock.patch.object(subprocess,'Popen',return_value=proc),mock.patch.object(self.r,'observe_owned',return_value=False),mock.patch.object(self.r,'stop_observer',side_effect=stop),mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]),mock.patch.object(time,'sleep',side_effect=lambda s:self.clock.__setitem__(0,self.clock[0]+s)):
+            self.r.command(['/bin/ps','-p','999','-o','pid='],'command.txt',105,self.root,{},self.root,rows,run=self.run)
+        self.assertEqual(rows[0]['status'],'TIMEOUT');self.assertEqual(closed,[105])
+        self.assertTrue(rows[0]['owned_group_absent']);self.assertFalse(self.run.meta['diagnostic_cleanup_unconfirmed'])
+        self.assertLess(self.clock[0],105)
+    def test_observationr_cancellation_cleans_then_propagates_before_any_next_operation(self):
+        proc=SimpleNamespace(pid=998,returncode=None);rows=[];closed=[]
+        def stop(p,deadline,row):
+            closed.append(p.pid);row['cleanup_confirmed']=True;p.returncode=-15
+        with mock.patch.object(self.r,'supported',return_value=True),mock.patch.object(subprocess,'Popen',return_value=proc),mock.patch.object(self.r,'observe_owned',side_effect=InterruptedError('cancelled')),mock.patch.object(self.r,'stop_observer',side_effect=stop):
+            with self.assertRaises(InterruptedError):
+                self.r.command(['/bin/ps','-p','999','-o','pid='],'command.txt',time.monotonic()+5,self.root,{},self.root,rows,run=self.run)
+        self.assertEqual(closed,[998]);self.assertTrue(rows[0]['owned_group_absent'])
+        self.assertFalse(self.run.meta['diagnostic_cleanup_unconfirmed'])
+        self.assertNotIn('native_storekit_tests',self.run.meta)
+    @unittest.skipUnless(hasattr(os,'waitid') and hasattr(os,'WNOWAIT'),'requires non-reaping child observation')
+    def test_direct_child_that_exits_during_observation_remains_reserved_until_return(self):
+        child='import select,sys; ready,_,_=select.select([sys.stdin],[],[],5); sys.stdin.read(1) if ready else None'
+        proc=subprocess.Popen([sys.executable,'-B','-c',child],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        self.m.SCOPE=self.root;self.m.ROOT=self.root;item={};observations=[]
+        def inert_observation(args,name,deadline,out,env,cwd,rows,*,run):
+            proc.stdin.write(b'x');proc.stdin.flush()
+            end=time.monotonic()+2
+            while not self.r.observe_owned(proc):
+                self.assertLess(time.monotonic(),end);time.sleep(.01)
+            observations.append(proc.returncode)
+            rows.append({'kind':'diagnostic','status':'RETURNED','owned_group_absent':True})
+        try:
+            now=time.monotonic()
+            with mock.patch.object(self.m,'load',return_value=self.r),mock.patch.object(self.r,'command',side_effect=inert_observation):
+                self.assertTrue(self.m.observe_native_startup(self.run,proc,item,now-225,now+5,None,{}))
+            self.assertEqual(observations,[None]);self.assertIsNone(proc.returncode)
+            self.assertTrue(self.r.observe_owned(proc));self.assertEqual(proc.wait(timeout=2),0)
+        finally:
+            try:proc.stdin.close()
+            finally:
+                if proc.returncode is None:
+                    proc.terminate()
+                    try:proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=2)
 
 
 class NativeCohortWorkflowTests(unittest.TestCase):

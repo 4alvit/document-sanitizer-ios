@@ -8,8 +8,7 @@ import sys
 import tempfile
 import time
 from types import SimpleNamespace
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock, skipUnless
 
 
 HERE = Path(__file__).resolve().parent
@@ -18,7 +17,7 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
 
-class RuntimeWaitTests(unittest.TestCase):
+class RuntimeWaitTests(TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -108,12 +107,41 @@ class RuntimeWaitTests(unittest.TestCase):
         self.assertEqual(self.waits, [45])
 
 
-class ChildOwnershipTests(unittest.TestCase):
+class ChildOwnershipTests(TestCase):
     def load_smoke(self, name):
         spec = importlib.util.spec_from_file_location('diagnostic_' + name, HERE / ('release_smoke/' + name + '.py'))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
+
+    def test_persistence_cancellation_is_not_masked_by_cleanup_failure(self):
+        for interruption in (KeyboardInterrupt, SystemExit, InterruptedError):
+            with self.subTest(interruption=interruption), tempfile.TemporaryDirectory() as directory:
+                run = SimpleNamespace(meta={'commands': []},
+                                      persist=mock.Mock(side_effect=[None, interruption('cancel')]))
+                proc = SimpleNamespace(pid=123, returncode=None)
+                with mock.patch.object(m, 'supported', return_value=True), \
+                        mock.patch.object(m.subprocess, 'Popen', return_value=proc), \
+                        mock.patch.object(m, 'observe_owned', return_value=True), \
+                        mock.patch.object(m, 'stop_observer', side_effect=m.CleanupUnknown('fixture')):
+                    with self.assertRaisesRegex(interruption, 'cancel'):
+                        m.command(['inert'], 'out.txt', time.monotonic() + 4,
+                                  Path(directory), {}, Path(directory), [], run=run)
+                self.assertTrue(run.meta['diagnostic_cleanup_unconfirmed'])
+
+    def test_persistence_failure_preserves_original_cleanup_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = SimpleNamespace(meta={'commands': []},
+                                  persist=mock.Mock(side_effect=[None, OSError('disk full')]))
+            proc = SimpleNamespace(pid=123, returncode=None)
+            with mock.patch.object(m, 'supported', return_value=True), \
+                    mock.patch.object(m.subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(m, 'observe_owned', return_value=True), \
+                    mock.patch.object(m, 'stop_observer', side_effect=m.CleanupUnknown('fixture')):
+                with self.assertRaises(m.CleanupUnknown):
+                    m.command(['inert'], 'out.txt', time.monotonic() + 4,
+                              Path(directory), {}, Path(directory), [], run=run)
+            self.assertEqual(run.meta['diagnostic_persist_error'], 'OSError')
 
     def test_interruption_before_pid_registration_preserves_cleanup_obligation(self):
         class InterruptedPid:
@@ -296,8 +324,8 @@ class ChildOwnershipTests(unittest.TestCase):
         self.assertEqual((run.start, run.end), (0, 680))
 
 
-@unittest.skipUnless(os.name == 'posix' and m.supported(), 'POSIX WNOWAIT required')
-class InertChildTests(unittest.TestCase):
+@skipUnless(os.name == 'posix' and m.supported(), 'POSIX WNOWAIT required')
+class InertChildTests(TestCase):
     def test_output_cap_and_owned_descendant_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
@@ -318,4 +346,4 @@ class InertChildTests(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    main()

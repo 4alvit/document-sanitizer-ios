@@ -1,8 +1,75 @@
 import XCTest
+import UIKit
+import UniformTypeIdentifiers
 @testable import CleanSend
 
 @MainActor
 final class ShareCompletionTests: XCTestCase {
+    func testSharePreviewKeepsExactFileURLForEveryActivity() throws {
+        // No file is created: preparing metadata and returning an item must not
+        // require reading, rendering, or rewriting the exported file.
+        let url = URL(fileURLWithPath: "/not-created/RedactLeaf-export.pdf")
+        let item = ExportActivityItemSource(url: url)
+        let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        XCTAssertEqual(item.activityViewControllerPlaceholderItem(controller) as? URL, url)
+        let types: [UIActivity.ActivityType?] = [nil, .copyToPasteboard, .mail, .message, .print,
+            UIActivity.ActivityType(rawValue: "test.third-party.share")]
+        for type in types {
+            XCTAssertEqual(item.activityViewController(controller, itemForActivityType: type) as? URL, url)
+        }
+        let metadata = try XCTUnwrap(item.activityViewControllerLinkMetadata(controller))
+        XCTAssertEqual(metadata.originalURL, url)
+        XCTAssertEqual(metadata.url, url)
+        XCTAssertTrue(try XCTUnwrap(metadata.url).isFileURL)
+        XCTAssertEqual(metadata.title, url.lastPathComponent)
+        XCTAssertNil(metadata.remoteVideoURL)
+        XCTAssertNil(metadata.videoProvider)
+        XCTAssertTrue(metadata === item.activityViewControllerLinkMetadata(controller))
+    }
+
+    func testSharePreviewPreservesMultipleFileOrderAndIdentity() throws {
+        let urls = ["RedactLeaf-page-3.png", "RedactLeaf-page-1.jpeg", "RedactLeaf-export.pdf"]
+            .map { URL(fileURLWithPath: "/not-created/\($0)") }
+        let items = ExportActivityItemSource.items(for: urls)
+        let controller = UIActivityViewController(activityItems: [urls[0]], applicationActivities: nil)
+        XCTAssertEqual(items.count, urls.count)
+        XCTAssertTrue(ExportActivityItemSource.items(for: []).isEmpty)
+        for (index, item) in items.enumerated() {
+            XCTAssertEqual(item.activityViewControllerPlaceholderItem(controller) as? URL, urls[index])
+            XCTAssertEqual(item.activityViewController(controller, itemForActivityType: nil) as? URL, urls[index])
+            let metadata = try XCTUnwrap(item.activityViewControllerLinkMetadata(controller))
+            XCTAssertEqual(metadata.originalURL, urls[index])
+            XCTAssertEqual(metadata.url, urls[index])
+            XCTAssertEqual(metadata.title, urls[index].lastPathComponent)
+        }
+    }
+
+    func testSharePreviewProvidesSmallGenericPNGWithoutDocumentAccess() async throws {
+        let controller = UIActivityViewController(activityItems: [URL(fileURLWithPath: "/not-created/RedactLeaf-export.pdf")], applicationActivities: nil)
+        let completed = expectation(description: "Prepared PNG representations")
+        completed.expectedFulfillmentCount = 2
+        for name in ["RedactLeaf-export.pdf", "RedactLeaf-page-1.png"] {
+            let item = ExportActivityItemSource(url: URL(fileURLWithPath: "/not-created/\(name)"))
+            let metadata = try XCTUnwrap(item.activityViewControllerLinkMetadata(controller))
+            let provider = try XCTUnwrap(metadata.imageProvider)
+            XCTAssertTrue(provider === metadata.iconProvider)
+            XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.png.identifier))
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.png.identifier) { data, error in
+                XCTAssertNil(error)
+                if let data, let image = UIImage(data: data) {
+                    XCTAssertGreaterThan(data.count, 0)
+                    XCTAssertLessThanOrEqual(data.count, 32 * 1024)
+                    XCTAssertEqual(image.cgImage?.width, 64)
+                    XCTAssertEqual(image.cgImage?.height, 64)
+                } else {
+                    XCTFail("Missing prepared PNG preview")
+                }
+                completed.fulfill()
+            }
+        }
+        await fulfillment(of: [completed], timeout: 3)
+    }
+
     func testShareCompletionRefreshesNewQueueWithoutConsumingIt() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("ShareCompletionTests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
