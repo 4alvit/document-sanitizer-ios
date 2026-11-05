@@ -1,5 +1,6 @@
 """Small bounded read-only payload/container observations; never native or network."""
 import hashlib, json, math, os, re, stat, struct, time
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 def identity(info):return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
@@ -38,17 +39,22 @@ def parse_share_timing(raw,trace):
          'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),
          'scope':'Diagnostic event times only; sheetAppeared is not native Close readiness.'}
 
+@contextmanager
+def _relative_descriptor(parent,name,flags):
+ fd=os.open(name,flags,dir_fd=parent)
+ try:yield fd
+ finally:os.close(fd)
+
 def read_share_timing(data,trace,budget,check):
  """One small no-follow read in the existing owned-container observation."""
  check()
  if not re.fullmatch(SHARE_UUID,trace):return {'status':'invalid_trace'}
- opened=[]
  try:
-  with budget.directory(data) as root:
+  with budget.directory(data) as root, ExitStack() as opened:
    parent=root
    for name in ('Library','Caches','ShareTiming'):
-    parent=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent);opened.append(parent)
-   fd=os.open(trace+'.jsonl',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=parent);opened.append(fd)
+    parent=opened.enter_context(_relative_descriptor(parent,name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW))
+   fd=opened.enter_context(_relative_descriptor(parent,trace+'.jsonl',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK))
    before=os.fstat(fd)
    if not stat.S_ISREG(before.st_mode) or before.st_size>16*1024:raise ValueError('file bound')
    raw=os.read(fd,16*1024+1)
@@ -56,8 +62,6 @@ def read_share_timing(data,trace,budget,check):
    if identity(os.stat(trace+'.jsonl',dir_fd=parent,follow_symlinks=False))!=identity(before):return {'status':'changing'}
  except FileNotFoundError:return {'status':'missing'}
  except (OSError,ValueError) as error:return {'status':'unavailable','error_type':type(error).__name__}
- finally:
-  for fd in reversed(opened):os.close(fd)
  check()
  try:return parse_share_timing(raw,trace)
  except (ValueError,TypeError) as error:return {'status':'invalid','error_type':type(error).__name__}

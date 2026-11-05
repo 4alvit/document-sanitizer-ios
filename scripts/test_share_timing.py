@@ -3,7 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
-import unittest
+from unittest import TestCase, main, mock
 
 ROOT = Path(__file__).resolve().parent / 'release_smoke'
 
@@ -25,7 +25,7 @@ def event(**changes):
 def encoded(*rows):
     return b''.join(json.dumps(row).encode() + b'\n' for row in rows)
 
-class ShareTimingTests(unittest.TestCase):
+class ShareTimingTests(TestCase):
     def test_selected_case_and_exact_single_trace(self):
         marker = ('REDACT_SHARE_TRACE trace=' + TRACE + '\n').encode()
         self.assertIsNone(R.selected_share_trace(marker))
@@ -80,9 +80,61 @@ class ShareTimingTests(unittest.TestCase):
             (directory / (TRACE + '.jsonl')).symlink_to(outside)
             self.assertEqual(E.read_share_timing(data, TRACE, B, lambda: None)['status'], 'unavailable')
 
+    def test_all_opened_descriptors_close_on_read_and_partial_open_failure(self):
+        for failure in ('read', 'open'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                data = Path(tmp).resolve()
+                directory = data / 'Library/Caches/ShareTiming'
+                directory.mkdir(parents=True)
+                (directory / (TRACE + '.jsonl')).write_bytes(encoded(event()))
+                original_open, original_close = E.os.open, E.os.close
+                opened, closed = [], []
+                def open_fd(name, *args, **kwargs):
+                    if failure == 'open' and name == 'ShareTiming':
+                        raise OSError('fixture')
+                    fd = original_open(name, *args, **kwargs)
+                    opened.append(fd)
+                    return fd
+                def close_fd(fd):
+                    closed.append(fd)
+                    original_close(fd)
+                with mock.patch.object(E.os, 'open', side_effect=open_fd), \
+                        mock.patch.object(E.os, 'close', side_effect=close_fd), \
+                        mock.patch.object(E.os, 'read', side_effect=OSError('fixture')):
+                    self.assertEqual(E.read_share_timing(data, TRACE, B, lambda: None)['status'], 'unavailable')
+                self.assertTrue(opened)
+                self.assertCountEqual(opened, closed)
+
     def test_original_deadline_is_not_swallowed_or_reset(self):
         def expired(): raise TimeoutError('existing deadline')
         with self.assertRaises(TimeoutError): E.read_share_timing(Path('/unused'), TRACE, B, expired)
 
+    def test_close_error_does_not_leave_other_descriptors_open(self):
+        for point in ('ancestor', 'trace'):
+            with self.subTest(point=point), tempfile.TemporaryDirectory() as tmp:
+                data = Path(tmp).resolve()
+                directory = data / 'Library/Caches/ShareTiming'
+                directory.mkdir(parents=True)
+                (directory / (TRACE + '.jsonl')).write_bytes(encoded(event()))
+                original_open, original_close = E.os.open, E.os.close
+                opened, closed, trace = [], [], []
+                def open_fd(name, *args, **kwargs):
+                    fd = original_open(name, *args, **kwargs)
+                    opened.append(fd)
+                    if name == TRACE + '.jsonl':
+                        trace.append(fd)
+                    return fd
+                def close_fd(fd):
+                    closed.append(fd)
+                    original_close(fd)
+                    if (point == 'ancestor' and len(closed) == 1) or (point == 'trace' and trace == [fd]):
+                        trace.clear()
+                        raise OSError('fixture close failure')
+                with mock.patch.object(E.os, 'open', side_effect=open_fd), \
+                        mock.patch.object(E.os, 'close', side_effect=close_fd):
+                    result = E.read_share_timing(data, TRACE, B, lambda: None)
+                self.assertEqual(result['status'], 'unavailable')
+                self.assertCountEqual(opened, closed)
+
 if __name__ == '__main__':
-    unittest.main()
+    main()
