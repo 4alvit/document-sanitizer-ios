@@ -124,7 +124,7 @@ class NativeStoreKitBindingTests(unittest.TestCase):
     def setUp(self):self.m=load('native_storekit_test',DRIVER);self.now=dt.datetime.now(dt.timezone.utc)
     def test_eight_existing_cases_share_one_unchanged_bounded_command(self):
         plan=self.m.validate_test_plan(json.loads((ROOT/'CleanSend.xctestplan').read_bytes()))
-        self.assertEqual(len(plan['cases']),8);self.assertEqual(plan['maximum_case_seconds'],180);self.assertEqual(plan['outer_seconds'],300)
+        self.assertEqual(len(plan['cases']),8);self.assertEqual(plan['maximum_case_seconds'],180);self.assertEqual(plan['outer_seconds'],600)
         args=self.m.test_arguments('A09F18F8-31EF-432D-A426-0197E73D75E8',Path('/fixture/result.xcresult'),Path('/fixture/native-unit-host.xctestrun'))
         self.assertEqual(args[:4],['xcodebuild','test-without-building','-xctestrun','/fixture/native-unit-host.xctestrun'])
         self.assertNotIn('-project',args);self.assertNotIn('-testPlan',args)
@@ -346,12 +346,12 @@ class NativeStartupBudgetTests(unittest.TestCase):
             return SimpleNamespace(st_blocks=0,st_mode=0o040700)
         with mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=32*2**30)),mock.patch.object(os,'walk',return_value=[('/fixture',[],[])]),mock.patch.object(os,'lstat',side_effect=late_stat):
             with self.assertRaisesRegex(AssertionError,'owned stat deadline'):resources.check(526)
-    def test_test_budget_retains300_body4_stop150_final_and_rejects_late_admission(self):
-        self.clock[0]=626
+    def test_diagnostic_budget_retains600_body4_stop150_final_and_rejects_late_admission(self):
+        self.clock[0]=326
         self.assertEqual(self.m.native_test_end(self.run,self.clock[0]),926)
         self.assertEqual(self.m.TEST_STOP_END-self.m.TEST_BODY_END,4)
         self.assertEqual(self.m.FINAL_VERIFY_END-self.m.TEST_STOP_END,150)
-        self.clock[0]=626.001
+        self.clock[0]=326.001
         with self.assertRaises(AssertionError):self.m.native_test_end(self.run,self.clock[0])
         self.assertEqual(self.run.start,100)
     def test_final_inventory_has_original980_deadline(self):
@@ -371,7 +371,7 @@ class NativePolicyWindowTests(unittest.TestCase):
         run=native.Run()
         self.assertEqual(run.end,980);self.assertEqual(run.meta['total_seconds'],1200)
         self.assertEqual(run.meta['phase_deadlines_seconds'],{'work':980,'recovery':1002,'shutdown':1039,'delete':1058,'absence':1080,'evidence':1192})
-        self.assertEqual(self.m.NATIVE_PHASES,{'startup':376,'test_latest_start':526,'test_body':826,'test_stop':830,'final_verification':980,'work':980,'recovery':1002,'shutdown':1039,'delete':1058,'absence':1080,'evidence':1192,'whole':1200})
+        self.assertEqual(self.m.NATIVE_PHASES,{'startup':376,'test_latest_start':226,'test_body':826,'test_stop':830,'final_verification':980,'work':980,'recovery':1002,'shutdown':1039,'delete':1058,'absence':1080,'evidence':1192,'whole':1200})
     def test_cleanup_ack_uses1080_and_rejects_old660_identity(self):
         for correct in (True,False):
             with self.subTest(correct=correct):
@@ -718,7 +718,7 @@ class SingleInstallerWorkerTests(unittest.TestCase):
         self.expected={'.':{'directory':True,'mode':'0755'},'CleanSend':{'mode':'0755','sha256':'a'*64},'PlugIns/CleanSendTests.xctest/CleanSendTests':{'mode':'0755','sha256':'b'*64}}
         self.commands=[];self.inventories=[];self.lookup_count=0;self.lifecycle=self.m.load('lifecycle')
         self.toolchain='Xcode 26.3\nBuild version 17C529';self.runtime_version='26.2';self.runtime_identifier=self.m.RUNTIME
-    def exercise(self,*,start_case=True,changed_container=False,changed_bytes=False,profile_rejected=False):
+    def exercise(self,*,start_case=True,changed_container=False,changed_bytes=False,profile_rejected=False,start_case_after=0):
         m=self.m;clock=[100.0];phase_checks=[]
         def check(phase):
             phase_checks.append(phase);assert clock[0]<90+phase
@@ -760,16 +760,17 @@ class SingleInstallerWorkerTests(unittest.TestCase):
             text=b'NATIVE_STOREKIT_HOST '+json.dumps(marker).encode()+b'\n'
             if start_case:text+=("Test Case '-[CleanSendTests.ProStoreTests "+m.CASE_NAMES[0]+"]' started.\n").encode()
             else:text+=b"Test Suite 'ProStoreTests' started.\n"
-            kwargs['stdout'].write(text);kwargs['stdout'].flush()
-            process=SimpleNamespace(pid=99,returncode=None);polls=[0]
+            process=SimpleNamespace(pid=99,returncode=None);command_start=clock[0];written=[False]
             def poll():
-                polls[0]+=1
-                if polls[0]>1:process.returncode=0
+                elapsed=clock[0]-command_start
+                if elapsed>=start_case_after and not written[0]:
+                    kwargs['stdout'].write(text);kwargs['stdout'].flush();written[0]=True
+                if elapsed>=start_case_after+1:process.returncode=0
                 return process.returncode
             process.poll=poll;return process
         def close(process,row):process.returncode=0;row['owned_group_absent']=True
         context={'head':'a'*40,'checkout':'a'*40,'run':'123','attempt':'1','job_admission':{'fixture':True}}
-        with mock.patch.object(m,'load',side_effect=lambda name:{'window':budget,'evidence':evidence,'lifecycle':self.lifecycle}[name]),mock.patch.object(m,'Resources',return_value=resource),mock.patch.object(m,'bind_unit_test_host',side_effect=bind),mock.patch.object(self.lifecycle.Run,'command',new=command),mock.patch.object(self.lifecycle,'stop_group',side_effect=close),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(signal,'signal'),mock.patch.object(time,'monotonic',side_effect=lambda:clock[0]),mock.patch.object(time,'sleep'),mock.patch.object(Path,'home',return_value=self.root/'home'),mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='arm64')):
+        with mock.patch.object(m,'load',side_effect=lambda name:{'window':budget,'evidence':evidence,'lifecycle':self.lifecycle}[name]),mock.patch.object(m,'Resources',return_value=resource),mock.patch.object(m,'bind_unit_test_host',side_effect=bind),mock.patch.object(self.lifecycle.Run,'command',new=command),mock.patch.object(self.lifecycle,'stop_group',side_effect=close),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(signal,'signal'),mock.patch.object(time,'monotonic',side_effect=lambda:clock[0]),mock.patch.object(time,'sleep',side_effect=lambda seconds:clock.__setitem__(0,clock[0]+seconds)),mock.patch.object(Path,'home',return_value=self.root/'home'),mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='arm64')):
             result=m.worker(90,context)
         metadata=json.loads((self.scope/'metadata.json').read_bytes())
         self.assertFalse(any(row[:3]==['xcrun','simctl','install'] for row in self.commands))
@@ -788,6 +789,32 @@ class SingleInstallerWorkerTests(unittest.TestCase):
         self.assertEqual(metadata['cleanup'],{'shutdown':0,'delete':0});self.assertTrue(metadata['device_removed'])
         self.assertEqual(metadata['native_phase_deadlines_seconds'],m.NATIVE_PHASES)
         return result,metadata
+    def test_late_first_case_after_original_boundary_remains_a_real_eight_case_run(self):
+        result,metadata=self.exercise(start_case_after=350)
+        self.assertEqual(result,0);self.assertEqual(metadata['native_storekit_tests'],8)
+        command=next(row for row in metadata['commands'] if row['args'][:2]==['xcodebuild','test-without-building'])
+        boundary=command['original300_boundary']
+        self.assertGreaterEqual(boundary['elapsed_seconds'],300);self.assertLess(boundary['elapsed_seconds'],301)
+        self.assertFalse(boundary['inert_host_observed']);self.assertIsNone(boundary['first_case_started'])
+        self.assertEqual(metadata['first_started_native_case'],'ProStoreTests/'+self.m.CASE_NAMES[0])
+        self.assertTrue(metadata['installed_after_exact_baseline']);self.assertTrue(metadata['device_removed'])
+    def test_boundary_records_a_case_that_starts_exactly_at_original_deadline(self):
+        result,metadata=self.exercise(start_case_after=300)
+        self.assertEqual(result,0)
+        command=next(row for row in metadata['commands'] if row['args'][:2]==['xcodebuild','test-without-building'])
+        self.assertEqual(command['original300_boundary']['first_case_started'],'ProStoreTests/'+self.m.CASE_NAMES[0])
+        self.assertTrue(command['original300_boundary']['inert_host_observed'])
+    def test_diagnostic_ceiling_exhaustion_cannot_pass_or_skip_owned_cleanup(self):
+        result,metadata=self.exercise(start_case_after=650)
+        self.assertEqual(result,1);self.assertEqual(metadata['native_storekit_tests'],0)
+        self.assertEqual(self.lookup_count,0);self.assertTrue(metadata['device_removed'])
+        command=next(row for row in metadata['commands'] if row['args'][:2]==['xcodebuild','test-without-building'])
+        self.assertTrue(command['owned_group_absent']);self.assertIn('original300_boundary',command)
+    def test_early_completion_does_not_invent_original_boundary(self):
+        result,metadata=self.exercise()
+        self.assertEqual(result,0)
+        command=next(row for row in metadata['commands'] if row['args'][:2]==['xcodebuild','test-without-building'])
+        self.assertNotIn('original300_boundary',command)
     def test_one_install_authority_first_capture_after_real_start_and_exact_after(self):
         result,metadata=self.exercise();self.assertEqual(result,0)
         during=json.loads((self.scope/'installed-during.json').read_bytes());after=json.loads((self.scope/'installed-after.json').read_bytes())

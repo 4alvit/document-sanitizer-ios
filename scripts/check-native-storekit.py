@@ -16,9 +16,11 @@ TOTAL=1200;WORK_END=980
 RECOVERY_END=1002;SHUTDOWN_END=1039;DELETE_END=1058;CLEANUP_END=1080
 EVIDENCE_END=TOTAL-8
 COLD_BOOT_LIMIT=300
-STARTUP_END=376;TEST_LATEST_START=526
+STARTUP_END=376;TEST_LATEST_START=226
 TEST_BODY_END=826;TEST_STOP_END=830;FINAL_VERIFY_END=WORK_END
-TEST_ADMISSION=454
+TEST_ADMISSION=754
+# Diagnostic experiment only; do not merge this temporary command ceiling
+# without separate policy review. Whole/stop/verification clocks are unchanged.
 SHUTDOWN_LIMIT=45;DELETE_LIMIT=25
 NATIVE_PHASES={'startup':STARTUP_END,'test_latest_start':TEST_LATEST_START,
  'test_body':TEST_BODY_END,'test_stop':TEST_STOP_END,'final_verification':FINAL_VERIFY_END,
@@ -84,7 +86,7 @@ def validate_test_plan(data):
  targets=[t for t in data['testTargets'] if t['target']['name']=='CleanSendTests'];assert len(targets)==1 and targets[0]['parallelizable'] is False
  # The local configuration is owned by SKTestSession; no invented test-plan key.
  assert 'storekit' not in json.dumps(data).lower()
- return {'cases':sorted(CASES),'maximum_case_seconds':180,'outer_seconds':300,'command_count':1}
+ return {'cases':sorted(CASES),'maximum_case_seconds':180,'outer_seconds':600,'command_count':1}
 
 NATIVE_HOST_MARKER='REDACT_NATIVE_UNIT_TEST_HOST'
 
@@ -223,7 +225,7 @@ def prepare_context(start):
   assert time.monotonic()<start+30
   data=json.loads(raw);job=admit_job(data,run,attempt,head,dt.datetime.now(dt.timezone.utc),start+TOTAL-time.monotonic())
   write_small(SCOPE/'job-metadata.json',data,start)
-  context={'host_architecture':os.uname().machine,'repository':REPO,'run':run,'attempt':attempt,'head':head,'checkout':os.environ['GITHUB_SHA'],'scope':str(SCOPE),'seconds':TOTAL,'phase_deadlines_seconds':dict(NATIVE_PHASES),'start_monotonic':start,'job_admission':job,'case_identities':sorted(CASES),'case_count':8,'outer_seconds':300,'case_seconds':180,'runtime':RUNTIME,'device_type':DEVICE,'no_real_account_sign_in':True,'retry':False}
+  context={'host_architecture':os.uname().machine,'repository':REPO,'run':run,'attempt':attempt,'head':head,'checkout':os.environ['GITHUB_SHA'],'scope':str(SCOPE),'seconds':TOTAL,'phase_deadlines_seconds':dict(NATIVE_PHASES),'start_monotonic':start,'job_admission':job,'case_identities':sorted(CASES),'case_count':8,'outer_seconds':600,'case_seconds':180,'runtime':RUNTIME,'device_type':DEVICE,'no_real_account_sign_in':True,'retry':False}
   write_small(SCOPE/'context.json',context,start);report.update(status='admitted',job_admission=job,context_sha256=sha(SCOPE/'context.json'))
  except BaseException as error:failure=error;report.update(status='failed',error=safe_failure(error))
  finally:
@@ -238,7 +240,7 @@ def validate_context(path,start):
  raw=path.read_bytes();assert len(raw)<=65536 and hashlib.sha256(raw).hexdigest()==os.environ['NATIVE_STOREKIT_CONTEXT_SHA']
  context=json.loads(raw);assert context['repository']==REPO and context['start_monotonic']==start
  assert context['host_architecture']==os.uname().machine=='arm64'
- assert context['case_identities']==sorted(CASES) and context['case_count']==8 and context['outer_seconds']==300 and context['case_seconds']==180 and context['seconds']==TOTAL
+ assert context['case_identities']==sorted(CASES) and context['case_count']==8 and context['outer_seconds']==600 and context['case_seconds']==180 and context['seconds']==TOTAL
  assert context['phase_deadlines_seconds']==NATIVE_PHASES
  assert context['runtime']==RUNTIME and context['device_type']==DEVICE and context['retry'] is False
  assert context['head']==os.environ['EXPECTED_HEAD_SHA'] and context['run']==os.environ['GITHUB_RUN_ID'] and context['attempt']==os.environ['GITHUB_RUN_ATTEMPT'] and context['checkout']==os.environ['GITHUB_SHA']
@@ -381,8 +383,8 @@ def observed_native_case_start(tail):
  return None
 
 def native_test_end(run,now):
- assert run.remaining()>=TEST_ADMISSION,'300s XCTest and final verification admission unavailable'
- return min(now+300,run.start+TEST_BODY_END)
+ assert run.remaining()>=TEST_ADMISSION,'600s diagnostic XCTest and final verification admission unavailable'
+ return min(now+600,run.start+TEST_BODY_END)
 
 def native_session_milestones(scope,check):
  # Diagnostic only: existing closed files, fixed milestone types, no raw lines,
@@ -535,26 +537,31 @@ def worker(start,context):
   # Xcodebuild is the only installation authority. No prelaunch installed
   # snapshot is claimed; compilation/signature/config proofs above remain.
   run.end=WORK_END
-  assert run.remaining()>=TEST_ADMISSION,'full300s XCTest and final verification admission unavailable'
-  argv=test_arguments(uid,SCOPE/'result.xcresult',SCOPE/'native-unit-host.xctestrun');item={'args':argv,'started_at':l.now(),'timeout_seconds':300};run.meta['commands'].append(item);run.persist()
+  assert run.remaining()>=TEST_ADMISSION,'full600s diagnostic XCTest and final verification admission unavailable'
+  argv=test_arguments(uid,SCOPE/'result.xcresult',SCOPE/'native-unit-host.xctestrun');item={'args':argv,'started_at':l.now(),'timeout_seconds':600};run.meta['commands'].append(item);run.persist()
   proc=None;tail=b'';log_read=0;previous_end=run.end;inert_host_observed=False
   try:
    with (SCOPE/'test.log').open('xb') as log:
-    end=native_test_end(run,time.monotonic());run.end=min(previous_end,end-start)
+    test_started=time.monotonic();end=native_test_end(run,test_started);run.end=min(previous_end,end-start)
     proc=subprocess.Popen(argv,cwd=ROOT,env=l.ENV,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
     item['owned_process_group']=proc.pid;run.persist()
     with (SCOPE/'test.log').open('rb') as reader:
      while proc.poll() is None:
-      resources.check(run.end);assert time.monotonic()<end,'native StoreKit outer300s limit'
+      resources.check(run.end);assert time.monotonic()<end,'native StoreKit diagnostic outer600s limit'
       chunk=reader.read(65536);log_read+=len(chunk);assert log_read<=16*2**20
       tail=(tail+chunk)[-131072:]
       inert_host_observed=inert_host_observed or observed_inert_unit_host(tail)
       started_case=observed_native_case_start(tail)
+      if time.monotonic()-test_started>=300 and 'original300_boundary' not in item:
+       item['original300_boundary']={'elapsed_seconds':time.monotonic()-test_started,
+        'inert_host_observed':inert_host_observed,'first_case_started':started_case or run.meta.get('first_started_native_case'),
+        'log_bytes_examined':log_read,'diagnostic_only':True}
+       run.persist()
       if not during and started_case:
        run.meta['first_started_native_case']=started_case
        installed('installed-during.json',initial_install=True);during=True
       time.sleep(min(.25,max(0,end-time.monotonic())))
-   resources.check(run.end);assert time.monotonic()<end,'native StoreKit outer300s completion limit'
+   resources.check(run.end);assert time.monotonic()<end,'native StoreKit diagnostic outer600s completion limit'
    run.meta['xcodebuild_returncode']=proc.returncode
    run.meta['explicit_inert_unit_host_observed']=inert_host_observed
    assert proc.returncode==0 and during and inert_host_observed
