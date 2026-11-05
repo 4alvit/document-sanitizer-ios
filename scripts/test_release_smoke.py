@@ -683,7 +683,8 @@ class PackageObservationRootTests(unittest.TestCase):
             resources=SimpleNamespace(device=self.device,check=self.check),uid=self.UID,b=self.b,
             sampler=sampler,events=events,run=SimpleNamespace(meta={'container_observation':{}},persist=lambda:None))
         exec(step,env)
-        self.assertTrue(env['during']);self.assertIsNone(env['observation_roots'])
+        self.assertFalse(env['during']);env['installed'].assert_not_called()
+        self.assertIsNone(env['observation_roots'])
         self.assertEqual(queried,[]);self.assertEqual(sampler.events,[])
         # Workspace.init has not run at case start. It now replaces the same
         # path's directory; retaining the old root inode would fail here.
@@ -700,6 +701,78 @@ class PackageObservationRootTests(unittest.TestCase):
         export.unlink();shutil.rmtree(ready);exec(step,env)
         self.assertEqual(sampler.assert_workflow()['matched_hashes'],[digest(b'current export')])
         self.assertEqual(len(queried),2)  # No second admission or repeated native lookup.
+
+    def payload_worker(self):
+        # Execute the production installed() closure and actual worker branches;
+        # only native container lookup/source binding are replaced by fixtures.
+        worker=next(n for n in ast.parse((SMOKE/'run.py').read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='worker')
+        installed=next(n for n in worker.body if isinstance(n,ast.FunctionDef) and n.name=='installed')
+        factory=ast.parse('def factory(baseline):\n installed_runner_baseline=baseline\n return installed\n').body[0]
+        factory.body.insert(1,installed)
+        loop=next(n for n in ast.walk(worker) if isinstance(n,ast.While) and ast.unparse(n.test)=='proc.poll() is None')
+        branches=[n for n in loop.body if isinstance(n,ast.If)]
+        self.assertEqual(len(branches),3)
+        applications=self.device/'data/Containers/Bundle/Application'
+        old=applications/self.FIRST/'CleanSend.app';old.mkdir(parents=True)
+        (old/'CleanSend').write_bytes(b'exact published executable');(old/'CleanSend').chmod(0o755)
+        new=applications/self.SECOND/'CleanSend.app';shutil.copytree(old,new)
+        expected=self.e.payload_inventory(old,self.b,self.check)
+        runner=applications/self.GROUP/'CleanSendUITests-Runner.app';runner.mkdir(parents=True)
+        (runner/'Runner').write_bytes(b'exact accepted runner');(runner/'Runner').chmod(0o755)
+        entries=self.e.payload_inventory(runner,self.b,self.check)
+        baseline=self.r.verify_package_runner(runner,self.device,self.UID,entries,self.b,self.e,self.check,lambda value:None)
+        scope=self.home/'evidence';scope.mkdir();binding=scope/'binding.json'
+        binding.write_text(json.dumps({'runner_Info':{'CFBundleIdentifier':'fixture.runner'},'runner_entries':entries}))
+        state=SimpleNamespace(ready=False,queries=[])
+        def container(kind,name,identifier=None):
+            state.queries.append(name)
+            if identifier=='fixture.runner':return runner
+            if kind=='app':
+                if not state.ready:
+                    # Actual failure: simctl returns the old path immediately
+                    # before XCTest replaces that bundle during app.launch().
+                    old.rename(old.with_name('retired.app'))
+                    return old
+                return new
+            return self.data if kind=='data' else self.group
+        (self.data/'tmp/CleanSend').mkdir(parents=True)
+        sampler=self.e.Observer(self.b,self.check);sampler.started=time.monotonic()
+        def save(path,value):path.write_text(json.dumps(value))
+        env=dict(vars(self.r),during=False,observation_roots=None,tail=self.r.CASE_STARTED,
+            container=container,initial_roots=self.before,resources=SimpleNamespace(device=self.device,check=lambda phase=None:self.check()),
+            uid=self.UID,b=self.b,e=self.e,c=SimpleNamespace(verify_runner=lambda _:{}),l=SimpleNamespace(save=save),
+            BINDING=binding,SCOPE=scope,expected=expected,sampler=sampler,events=io.BytesIO(),
+            run=SimpleNamespace(end=680,meta={'container_observation':{}},persist=lambda:None))
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[factory],type_ignores=[])),'actual-installed-closure','exec'),env)
+        env['installed']=env['factory'](baseline)
+        step=compile(ast.fix_missing_locations(ast.Module(body=branches,type_ignores=[])),'actual-worker-observation','exec')
+        return env,step,state,old,new,scope,expected
+    def test_launched_app_inventory_waits_for_workspace_after_reinstall(self):
+        env,step,state,old,new,scope,expected=self.payload_worker()
+        exec(step,env)
+        self.assertFalse(env['during']);self.assertEqual(state.queries,[])
+        self.assertFalse((scope/'installed-during.json').exists())
+        old.rename(old.with_name('retired.app'));state.ready=True
+        env['tail']=self.ready[:-1];exec(step,env)
+        self.assertFalse(env['during']);self.assertEqual(state.queries,[])
+        env['tail']=self.ready;exec(step,env)
+        receipt=json.loads((scope/'installed-during.json').read_text())
+        self.assertTrue(env['during']);self.assertEqual(receipt['path'],str(new))
+        self.assertEqual(receipt['files'],expected);self.assertTrue(receipt['exact_payload'])
+        self.assertTrue(json.loads((scope/'installed-during.json.installed-runner.json').read_text())['accepted_payload'])
+        self.assertTrue(env['run'].meta['container_observation']['case_baseline_empty'])
+        queries=list(state.queries);exec(step,env)
+        self.assertEqual(state.queries,queries)  # Exactly one admission, no retry.
+    def test_workspace_marker_does_not_admit_changed_launched_app_bytes(self):
+        env,step,state,old,new,scope,expected=self.payload_worker()
+        old.rename(old.with_name('retired.app'));state.ready=True
+        (new/'CleanSend').write_bytes(b'wrong launched executable')
+        env['tail']=self.ready
+        with self.assertRaises(AssertionError):exec(step,env)
+        receipt=json.loads((scope/'installed-during.json').read_text())
+        self.assertEqual(receipt['path'],str(new));self.assertFalse(receipt['exact_payload'])
+        self.assertNotEqual(receipt['files'],expected);self.assertFalse(env['during'])
+        self.assertIsNone(env['observation_roots']);self.assertEqual(env['sampler'].events,[])
 
     def test_real_export_hash_matches_only_current_data_root_and_final_cleanup_stays_required(self):
         during=self.during();self.assertNotEqual(during['data'],self.before['data'])

@@ -459,7 +459,8 @@ def worker(start,grant):
        chunk=reader.read(65536);log_read+=len(chunk);assert log_read<=16*2**20,'test log read cap'
        tail=(tail+chunk)[-131072:]
        share_trace=share_trace or selected_share_trace(tail)
-       if not during and selected_case_started(tail):
+       # XCTest may reinstall the AUT after case start; wait for its launched workspace.
+       if not during and selected_workspace_ready(tail):
         installed('installed-during.json',started_log=tail);during=True
        if observation_roots is None and during and selected_workspace_ready(tail):
         data=container('data','data-container-during.txt');group=container(GROUP,'group-container-during.txt')

@@ -116,6 +116,10 @@ This hosted profile is an iPad Pro 13-inch M4 (16 GB), portrait, iOS 18.5,
 Xcode 16.4, with the actual system AX5 size. Fresh inventory must confirm that
 exact installed runtime/device/toolchain before creating the private simulator.
 Installed app and runner payloads are compared before, during and after the case.
+The during-case comparison waits for the existing selected PDF workspace-ready
+marker, after XCTest has completed any AUT reinstall and launch. It still requires
+the exact published app bytes and accepted runner payload before observing exports;
+a test-case-start line alone does not establish the installed AUT location.
 No native StoreKit test, purchase, App Store release or physical-device result is
 implied by this development Simulator check.
 
