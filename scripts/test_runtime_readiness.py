@@ -115,7 +115,7 @@ class ChildOwnershipTests(TestCase):
         return module
 
     def test_persistence_cancellation_is_not_masked_by_cleanup_failure(self):
-        for interruption in (KeyboardInterrupt, SystemExit):
+        for interruption in (KeyboardInterrupt, SystemExit, InterruptedError):
             with self.subTest(interruption=interruption), tempfile.TemporaryDirectory() as directory:
                 run = SimpleNamespace(meta={'commands': []},
                                       persist=mock.Mock(side_effect=[None, interruption('cancel')]))

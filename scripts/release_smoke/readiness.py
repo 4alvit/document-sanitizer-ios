@@ -183,6 +183,8 @@ def command(args, name, deadline, out, env, cwd, rows, *, run=None):
                 active_error = sys.exc_info()[0] is not None
                 try:
                     run.persist()
+                except InterruptedError:
+                    raise
                 except Exception as error:
                     run.meta['diagnostic_persist_error'] = type(error).__name__
                     if not active_error:
