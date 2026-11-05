@@ -180,6 +180,22 @@ def selected_workspace_ready(tail):
  return start>=0 and tail.find(WORKSPACE_READY,start+len(CASE_STARTED))>=0
 
 
+def selected_share_trace(tail):
+ # The selected test prints only an opaque UUID, before its unchanged ready marker.
+ start=tail.find(CASE_STARTED)
+ if start<0:return None
+ values=[]
+ for line in tail[start:].splitlines():
+  if line.startswith(b'REDACT_SHARE_TRACE trace='):
+   try:value=line.removeprefix(b'REDACT_SHARE_TRACE trace=').decode('ascii')
+   except UnicodeDecodeError:return None
+   try:valid=str(uuid.UUID(value))==value
+   except ValueError:return None
+   if not valid:return None
+   values.append(value)
+ return values[0] if len(values)==1 else None
+
+
 def verify_package_runner(root,device,uid,entries,budget,evidence,check,record,*,baseline=None,started_log=None):
  # XCTest may install the identical runner in a fresh bundle container. Admit
  # that transition once, only after the selected case starts; pin it thereafter.
@@ -425,7 +441,7 @@ def worker(start,grant):
    assert run.remaining()>=304,'insufficient full300s XCTest admission'
    argv=['xcodebuild','test-without-building','-xctestrun',str(SCOPE/'config/exact-package-share.xctestrun'),'-destination','platform=iOS Simulator,id='+uid,'-parallel-testing-enabled','NO','-maximum-concurrent-test-simulator-destinations','1','-only-testing:'+CASE,'-test-timeouts-enabled','YES','-maximum-test-execution-time-allowance','240','-collect-test-diagnostics','never','-resultBundlePath',str(SCOPE/'result.xcresult')]
    item={'args':argv,'started_at':l.now(),'timeout_seconds':300};run.meta['commands'].append(item);run.persist()
-   proc=None;during=False;observation_roots=None;tail=b'';log_read=0
+   proc=None;during=False;observation_roots=None;tail=b'';log_read=0;share_trace=None
    previous_end=run.end
    try:
     with (SCOPE/'test.log').open('xb') as log:
@@ -441,6 +457,7 @@ def worker(start,grant):
        resources.check();assert time.monotonic()<end,'XCTest outer300s limit'
        chunk=reader.read(65536);log_read+=len(chunk);assert log_read<=16*2**20,'test log read cap'
        tail=(tail+chunk)[-131072:]
+       share_trace=share_trace or selected_share_trace(tail)
        if not during and selected_case_started(tail):
         installed('installed-during.json',started_log=tail);during=True
        if observation_roots is None and during and selected_workspace_ready(tail):
@@ -463,6 +480,15 @@ def worker(start,grant):
    finally:
     if proc is not None:
      l.stop_group(proc,item);item['returncode']=proc.returncode
+    # Optional diagnostics cannot replace or mask the original XCTest result.
+    # The exact trace lives outside the inbox/export baseline and is removed
+    # with this already-owned simulator by the existing cleanup lifecycle.
+    if share_trace is not None and observation_roots is not None:
+     try:
+      timing=e.read_share_timing(data,share_trace,b,resources.check)
+      (SCOPE/'share-timing.json').write_text(json.dumps(timing,indent=2)+'\n')
+      run.meta['share_timing']={'status':timing['status'],'trace':share_trace}
+     except Exception as error:run.meta['share_timing']={'status':'unavailable','error_type':type(error).__name__}
     item['finished_at']=l.now();run.end=previous_end;run.persist()
    installed('installed-after.json')
    after_data=container('data','data-container-after.txt');after_group=container(GROUP,'group-container-after.txt')

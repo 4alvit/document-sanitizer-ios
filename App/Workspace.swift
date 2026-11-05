@@ -42,6 +42,7 @@ struct ExportPacket: Identifiable {
     let id = UUID()
     let directory: URL
     let urls: [URL]
+    var timing: ShareTiming? = nil
 }
 
 @MainActor
@@ -409,6 +410,8 @@ final class Workspace: ObservableObject {
         guard !isBusy, packet.revision == revision else { return }
         let snapshot = pages
         let operation = begin(L10n.text("Writing clean copies…"))
+        let timing = ShareTiming.start(synthetic: isSynthetic, operation: operation)
+        timing?.record(.exportStarted)
         let directory = root.appendingPathComponent("export-\(UUID().uuidString)", isDirectory: true)
         runningTask = Task {
             do {
@@ -418,24 +421,31 @@ final class Workspace: ObservableObject {
                         let urls = try RasterExporter.export(pages: snapshot, format: format, to: directory)
                         for url in urls { try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path) }
                         try Task.checkCancellation()
+                        timing?.record(.filesReady)
                         return urls
                     } catch {
                         try? FileManager.default.removeItem(at: directory)
                         throw error
                     }
                 }
+                timing?.record(.mainActorResumed)
                 guard operationID == operation else { try? FileManager.default.removeItem(at: directory); return }
-                exported = ExportPacket(directory: directory, urls: urls); finish(operation)
+                let result = ExportPacket(directory: directory, urls: urls, timing: timing)
+                exported = result
+                timing?.record(.packetPublished, packet: result.id)
+                finish(operation)
             } catch { fail(error, operation) }
         }
     }
 
     func cleanExport(_ packet: ExportPacket) {
+        packet.timing?.record(.cleanupStarted, packet: packet.id)
         try? FileManager.default.removeItem(at: packet.directory)
         if exported?.id == packet.id { exported = nil }
         // A share extension can queue files without the containing scene
         // leaving its active phase. Refresh after the activity completes too.
         checkSharedImports()
+        packet.timing?.record(.cleanupFinished, packet: packet.id)
     }
 
     func clear() {

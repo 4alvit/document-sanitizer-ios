@@ -78,8 +78,14 @@ struct ReviewView: View {
                 }
             }
             .sheet(item: $workspace.exported) { export in
-                ShareSheet(urls: export.urls) { workspace.cleanExport(export) }
-                    .onDisappear { workspace.cleanExport(export) }
+                ShareSheet(urls: export.urls, timing: export.timing, packetID: export.id) { workspace.cleanExport(export) }
+                    // SwiftUI content appearance is not proof that the native
+                    // activity sheet has exposed its Close control.
+                    .onAppear { export.timing?.record(.sheetAppeared, packet: export.id) }
+                    .onDisappear {
+                        export.timing?.record(.sheetDisappeared, packet: export.id)
+                        workspace.cleanExport(export)
+                    }
             }
             .alert(L10n.text("Export could not complete"), isPresented: Binding(get: { workspace.errorMessage != nil }, set: { if !$0 { workspace.errorMessage = nil } })) {
                 Button(L10n.text("OK"), role: .cancel) { workspace.errorMessage = nil }
@@ -90,11 +96,20 @@ struct ReviewView: View {
 
 struct ShareSheet: UIViewControllerRepresentable {
     let urls: [URL]
+    var timing: ShareTiming? = nil
+    var packetID: UUID? = nil
     let completion: () -> Void
     func makeUIViewController(context: Context) -> UIActivityViewController {
+        timing?.record(.controllerStarted, packet: packetID)
         let controller = UIActivityViewController(activityItems: urls, applicationActivities: nil)
+        timing?.record(.controllerInitialized, packet: packetID)
         controller.view.accessibilityIdentifier = "export-share-sheet"
-        controller.completionWithItemsHandler = { _, _, _, _ in DispatchQueue.main.async { completion() } }
+        timing?.record(.controllerViewReady, packet: packetID)
+        controller.completionWithItemsHandler = { _, _, _, _ in DispatchQueue.main.async {
+            timing?.record(.activityCompleted, packet: packetID)
+            completion()
+        } }
+        timing?.record(.controllerReturned, packet: packetID)
         return controller
     }
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
