@@ -180,6 +180,22 @@ def selected_workspace_ready(tail):
  return start>=0 and tail.find(WORKSPACE_READY,start+len(CASE_STARTED))>=0
 
 
+def selected_share_trace(tail):
+ # The selected test prints only an opaque UUID, before its unchanged ready marker.
+ start=tail.find(CASE_STARTED)
+ if start<0:return None
+ values=[]
+ for line in tail[start:].splitlines():
+  if line.startswith(b'REDACT_SHARE_TRACE trace='):
+   try:value=line.removeprefix(b'REDACT_SHARE_TRACE trace=').decode('ascii')
+   except UnicodeDecodeError:return None
+   try:valid=str(uuid.UUID(value))==value
+   except ValueError:return None
+   if not valid:return None
+   values.append(value)
+ return values[0] if len(values)==1 else None
+
+
 def verify_package_runner(root,device,uid,entries,budget,evidence,check,record,*,baseline=None,started_log=None):
  # XCTest may install the identical runner in a fresh bundle container. Admit
  # that transition once, only after the selected case starts; pin it thereafter.
@@ -335,6 +351,7 @@ def configure_package_ax5(run,resources,uid,lifecycle):
 def worker(start,grant):
  b,e,l,c=load('window_budget'),load('evidence'),load('bounded_lifecycle'),load('prepare_config')
  l.OUT=SCOPE;l.ROOT=HERE;l.CONFIGURATION='Release'
+ l.RUNTIME_DIAGNOSTICS=load('readiness')
  run=l.Run();run.start=start
  run.meta.update(owner_worker_pid=os.getpid(),binary_kind='exact verified shipped adhoc simulator ZIP; same-run provenance-bound Release UI runner',build_configuration='Release',build_scheme=None,test_plan=None,context_sha256=sha(Path(sys.argv[1])),head=HEAD)
  resources=Resources(start);uid=None;failures=[];sampler=None;expected=None;installed_runner_baseline=None
@@ -425,7 +442,7 @@ def worker(start,grant):
    assert run.remaining()>=304,'insufficient full300s XCTest admission'
    argv=['xcodebuild','test-without-building','-xctestrun',str(SCOPE/'config/exact-package-share.xctestrun'),'-destination','platform=iOS Simulator,id='+uid,'-parallel-testing-enabled','NO','-maximum-concurrent-test-simulator-destinations','1','-only-testing:'+CASE,'-test-timeouts-enabled','YES','-maximum-test-execution-time-allowance','240','-collect-test-diagnostics','never','-resultBundlePath',str(SCOPE/'result.xcresult')]
    item={'args':argv,'started_at':l.now(),'timeout_seconds':300};run.meta['commands'].append(item);run.persist()
-   proc=None;during=False;observation_roots=None;tail=b'';log_read=0
+   proc=None;during=False;observation_roots=None;tail=b'';log_read=0;share_trace=None
    previous_end=run.end
    try:
     with (SCOPE/'test.log').open('xb') as log:
@@ -441,6 +458,7 @@ def worker(start,grant):
        resources.check();assert time.monotonic()<end,'XCTest outer300s limit'
        chunk=reader.read(65536);log_read+=len(chunk);assert log_read<=16*2**20,'test log read cap'
        tail=(tail+chunk)[-131072:]
+       share_trace=share_trace or selected_share_trace(tail)
        if not during and selected_case_started(tail):
         installed('installed-during.json',started_log=tail);during=True
        if observation_roots is None and during and selected_workspace_ready(tail):
@@ -463,6 +481,15 @@ def worker(start,grant):
    finally:
     if proc is not None:
      l.stop_group(proc,item);item['returncode']=proc.returncode
+    # Optional diagnostics cannot replace or mask the original XCTest result.
+    # The exact trace lives outside the inbox/export baseline and is removed
+    # with this already-owned simulator by the existing cleanup lifecycle.
+    if share_trace is not None and observation_roots is not None:
+     try:
+      timing=e.read_share_timing(data,share_trace,b,resources.check)
+      (SCOPE/'share-timing.json').write_text(json.dumps(timing,indent=2)+'\n')
+      run.meta['share_timing']={'status':timing['status'],'trace':share_trace}
+     except Exception as error:run.meta['share_timing']={'status':'unavailable','error_type':type(error).__name__}
     item['finished_at']=l.now();run.end=previous_end;run.persist()
    installed('installed-after.json')
    after_data=container('data','data-container-after.txt');after_group=container(GROUP,'group-container-after.txt')
@@ -603,14 +630,16 @@ def aggregate_command_groups(meta,start,clock=time.monotonic,probe=os.killpg):
   if pid is None:continue
   assert type(pid) is int and pid>1
   row={'pid':pid,'args':command.get('args'),'leader_returncode':command.get('returncode'),'owner_worker':meta.get('owner_worker_pid'),'cleanup_observation':command.get('cleanup_observation'),'cleanup_error':command.get('cleanup_error')}
-  if command.get('owned_group_absent') is True:row.update(absent=True,basis='worker recorded bounded group closure')
+  if command.get('kind')=='diagnostic' and command.get('owned_group_absent') is not True:
+   row.update(absent=False,basis='diagnostic owner could not confirm cleanup; no stale-PID signal or inferred reap')
+  elif command.get('owned_group_absent') is True:row.update(absent=True,basis='worker recorded bounded group closure')
   else:
    try:probe(pid,0);row.update(absent=False,basis='group still present; no blind signal after worker exit')
    except ProcessLookupError:row.update(absent=True,basis='terminal read-only group probe absent; leader reap only if recorded')
    except OSError as error:row.update(absent=False,basis='group proof unavailable',error=repr(error))
   assert clock()<start+LIMITS.TOTAL,'whole deadline after owned-command group proof'
   groups.append(row)
- return {'all_absent':all(row['absent'] for row in groups),'groups':groups,
+ return {'all_absent':not meta.get('diagnostic_cleanup_unconfirmed') and all(row['absent'] for row in groups),'groups':groups,
          'unresolved_group_ids':[row['pid'] for row in groups if not row['absent']]}
 
 
@@ -668,7 +697,7 @@ def supervise(grant_path,grant):
     proc.wait(timeout=min(3,max(.01,start+(LIMITS.TOTAL-5)-time.monotonic())))
    except (ProcessLookupError,subprocess.TimeoutExpired):
     try:
-     meta=json.loads((SCOPE/'metadata.json').read_bytes());active=[c for c in meta['commands'] if 'owned_process_group' in c and ('finished_at' not in c or c.get('owned_group_absent') is False)]
+     meta=json.loads((SCOPE/'metadata.json').read_bytes());active=[c for c in meta['commands'] if c.get('kind')!='diagnostic' and 'owned_process_group' in c and ('finished_at' not in c or c.get('owned_group_absent') is False)]
      assert len(active)<=2;intent['last_resort_children']=[]
      for child in active:intent['last_resort_children']+=l.stop_recorded_children(proc.pid,{'commands':[child]},min(start+(LIMITS.TOTAL-2),time.monotonic()+2))
     except BaseException as error:intent['last_resort_error']=repr(error)

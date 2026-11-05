@@ -76,6 +76,9 @@ final class ShareExtensionEntryTests: XCTestCase {
             "Requires the largest system content size. Set CLEANSEND_TEST_CONTENT_SIZE=accessibility-extra-extra-extra-large and CLEANSEND_EXPECT_TEST_COUNT=3 with scripts/check-ios-tests.sh for this suite.")
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        let trace = UUID().uuidString.lowercased()
+        app.launchEnvironment["REDACT_SHARE_TIMING"] = "1"
+        app.launchEnvironment["REDACT_SHARE_TRACE"] = trace
         app.launch()
         guard app.buttons["sample-button"].waitForExistence(timeout: 10) else {
             XCTFail("The initial workspace did not become ready after launch.")
@@ -83,6 +86,7 @@ final class ShareExtensionEntryTests: XCTestCase {
         }
         // The external exact-package observer must bind after this launch has
         // recreated Workspace's temporary directory, and before any export.
+        FileHandle.standardOutput.write(Data("REDACT_SHARE_TRACE trace=\(trace)\n".utf8))
         FileHandle.standardOutput.write(Data("REDACT_PACKAGE_WORKSPACE_READY format=\(format)\n".utf8))
         reveal(app.buttons["sample-button"], in: app.scrollViews["workspace-scroll"])
         app.buttons["sample-button"].tap()
@@ -98,16 +102,22 @@ final class ShareExtensionEntryTests: XCTestCase {
         XCTAssertTrue(picker.buttons[format].isSelected)
         let export = app.buttons["export-button"]
         reveal(export, in: review)
+        let tapStarted = ProcessInfo.processInfo.systemUptime
         export.tap()
-        try waitForSystemShareSheet(in: app)
+        let tapFinished = ProcessInfo.processInfo.systemUptime
+        try waitForSystemShareSheet(in: app, trace: trace, tapStarted: tapStarted, tapFinished: tapFinished)
         capture("share-\(format.lowercased())-system-sheet")
         return app
     }
 
     @MainActor
-    private func waitForSystemShareSheet(in app: XCUIApplication) throws {
+    private func waitForSystemShareSheet(in app: XCUIApplication, trace: String,
+                                        tapStarted: TimeInterval, tapFinished: TimeInterval) throws {
         let started = ProcessInfo.processInfo.systemUptime
         let ready = app.buttons["Close"].waitForExistence(timeout: 10)
+        let finished = ProcessInfo.processInfo.systemUptime
+        FileHandle.standardOutput.write(Data(
+            "REDACT_SHARE_TIMING trace=\(trace) tapStarted=\(tapStarted) tapFinished=\(tapFinished) waitStarted=\(started) waitFinished=\(finished)\n".utf8))
         func record(_ phase: String, appeared: Bool) {
             let elapsed = ProcessInfo.processInfo.systemUptime - started
             FileHandle.standardOutput.write(Data(

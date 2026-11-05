@@ -1,8 +1,66 @@
 """Small bounded read-only payload/container observations; never native or network."""
-import hashlib, json, os, stat, struct, time
+import hashlib, json, math, os, re, stat, struct, time
 from pathlib import Path
 
 def identity(info):return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+
+SHARE_UUID=r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+SHARE_PHASES=frozenset(('exportStarted','filesReady','mainActorResumed','packetPublished',
+ 'controllerStarted','controllerInitialized','controllerViewReady','controllerReturned',
+ 'sheetAppeared','activityCompleted','sheetDisappeared','cleanupStarted','cleanupFinished'))
+
+def parse_share_timing(raw,trace):
+ """Only complete, bounded diagnostic rows; never an acceptance substitute."""
+ if not re.fullmatch(SHARE_UUID,trace) or len(raw)>16*1024:raise ValueError('trace bound')
+ def unique(pairs):
+  result={}
+  for key,value in pairs:
+   if key in result:raise ValueError('duplicate field')
+   result[key]=value
+  return result
+ lines=raw.split(b'\n');complete=lines[:-1];rows=[];operation=None;uptime=-1
+ if len(complete)>32:raise ValueError('event bound')
+ for index,line in enumerate(complete,1):
+  row=json.loads(line,object_pairs_hook=unique)
+  if not isinstance(row,dict) or set(row)-{'trace','operation','sequence','phase','uptime','time','packet'}:raise ValueError('fields')
+  if row.get('trace')!=trace or type(row.get('sequence')) is not int or row['sequence']!=index or row.get('phase') not in SHARE_PHASES:raise ValueError('identity')
+  value=row.get('operation')
+  if not isinstance(value,str) or not re.fullmatch(SHARE_UUID,value):raise ValueError('operation')
+  if operation is None:operation=value
+  if operation!=value:raise ValueError('operation changed')
+  if 'packet' in row and (not isinstance(row['packet'],str) or not re.fullmatch(SHARE_UUID,row['packet'])):raise ValueError('packet')
+  for key in ('uptime','time'):
+   value=row.get(key)
+   if type(value) not in (int,float) or not math.isfinite(value) or value<0:raise ValueError('clock')
+  if row['uptime']<uptime:raise ValueError('clock order')
+  uptime=row['uptime'];rows.append(row)
+ return {'status':'partial' if lines[-1] else 'complete','trace':trace,'rows':rows,
+         'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),
+         'scope':'Diagnostic event times only; sheetAppeared is not native Close readiness.'}
+
+def read_share_timing(data,trace,budget,check):
+ """One small no-follow read in the existing owned-container observation."""
+ check()
+ if not re.fullmatch(SHARE_UUID,trace):return {'status':'invalid_trace'}
+ opened=[]
+ try:
+  with budget.directory(data) as root:
+   parent=root
+   for name in ('Library','Caches','ShareTiming'):
+    parent=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent);opened.append(parent)
+   fd=os.open(trace+'.jsonl',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=parent);opened.append(fd)
+   before=os.fstat(fd)
+   if not stat.S_ISREG(before.st_mode) or before.st_size>16*1024:raise ValueError('file bound')
+   raw=os.read(fd,16*1024+1)
+   if len(raw)!=before.st_size or identity(os.fstat(fd))!=identity(before):return {'status':'changing'}
+   if identity(os.stat(trace+'.jsonl',dir_fd=parent,follow_symlinks=False))!=identity(before):return {'status':'changing'}
+ except FileNotFoundError:return {'status':'missing'}
+ except (OSError,ValueError) as error:return {'status':'unavailable','error_type':type(error).__name__}
+ finally:
+  for fd in reversed(opened):os.close(fd)
+ check()
+ try:return parse_share_timing(raw,trace)
+ except (ValueError,TypeError) as error:return {'status':'invalid','error_type':type(error).__name__}
 
 class Observer:
  def __init__(self,budget,check,*,hash_cap=128*2**20,event_cap=8*2**20):
