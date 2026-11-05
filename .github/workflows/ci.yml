@@ -21,7 +21,7 @@ jobs:
     outputs:
       release_assets_ready: ${{ steps.release_upload.outcome == 'success' }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
       - name: Require reviewed ARM toolchain profile
@@ -41,7 +41,7 @@ jobs:
         run: python3 scripts/package-prerelease.py
       - name: Save verified Release simulator packages
         id: release_upload
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         timeout-minutes: 3
         with:
           name: release-simulator-packages-${{ github.run_id }}-attempt-${{ github.run_attempt }}
@@ -60,7 +60,7 @@ jobs:
       - name: Save verification evidence
         if: always()
         timeout-minutes: 2
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verification-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: |
@@ -76,7 +76,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
       - name: Require reviewed ARM toolchain profile
@@ -93,7 +93,7 @@ jobs:
       - name: Save iPad privacy evidence
         if: always()
         timeout-minutes: 3
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: privacy-ipad-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: .qa/privacy-ipad/run-${{ github.run_id }}-attempt-${{ github.run_attempt }}/
@@ -112,7 +112,7 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
       - name: Require reviewed ARM toolchain profile
@@ -140,7 +140,7 @@ jobs:
       - name: Preserve native payment evidence
         if: always()
         timeout-minutes: 3
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-storekit-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: |
@@ -159,7 +159,7 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
       - name: Require reviewed ARM toolchain profile
@@ -184,7 +184,7 @@ jobs:
       - name: Preserve exact-package smoke evidence
         if: always()
         timeout-minutes: 3
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-smoke-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: |
