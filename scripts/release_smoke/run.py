@@ -279,7 +279,7 @@ def wait_for_package_boot(run,resources,uid):
  previous_end=run.end;run.end=min(previous_end,LIMITS.WORK_END-304)
  try:
   resources.check(run.end)
-  run.command(['xcrun','simctl','bootstatus',uid,'-b'],'bootstatus.log',120)
+  run.command(['xcrun','simctl','bootstatus',uid,'-b'],'bootstatus.log',300)
  finally:run.end=previous_end
 
 

@@ -137,6 +137,15 @@ All deadlines use the original start; cleanup and evidence durations, disk
 limits and payload checks are unchanged. Local admission tests cover the
 observed delay and late preparation; a successful hosted case is still required.
 
+The single owned `simctl bootstatus` command has a 300-second ceiling, matching
+this repository's cold privacy and StoreKit readiness policy. It remains clipped
+to the original 376-second preparation boundary, with four seconds reserved for
+stopping the command. It cannot borrow the 300-second XCTest window or extend
+the 680/780/900-second work, cleanup and total deadlines. This is bounded startup
+headroom, not a diagnosis or fix for the underlying Simulator stall. The observed
+120-second boot wait timed out before app installation; a successful full
+current-source run and exact-package Share case are still required.
+
 ## Busy-state layout evidence
 
 The archived `BusyLayoutTests` diagnostic captured real view components at the

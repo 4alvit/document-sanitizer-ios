@@ -973,12 +973,40 @@ class PackageReadinessBudgetTests(unittest.TestCase):
         with mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]):
             run=self.actual_run();proc=SimpleNamespace(pid=123,returncode=None)
             def wait(timeout):
-                self.assertEqual(timeout,120);self.clock[0]+=93;proc.returncode=0
+                self.assertEqual(timeout,300);self.clock[0]+=93;proc.returncode=0
             proc.wait=wait;resources=SimpleNamespace(check=mock.Mock())
             with mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(self.l,'stop_group',side_effect=lambda p,r:r.update(owned_group_absent=True)):
                 self.m.wait_for_package_boot(run,resources,'fixture-owned')
             resources.check.assert_called_once_with(376);spawn.assert_called_once();self.assertEqual(run.start,0);self.assertEqual(run.end,680);self.assertGreaterEqual(run.remaining(),304);self.assertTrue(run.meta['commands'][0]['owned_group_absent'])
-    def test_late_persist_or_open_cannot_spawn_from_stale_120s_allowance(self):
+    def test_slow_boot_spends_only_original_startup_budget(self):
+        # A180s cold boot fits early preparation, but must still time out when
+        # only122s remain before the original376s boundary and4s stop reserve.
+        for started,duration,passes in ((58.0,180.0,True),(250.0,180.0,False),(5.0,301.0,False)):
+            with self.subTest(started=started,duration=duration),mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]):
+                self.clock[0]=started;run=self.actual_run();proc=SimpleNamespace(pid=123,returncode=None)
+                def wait(timeout):
+                    self.clock[0]+=min(duration,timeout)
+                    if duration>timeout:raise subprocess.TimeoutExpired('fixture cold boot',timeout)
+                    proc.returncode=0
+                proc.wait=wait
+                def stopped(p,row):
+                    if p.returncode is None:p.returncode=-15
+                    row['owned_group_absent']=True
+                with mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(self.l,'stop_group',side_effect=stopped) as stop:
+                    if passes:self.m.wait_for_package_boot(run,SimpleNamespace(check=lambda phase:None),'fixture-owned')
+                    else:
+                        with self.assertRaises(subprocess.TimeoutExpired):self.m.wait_for_package_boot(run,SimpleNamespace(check=lambda phase:None),'fixture-owned')
+                spawn.assert_called_once();stop.assert_called_once()
+                self.assertEqual(run.start,0);self.assertEqual(run.end,680)
+                self.assertTrue(run.meta['commands'][0]['owned_group_absent'])
+                self.assertLessEqual(self.clock[0],372)
+                self.assertLessEqual(self.clock[0]-started,300)
+                self.assertGreaterEqual(run.remaining(),304)
+                if passes:self.assertEqual(self.clock[0],started+duration)
+                if started==250:self.assertEqual(self.clock[0],372)
+                self.assertEqual((self.l.WORK_END,self.l.CLEANUP_END,self.l.TOTAL),(680,780,900))
+
+    def test_late_persist_or_open_cannot_spawn_from_stale_readiness_allowance(self):
         original_open=Path.open
         for stage in ('persist','open'):
             with self.subTest(stage=stage),mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]):
