@@ -93,3 +93,13 @@ See [monetization and entitlement behavior](docs/MONETIZATION.md), [privacy](doc
 English and Russian [App Store draft materials](docs/app-store/README.md) and the
 [support guide](docs/SUPPORT.md) are available for review. They do not announce
 an App Store launch or a live Pro offer.
+
+### Documentation-only CI
+
+CI classifies the complete PR or push diff before reserving native runners.
+For ordinary documentation, the four required check names stay visible and
+validate the scope result on Linux; they do not run simulators, upload packages
+or claim native acceptance. Source, fixture, workflow or file-mode changes and
+unknown history retain the existing macOS toolchains and artifact dependencies.
+The package-ready output remains false when no package was built. Independent
+Swift CodeQL scanning retains its existing behavior.
