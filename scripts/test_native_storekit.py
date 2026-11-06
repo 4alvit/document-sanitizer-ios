@@ -158,6 +158,35 @@ class NativeStoreKitBindingTests(unittest.TestCase):
         with self.assertRaises(AssertionError):self.m.admit_job(duplicate,'123','1','a'*40,self.now,1200)
         data['jobs'].append(dict(data['jobs'][1],id=12,name='unexpected fifth job'));data['total_count']=5
         with self.assertRaises(AssertionError):self.m.admit_job(data,'123','1','a'*40,self.now,1200)
+    def test_current_five_job_graph_accepts_complete_or_partial_siblings(self):
+        data=jobs(self.now)
+        names=('Change scope','macOS core, independent export corpus, iOS build',
+               'Russian iPad privacy at system AX5','Exact packaged Release share smoke')
+        for index,name in enumerate(names,8):
+            data['jobs'].append(dict(data['jobs'][0],id=index,name=name,status='completed'))
+            data['total_count']=len(data['jobs'])
+            self.assertEqual(self.m.admit_job(data,'123','1','a'*40,self.now,1200)['job_id'],7)
+        # Tie the production allowlist to the real workflow rather than a test-only graph.
+        import re
+        workflow_names=re.findall(r'^    name: (.+)$',(ROOT/'.github/workflows/ci.yml').read_text(),re.M)
+        self.assertEqual(set(workflow_names),{row['name'] for row in data['jobs']})
+        self.assertEqual(len(workflow_names),5)
+
+    def test_scope_sibling_does_not_admit_truncation_duplicates_or_unknown_jobs(self):
+        data=jobs(self.now)
+        for index,name in enumerate(('Change scope','macOS core, independent export corpus, iOS build',
+                                    'Russian iPad privacy at system AX5','Exact packaged Release share smoke'),8):
+            data['jobs'].append(dict(data['jobs'][0],id=index,name=name,status='completed'))
+        data['total_count']=5
+        invalid=[]
+        truncated=copy.deepcopy(data);truncated['jobs'].pop();invalid.append(truncated)
+        unknown=copy.deepcopy(data);unknown['jobs'][1]['name']='Unexpected validation';invalid.append(unknown)
+        duplicate=copy.deepcopy(data);duplicate['jobs'][1]['name']=duplicate['jobs'][2]['name'];invalid.append(duplicate)
+        extra=copy.deepcopy(data);extra['jobs'].append(dict(extra['jobs'][1],id=99));extra['total_count']=6;invalid.append(extra)
+        for vector in invalid:
+            with self.subTest(vector=vector):
+                with self.assertRaises(AssertionError):self.m.admit_job(vector,'123','1','a'*40,self.now,1200)
+
     def test_dedicated_build_budget_does_not_renew_native_allowance(self):
         # The actual current139s preparation fits; a full9m build plus profile
         # cannot borrow the original30min job's180s cleanup/upload reserve.

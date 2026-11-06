@@ -67,7 +67,14 @@ def safe_failure(error):
  return {'type':type(error).__name__,'frames':frames[-4:]}
 
 def admit_job(data,run,attempt,head,now,native_remaining):
- assert data['total_count']==len(data['jobs']) and len(data['jobs'])<=4
+ # Siblings may not be emitted yet, but every returned row must belong to
+ # this five-job CI graph, including the lightweight Change scope job.
+ expected={'Change scope','macOS core, independent export corpus, iOS build',
+  'Russian iPad privacy at system AX5','Native StoreKit eight-case acceptance',
+  'Exact packaged Release share smoke'}
+ assert data['total_count']==len(data['jobs']) and len(data['jobs'])<=len(expected)
+ names=[job['name'] for job in data['jobs']]
+ assert len(names)==len(set(names)) and set(names)<=expected
  jobs=[j for j in data['jobs'] if j['name']=='Native StoreKit eight-case acceptance']
  assert len(jobs)==1
  job=jobs[0]
