@@ -671,32 +671,50 @@ def configure_system_ax5(run, uid):
             return (info.st_dev, info.st_ino)
         original_identity = identity()
         args = ['xcrun', 'simctl', 'ui', uid, 'content_size', AX5]
-        index = len(run.meta['commands'])
-        timed_out = False
-        try:
-            run.command(args, 'set-ax5.log', AX5_SET_LIMIT)
-        except subprocess.TimeoutExpired as error:
-            rows = run.meta['commands']
-            row = rows[index] if len(rows) == index + 1 else {}
-            probe = row.get('cleanup_observation', {}).get('last_probe', {})
-            if not (error.cmd == args and row.get('args') == args
-                    and row.get('command_error_operation') == 'wait'
-                    and type(row.get('owned_process_group')) is int
-                    and row['owned_process_group'] > 1
-                    and type(row.get('returncode')) is int
-                    and row.get('owned_group_absent') is True
-                    and probe.get('leader_reaped') is True and probe.get('group') == 'ABSENT'
-                    and not row.get('cleanup_error') and not row.get('secondary_errors')
-                    and not any(c.get('owned_group_absent') is False for c in rows)):
-                raise
-            if run.remaining() <= 4:
-                raise
-            timed_out = True
+        def set_value(log_name):
+            index = len(run.meta['commands'])
+            timed_out = False
+            try:
+                run.command(args, log_name, AX5_SET_LIMIT)
+            except subprocess.TimeoutExpired as error:
+                rows = run.meta['commands']
+                row = rows[index] if len(rows) == index + 1 else {}
+                probe = row.get('cleanup_observation', {}).get('last_probe', {})
+                if not (error.cmd == args and row.get('args') == args
+                        and row.get('command_error_operation') == 'wait'
+                        and type(row.get('owned_process_group')) is int
+                        and row['owned_process_group'] > 1
+                        and type(row.get('returncode')) is int
+                        and row.get('owned_group_absent') is True
+                        and probe.get('leader_reaped') is True and probe.get('group') == 'ABSENT'
+                        and not row.get('cleanup_error') and not row.get('secondary_errors')
+                        and not any(c.get('owned_group_absent') is False for c in rows)):
+                    raise
+                if run.remaining() <= 4:
+                    raise
+                timed_out = True
+            return timed_out
+
+        timed_out = set_value('set-ax5.log')
         assert identity() == original_identity, 'Owned AX5 device identity changed'
         observed = run.output(['xcrun', 'simctl', 'ui', uid, 'content_size'], 'ax5-readback.txt', AX5_READ_LIMIT)
         unchanged = identity() == original_identity
         run.meta['ax5_postcondition'] = {'setter_timed_out': timed_out, 'readback': observed,
                                        'owned_device_identity_unchanged': unchanged}
+        if unchanged and timed_out and observed == 'large':
+            # A successful default-size readback proves the owned UI service
+            # now responds. Reapply the same idempotent setting once, retaining
+            # every observation and the original startup/stop deadlines.
+            run.meta['ax5_setup_recovery'] = {
+                'reapply_count': 1, 'initial_postcondition': dict(run.meta['ax5_postcondition'])}
+            assert identity() == original_identity, 'Owned AX5 device identity changed'
+            timed_out = set_value('set-ax5-reapply.log')
+            assert identity() == original_identity, 'Owned AX5 device identity changed'
+            observed = run.output(['xcrun', 'simctl', 'ui', uid, 'content_size'],
+                                  'ax5-reapply-readback.txt', AX5_READ_LIMIT)
+            unchanged = identity() == original_identity
+            run.meta['ax5_postcondition'] = {'setter_timed_out': timed_out, 'readback': observed,
+                                           'owned_device_identity_unchanged': unchanged}
         assert unchanged and observed == AX5, 'Exact owned-device AX5 postcondition not established'
         return observed
     finally:

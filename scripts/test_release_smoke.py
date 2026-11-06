@@ -1124,6 +1124,98 @@ class PackageReadinessBudgetTests(unittest.TestCase):
                     cleanup=self.m.cleanup_device_commands(run,'fixture-owned',self.l)
                 self.assertEqual(waits,expected);self.assertEqual(spawned.call_count,2);self.assertTrue(all('TimeoutExpired' in v for v in cleanup.values()));self.assertTrue(all(c['owned_group_absent'] for c in run.meta['commands']));self.assertNotEqual(cleanup,{'shutdown':0,'delete':0});self.assertNotIn('device_removed',run.meta)
 
+class PackageRuntimeInventoryRecoveryTests(unittest.TestCase):
+    ARGS=['xcrun','simctl','list','runtimes','--json']
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name);self.m=load('package_inventory_run',SMOKE/'run.py');self.l=load('package_inventory_lifecycle',SMOKE/'lifecycle.py')
+        self.m.SCOPE=self.root;self.l.OUT=self.root;self.clock=[2.0]
+        self.patcher=mock.patch.object(time,'monotonic',side_effect=lambda:self.clock[0]);self.patcher.start();self.addCleanup(self.patcher.stop)
+        self.run=self.l.Run();self.run.start=0;self.run.persist=mock.Mock()
+        self.resources=SimpleNamespace(device=None,check=mock.Mock())
+        self.modes=['timeout','success'];self.calls=[];self.waits=[];self.fault=None;self.payload=b'{"runtimes": [{"identifier": "fixture"}]}'
+        def observed(proc,deadline,*args,**kwargs):return proc.wait(timeout=deadline-self.clock[0])
+        self.diagnostics=SimpleNamespace(preflight=mock.Mock(),wait_runtime=mock.Mock(side_effect=observed))
+        self.l.RUNTIME_DIAGNOSTICS=self.diagnostics
+        self.spawn_patch=mock.patch.object(subprocess,'Popen',side_effect=self.spawn);self.spawned=self.spawn_patch.start();self.addCleanup(self.spawn_patch.stop)
+        self.stop_patch=mock.patch.object(self.l,'stop_group',side_effect=self.stop);self.stopped=self.stop_patch.start();self.addCleanup(self.stop_patch.stop)
+    def spawn(self,args,**kwargs):
+        self.calls.append(args);mode=self.modes[len(self.calls)-1]
+        if mode=='spawn_error':raise OSError('spawn fixture')
+        proc=SimpleNamespace(pid=120+len(self.calls),returncode=None)
+        def wait(timeout):
+            self.waits.append(timeout);self.clock[0]+=timeout if mode=='timeout' else 1
+            if mode=='timeout':raise subprocess.TimeoutExpired(args,timeout)
+            if mode=='interrupt':raise InterruptedError('cancelled')
+            if mode=='nonzero':proc.returncode=7;return 7
+            kwargs['stdout'].write(self.payload);kwargs['stdout'].flush();proc.returncode=0;return 0
+        proc.wait=wait;return proc
+    def stop(self,proc,row):
+        if proc.returncode is None:proc.returncode=-15
+        row['owned_group_absent']=True;row['cleanup_observation']={'last_probe':{'leader_reaped':True,'group':'ABSENT'}}
+        if self.fault=='resolved_probe_error':row['cleanup_errors']=["PermissionError(1, 'Operation not permitted')"]
+        if self.fault=='group':row['owned_group_absent']=False
+        if self.fault=='leader':row['cleanup_observation']['last_probe']['leader_reaped']=False
+        if self.fault=='unknown':row['cleanup_observation']['last_probe']['group']='UNKNOWN'
+        if self.fault=='cleanup':row['cleanup_error']='unconfirmed'
+        if self.fault=='secondary':row['secondary_errors']={'final_persist':{'exception_type':'OSError'}}
+        if self.fault=='diagnostic':self.run.meta['diagnostic_cleanup_unconfirmed']=True
+        if self.fault=='device':self.resources.device=Path('/unexpected/device')
+        if self.fault=='expired':self.clock[0]=373
+    def invoke(self):return self.m.discover_package_runtimes(self.run,self.resources)
+    def test_exact_timeout_then_success_preserves_first_output_and_only_initial_diagnostics(self):
+        self.fault='resolved_probe_error'
+        self.assertEqual(self.invoke(),[{'identifier':'fixture'}]);self.assertEqual(self.calls,[self.ARGS,self.ARGS]);self.assertEqual(self.waits,[60,60])
+        self.diagnostics.preflight.assert_called_once();self.diagnostics.wait_runtime.assert_called_once()
+        self.assertEqual((self.root/'runtimes.json').read_bytes(),b'');self.assertEqual((self.root/'runtimes-retry.json').read_bytes(),self.payload)
+        self.assertEqual(self.run.meta['runtime_inventory_recovery']['retry_count'],1)
+        self.assertEqual(len(self.run.meta['commands']),2);self.assertIn('TimeoutExpired',self.run.meta['commands'][0]['command_error'])
+        self.assertEqual(self.run.end,680);self.assertEqual(self.run.start,0);self.assertGreaterEqual(self.run.remaining(),304)
+    def test_first_success_is_single_command(self):
+        self.modes=['success'];self.assertEqual(self.invoke(),[{'identifier':'fixture'}]);self.assertEqual(len(self.calls),1);self.assertEqual(self.run.meta['runtime_inventory_recovery']['retry_count'],0)
+    def test_second_timeout_is_fatal_without_third_command(self):
+        self.modes=['timeout','timeout']
+        with self.assertRaises(subprocess.TimeoutExpired):self.invoke()
+        self.assertEqual(len(self.calls),2);self.assertEqual(self.stopped.call_count,2);self.assertEqual(self.run.end,680)
+    def test_unconfirmed_cleanup_or_diagnostic_state_never_retries(self):
+        for fault in ('group','leader','unknown','cleanup','secondary','diagnostic'):
+            with self.subTest(fault=fault):
+                self.calls=[];self.waits=[];self.run.meta['commands']=[];self.run.meta.pop('diagnostic_cleanup_unconfirmed',None);self.fault=fault
+                with self.assertRaises(subprocess.TimeoutExpired):self.invoke()
+                self.assertEqual(len(self.calls),1);self.assertEqual(self.run.end,680)
+    def test_non_timeout_errors_never_retry(self):
+        for mode,error in [('spawn_error',OSError),('nonzero',RuntimeError),('interrupt',InterruptedError)]:
+            with self.subTest(mode=mode):
+                self.calls=[];self.run.meta['commands']=[];self.modes=[mode]
+                with self.assertRaises(error):self.invoke()
+                self.assertEqual(len(self.calls),1)
+    def test_invalid_returned_json_never_becomes_retry(self):
+        self.modes=['success']
+        for payload in (b'not json',b'[]',b'{"runtimes": {}}'):
+            with self.subTest(payload=payload):
+                self.calls=[];self.run.meta['commands']=[];self.payload=payload
+                with self.assertRaises((ValueError,AssertionError)):self.invoke()
+                self.assertEqual(len(self.calls),1)
+    def test_retry_is_clipped_to_original_startup_end(self):
+        self.clock[0]=300;self.assertEqual(self.invoke(),[{'identifier':'fixture'}]);self.assertEqual(self.waits,[60,12]);self.assertLessEqual(self.clock[0],372)
+        self.assertEqual(self.run.end,680);self.assertEqual((self.l.WORK_END,self.l.CLEANUP_END,self.l.TOTAL),(680,780,900))
+    def test_expired_budget_after_timeout_prevents_second_spawn(self):
+        self.fault='expired'
+        with self.assertRaises(subprocess.TimeoutExpired):self.invoke()
+        self.assertEqual(len(self.calls),1);self.assertEqual(self.run.end,680)
+    def test_any_device_creation_blocks_inventory_and_retry(self):
+        self.run.meta['owned_uuid']='fixture'
+        with self.assertRaises(AssertionError):self.invoke()
+        self.assertEqual(len(self.calls),0);self.run.meta.pop('owned_uuid');self.fault='device'
+        with self.assertRaises(AssertionError):self.invoke()
+        self.assertEqual(len(self.calls),1)
+    def test_expiry_during_retry_admission_is_rechecked_before_spawn(self):
+        def persisted():
+            if self.run.meta['runtime_inventory_recovery']['retry_count']==1:self.clock[0]=373
+        self.run.persist=mock.Mock(side_effect=persisted)
+        with self.assertRaises(TimeoutError):self.invoke()
+        self.assertEqual(len(self.calls),1);self.assertEqual(self.run.end,680)
+
 class PackageAX5PostconditionTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)

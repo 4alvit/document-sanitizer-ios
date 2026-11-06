@@ -1207,8 +1207,8 @@ class AX5PostconditionTests(unittest.TestCase):
                     f.backend.readback_seconds = 60.001 if fault == 'timeout' else 0
                     rc, meta = f.run()
                     self.assertEqual(rc, 1);self.assertEqual(f.test_processes(), [])
-                    self.assertEqual(sum(p.step == 'set_ax5' for p in f.backend.processes), 1)
-                    self.assertEqual(sum(p.step == 'readback' for p in f.backend.processes), 1)
+                    self.assertEqual(sum(p.step == 'set_ax5' for p in f.backend.processes), 2 if fault == 'value' else 1)
+                    self.assertEqual(sum(p.step == 'readback' for p in f.backend.processes), 2 if fault == 'value' else 1)
                     setter = next(c for c in meta['commands'] if c['args'][-1] == f.module.AX5)
                     self.assertIn('TimeoutExpired', setter['command_error'])
                     f.assert_cleanup(meta)
@@ -1261,6 +1261,143 @@ class AX5PostconditionTests(unittest.TestCase):
                     f.assert_cleanup(meta)
                 finally:f.stack.close()
 
+
+
+class AX5SingleReapplyTests(unittest.TestCase):
+    def prepare(self, second_seconds=0, read_seconds=17):
+        f = Fixture(self)
+        f.backend.readback_elapsed = None
+        f.backend.bootstatus_elapsed = 200
+        f.backend.set_ax5_seconds = 60.001
+        f.backend.readback_seconds = read_seconds
+        f.backend.bad_ax5 = True
+        original = f.backend.complete
+        reads = []
+        def complete(proc):
+            original(proc)
+            if proc.step == 'readback':
+                reads.append(proc)
+                if len(reads) == 1:
+                    f.backend.bad_ax5 = False
+                    f.backend.set_ax5_seconds = second_seconds
+        f.stack.enter_context(mock.patch.object(f.backend, 'complete', complete))
+        return f
+
+    def test_verified_default_after_timeout_reapplies_once_and_preserves_evidence(self):
+        f = self.prepare()
+        rc, meta = f.run()
+        self.assertEqual(rc, 0)
+        setters = [p for p in f.backend.processes if p.step == 'set_ax5']
+        self.assertEqual(len(setters), 2)
+        self.assertEqual(setters[0].args, setters[1].args)
+        self.assertEqual(setters[1].args[3], UID)
+        self.assertFalse(setters[0].group_present)
+        self.assertEqual((f.out / 'ax5-readback.txt').read_text(), 'large')
+        self.assertEqual((f.out / 'ax5-reapply-readback.txt').read_text(), f.module.AX5)
+        self.assertEqual(meta['ax5_setup_recovery']['reapply_count'], 1)
+        self.assertEqual(meta['ax5_setup_recovery']['initial_postcondition']['readback'], 'large')
+        self.assertTrue(meta['ax5_setup_recovery']['initial_postcondition']['setter_timed_out'])
+        self.assertEqual(meta['actual_system_content_size'], f.module.AX5)
+        self.assertEqual(len(f.test_processes()), 1)
+        self.assertEqual((f.module.STARTUP_END, f.module.WORK_END, f.module.TOTAL), (376, 740, 960))
+        f.assert_cleanup(meta)
+
+    def test_second_timeout_still_requires_closed_group_and_exact_final_readback(self):
+        f = self.prepare(second_seconds=60.001)
+        rc, meta = f.run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(sum(p.step == 'set_ax5' for p in f.backend.processes), 2)
+        self.assertTrue(meta['ax5_postcondition']['setter_timed_out'])
+        for row in meta['commands']:
+            if row['args'][-1] == f.module.AX5:
+                self.assertTrue(row['owned_group_absent'])
+                self.assertTrue(row['cleanup_observation']['last_probe']['leader_reaped'])
+        f.assert_cleanup(meta)
+
+    def test_unknown_second_closure_prevents_final_readback_and_test(self):
+        f = self.prepare(second_seconds=60.001)
+        original = f.module.stop_group
+        def stopped(proc, row):
+            original(proc, row)
+            if proc.step == 'set_ax5' and sum(p.step == 'set_ax5' for p in f.backend.processes) == 2:
+                row['owned_group_absent'] = False
+        with mock.patch.object(f.module, 'stop_group', stopped):rc, meta = f.run()
+        self.assertEqual(rc, 1)
+        self.assertEqual(sum(p.step == 'readback' for p in f.backend.processes), 1)
+        self.assertEqual(f.test_processes(), [])
+
+    def test_successful_first_set_with_wrong_value_does_not_reapply(self):
+        f = Fixture(self);f.backend.bad_ax5 = True
+        rc, meta = f.run()
+        self.assertEqual(rc, 1)
+        self.assertEqual(sum(p.step == 'set_ax5' for p in f.backend.processes), 1)
+        self.assertEqual(f.test_processes(), [])
+        f.assert_cleanup(meta)
+
+    def test_nondefault_first_readback_does_not_reapply(self):
+        f = self.prepare();original = f.backend.complete
+        def complete(proc):
+            if proc.step == 'readback':proc.output.write(b'small');proc.output.flush()
+            else:original(proc)
+        with mock.patch.object(f.backend, 'complete', complete):rc, meta = f.run()
+        self.assertEqual(rc, 1)
+        self.assertEqual(sum(p.step == 'set_ax5' for p in f.backend.processes), 1)
+        self.assertEqual(f.test_processes(), [])
+        f.assert_cleanup(meta)
+
+    def test_changed_inode_before_reapply_denies_second_set(self):
+        f = self.prepare();device = f.root / 'Library/Developer/CoreSimulator/Devices' / UID
+        original = Path.lstat;seen = []
+        def observed(path, *args, **kwargs):
+            info = original(path, *args, **kwargs)
+            if path == device:
+                seen.append(1)
+                if len(seen) == 4:return SimpleNamespace(st_mode=info.st_mode, st_dev=info.st_dev, st_ino=info.st_ino+1)
+            return info
+        with mock.patch.object(Path, 'lstat', observed):rc, meta = f.run()
+        self.assertEqual(rc, 1)
+        self.assertEqual(sum(p.step == 'set_ax5' for p in f.backend.processes), 1)
+        self.assertEqual(f.test_processes(), [])
+
+    def test_late_reapply_command_is_clipped_to_original_startup_deadline(self):
+        f = self.prepare(second_seconds=60.001, read_seconds=0)
+        original = f.module.Run.command
+        def command(run, args, name, *rest, **kw):
+            if name == 'set-ax5-reapply.log':f.clock.value = 350
+            return original(run, args, name, *rest, **kw)
+        with mock.patch.object(f.module.Run, 'command', command):rc, meta = f.run()
+        self.assertEqual(rc, 1)
+        second = [c for c in meta['commands'] if c['args'][-1] == f.module.AX5][1]
+        self.assertEqual(second['timeout_seconds'], 22)
+        self.assertEqual(second['command_deadline_monotonic'], 372)
+        self.assertEqual(f.test_processes(), [])
+        f.assert_cleanup(meta)
+
+    def test_late_final_readback_is_clipped_and_cannot_launch_test(self):
+        f = self.prepare(read_seconds=0);original = f.module.Run.output
+        def output(run, args, name, *rest, **kw):
+            if name == 'ax5-reapply-readback.txt':
+                f.clock.value = 350;f.backend.readback_seconds = 60.001
+            return original(run, args, name, *rest, **kw)
+        with mock.patch.object(f.module.Run, 'output', output):rc, meta = f.run()
+        self.assertEqual(rc, 1)
+        reads = [c for c in meta['commands'] if c['args'][-1] == 'content_size']
+        self.assertEqual(reads[-1]['timeout_seconds'], 22)
+        self.assertEqual(reads[-1]['command_deadline_monotonic'], 372)
+        self.assertEqual(f.test_processes(), [])
+        f.assert_cleanup(meta)
+
+    def test_nonzero_second_set_does_not_read_back_or_retry_again(self):
+        f = self.prepare();original = f.module.Run.command
+        def command(run, args, name, *rest, **kw):
+            if name == 'set-ax5-reapply.log':f.backend.fault_step, f.backend.fault = 'set_ax5', 'nonzero'
+            return original(run, args, name, *rest, **kw)
+        with mock.patch.object(f.module.Run, 'command', command):rc, meta = f.run()
+        self.assertEqual(rc, 1)
+        self.assertEqual(sum(p.step == 'set_ax5' for p in f.backend.processes), 2)
+        self.assertEqual(sum(p.step == 'readback' for p in f.backend.processes), 1)
+        self.assertEqual(f.test_processes(), [])
+        f.assert_cleanup(meta)
 
 class StartupPolicyBoundaryTests(unittest.TestCase):
     def test_late_persistence_or_log_open_denies_spawn(self):

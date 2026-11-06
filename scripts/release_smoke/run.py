@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One granted exact shipped-package smoke, no build/re-sign/network or native retry."""
+"""One granted exact shipped-package smoke, no build/re-sign/network or test retry."""
 import hashlib, importlib.util, json, os, plistlib, shutil, signal, stat, subprocess, sys, time, uuid, zipfile
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
@@ -273,6 +273,50 @@ def verify_observation_roots(data,group,device,uid,budget,check,*,baseline=None,
  return value
 
 
+def discover_package_runtimes(run,resources):
+ # Inventory is read-only. One safely closed timeout may be retried within the
+ # original startup budget; the full300s XCTest plus4s stop reserve stays intact.
+ previous_end=run.end;run.end=min(previous_end,LIMITS.WORK_END-304)
+ args=['xcrun','simctl','list','runtimes','--json']
+ state={'maximum_attempts':2,'retry_count':0,'outputs':[]}
+ run.meta['runtime_inventory_recovery']=state
+ def no_device():
+  assert not run.meta.get('owned_uuid') and not run.meta.get('owned_device_name')
+  assert resources.device is None
+  assert not any(row.get('args',[])[:3]==['xcrun','simctl','create'] for row in run.meta['commands'])
+ try:
+  for attempt in range(2):
+   resources.check(run.end);no_device()
+   name='runtimes-retry.json' if attempt else 'runtimes.json'
+   index=len(run.meta['commands'])
+   try:run.command(args,name,60)
+   except subprocess.TimeoutExpired as error:
+    rows=run.meta['commands'];matches=[row for row in rows[index:] if row.get('args')==args]
+    row=matches[0] if len(matches)==1 else {}
+    probe=row.get('cleanup_observation',{}).get('last_probe',{})
+    if not (attempt==0 and error.cmd==args and row.get('command_error_operation')=='wait'
+            and row.get('runtime_observation',{}).get('wait_error')=='TimeoutExpired'
+            and type(row.get('owned_process_group')) is int and row['owned_process_group']>1
+            and type(row.get('returncode')) is int and row.get('owned_group_absent') is True
+            and probe.get('leader_reaped') is True and probe.get('group')=='ABSENT'
+            and not row.get('cleanup_error') and not row.get('secondary_errors')
+            and not run.meta.get('diagnostic_cleanup_unconfirmed')
+            and not any(item.get('owned_group_absent') is False for item in rows)):
+     raise
+    no_device();resources.check(run.end)
+    if run.remaining()<=4:raise
+    state['outputs'].append({'path':name,'timed_out':True})
+    state['retry_count']=1;run.persist()
+    continue
+   resources.check(run.end);no_device()
+   value=json.loads((SCOPE/name).read_text())
+   assert isinstance(value,dict) and isinstance(value.get('runtimes'),list),'Invalid runtime inventory JSON'
+   state['outputs'].append({'path':name,'timed_out':False})
+   return value['runtimes']
+  raise AssertionError('Runtime inventory did not complete')
+ finally:run.end=previous_end
+
+
 def wait_for_package_boot(run,resources,uid):
  # One cold-readiness command shares the original startup budget with all
  # remaining work. The full300s XCTest plus4s stop reserve stays unavailable.
@@ -393,7 +437,7 @@ def worker(start,grant):
   developer=Path(output(['xcode-select','-p'],'developer.txt'))
   xcode=output(['xcodebuild','-version'],'xcode-version.txt',20)
   assert xcode=='Xcode 16.4\nBuild version '+grant['xcode_build'],'same-run runner toolchain mismatch; no substitute'
-  runtimes=json.loads(output(['xcrun','simctl','list','runtimes','--json'],'runtimes.json',60))['runtimes']
+  runtimes=discover_package_runtimes(run,resources)
   runtime=[r for r in runtimes if r['identifier']==grant['runtime_id'] and r.get('isAvailable')]
   assert len(runtime)==1 and runtime[0]['version']==grant['runtime_version'] and os.uname().machine in runtime[0]['supportedArchitectures']
   assert grant['device_type'] in {d['identifier'] for d in runtime[0]['supportedDeviceTypes']}

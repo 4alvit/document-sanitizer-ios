@@ -135,7 +135,10 @@ class Run:
         assert not any(c.get('owned_group_absent') is False for c in self.meta['commands']), 'Prior owned child group unresolved; no additional native child work'
         assert not self.meta.get('diagnostic_cleanup_unconfirmed'), 'Diagnostic child group unresolved; no additional native child work'
         command_args = list(map(str, args))
-        observe = command_args == ['xcrun', 'simctl', 'list', 'runtimes', '--json']
+        # The fixed recovery call preserves first-attempt diagnostic files. It
+        # still uses the identical command deadline and owned-group lifecycle.
+        observe = (command_args == ['xcrun', 'simctl', 'list', 'runtimes', '--json']
+                   and name != 'runtimes-retry.json')
         if observe and RUNTIME_DIAGNOSTICS is not None:
             RUNTIME_DIAGNOSTICS.preflight(self, OUT, ENV, ROOT)
         if observe and self.remaining() > 4:

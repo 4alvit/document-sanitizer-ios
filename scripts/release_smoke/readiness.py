@@ -1,4 +1,4 @@
-"""Bounded observations of one cold runtime discovery; never repair or retry it."""
+"""Bounded first-attempt runtime observations; never repair host services."""
 import os
 import resource
 import signal
