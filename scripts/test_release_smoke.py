@@ -1168,7 +1168,7 @@ class PackageInstallBudgetTests(unittest.TestCase):
                 try:
                     if old_cap:run.command(['xcrun','simctl','install','fixture-owned','/fixture/CleanSend.app'],'install.log',30)
                     else:self.m.install_package_app(run,SimpleNamespace(check=check),'fixture-owned',Path('/fixture/CleanSend.app'))
-                except BaseException as caught:error=caught
+                except (Exception, KeyboardInterrupt) as caught:error=caught
             self.assertEqual(run.start,0);self.assertEqual(run.end,parent_end)
             self.assertEqual((self.l.WORK_END,self.l.CLEANUP_END,self.l.TOTAL),(680,780,900))
             self.assertLessEqual(spawn.call_count,1);self.assertLessEqual(stopped.call_count,1)
@@ -1278,7 +1278,7 @@ class PackageInitialLaunchBudgetTests(unittest.TestCase):
                 try:
                     if old_cap:run.command(['xcrun','simctl','launch','fixture-owned','io.github.4alvit.cleansend'],'initial-launch.log',20)
                     else:self.m.launch_package_app(run,SimpleNamespace(check=check),'fixture-owned')
-                except BaseException as caught:error=caught
+                except (Exception, KeyboardInterrupt) as caught:error=caught
             self.assertEqual(run.start,0);self.assertEqual(run.end,parent_end)
             self.assertEqual((self.l.WORK_END,self.l.CLEANUP_END,self.l.TOTAL),(680,780,900))
             self.assertLessEqual(spawn.call_count,1);self.assertLessEqual(stopped.call_count,1)
