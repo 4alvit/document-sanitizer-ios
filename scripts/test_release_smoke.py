@@ -165,11 +165,13 @@ class HostedPreparationTests(unittest.TestCase):
         with mock.patch.dict(os.environ,{'GITHUB_ACTIONS':'true','GITHUB_EVENT_NAME':'pull_request'}),mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='x86_64')):
             with self.assertRaisesRegex(AssertionError,'ARM host profile'):native.validate_grant(self.root/'absent-context.json')
 
-    def test_native_grant_and_pipeline_match_the_complete_fixed_budget(self):
+    # Keep the two-phase rounding regression deterministic at a fractional uptime.
+    @mock.patch.object(time,'monotonic',return_value=252.478186958)
+    def test_native_grant_and_pipeline_match_the_complete_fixed_budget(self,_clock):
         self.inputs();report=self.execute();self.assertEqual(report['status'],'prepared',report)
         path=self.scope/'context.json';original=json.loads(path.read_bytes())
         self.assertEqual(original['seconds'],900)
-        self.assertEqual(original['pipeline_deadline'],report['started']+1200)
+        self.assertEqual(original['pipeline_deadline'],(report['started']+300)+900)
         native=load('grant_budget_native',SMOKE/'run.py')
         env={'GITHUB_ACTIONS':'true','GITHUB_EVENT_NAME':'pull_request',
              'GITHUB_REPOSITORY':self.prep.REPO,'EXPECTED_HEAD_SHA':self.head,
