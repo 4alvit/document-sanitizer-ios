@@ -338,6 +338,17 @@ def install_package_app(run,resources,uid,bundle):
  finally:run.end=previous_end
 
 
+
+def launch_package_app(run,resources,uid):
+ # One initial launch shares original setup time with the required baseline.
+ # Keep the full304s XCTest admission and Run.command's4s stop reserve.
+ previous_end=run.end;run.end=min(previous_end,LIMITS.WORK_END-304)
+ try:
+  resources.check(run.end)
+  run.command(['xcrun','simctl','launch',uid,APP_ID],'initial-launch.log',run.remaining())
+ finally:run.end=previous_end
+
+
 def cleanup_device_commands(run,uid,lifecycle):
  cleanup={}
  for action,limit,deadline in [('shutdown',45,lifecycle.SHUTDOWN_END),('delete',25,lifecycle.DELETE_END)]:
@@ -482,7 +493,7 @@ def worker(start,grant):
   command(['xcrun','simctl','install',uid,Path(frozen['runner'])],'install-runner.log',30)
   installed('installed-before.json',initial_install=True)
   # The app creates its own state; the driver never seeds a workspace or queue.
-  command(['xcrun','simctl','launch',uid,APP_ID],'initial-launch.log',20)
+  launch_package_app(run,resources,uid)
   data=container('data','data-container.txt');group=container(GROUP,'group-container.txt')
   assert data!=group
   initial_roots=verify_observation_roots(data,group,resources.device,uid,b,resources.check)

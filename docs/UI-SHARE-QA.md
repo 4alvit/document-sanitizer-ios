@@ -162,6 +162,15 @@ The 680/780/900-second deadlines and resource limits are unchanged; an installat
 that uses the remaining setup time can still leave too little time for later
 preparation and must fail admission. A complete hosted case is still required.
 
+
+The one initial AUT launch also uses only the remaining original 376-second
+setup allowance, including its four-second command-stop reserve. It must return
+success before the unchanged owned-container empty baseline and full 304-second
+XCTest admission checks. A prior launch exhausted its local 20-second cap while
+setup time remained, without returning a PID or launch reply. The underlying
+cause is unknown; sharing the existing allowance adds no launch retry, alternate
+acceptance, new time window or change to work, cleanup, evidence or resource limits.
+
 ## Busy-state layout evidence
 
 The archived `BusyLayoutTests` diagnostic captured real view components at the

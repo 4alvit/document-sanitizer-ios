@@ -1236,6 +1236,116 @@ class PackageInstallBudgetTests(unittest.TestCase):
         self.assertIsInstance(result.error,AssertionError);self.assertEqual((result.spawns,result.stops),(0,0))
 
 
+
+class PackageInitialLaunchBudgetTests(unittest.TestCase):
+    """Exercise the real command deadline/lifecycle with a controlled initial launch."""
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name)
+        self.m=load('package_initial_launch_budget',SMOKE/'run.py')
+        self.l=load('package_initial_launch_lifecycle',SMOKE/'lifecycle.py');self.l.OUT=self.root
+
+    def exercise(self,*,elapsed=243,duration=35,parent_end=680,old_cap=False,
+                 scan_delay=0,io_delay=None,wait_error=None,returncode=0,unresolved=False,
+                 stop_error=None):
+        clock=[float(elapsed)];waits=[];checks=[];original_open=Path.open
+        with mock.patch.object(time,'monotonic',side_effect=lambda:clock[0]):
+            run=self.l.Run();run.start=0;run.end=parent_end
+            if unresolved:run.meta['commands'].append({'owned_group_absent':False})
+            def persist():
+                if io_delay=='persist':clock[0]=372
+            run.persist=persist
+            def opened(path,*args,**kwargs):
+                stream=original_open(path,*args,**kwargs)
+                if io_delay=='open':clock[0]=372
+                return stream
+            def check(phase):
+                checks.append(phase);clock[0]+=scan_delay
+                assert clock[0]<phase,'original setup deadline'
+            proc=SimpleNamespace(pid=123,returncode=None)
+            def wait(timeout):
+                waits.append(timeout);clock[0]+=min(duration,timeout)
+                if wait_error is not None:raise wait_error
+                if duration>timeout:raise subprocess.TimeoutExpired('fixture initial launch',timeout)
+                proc.returncode=returncode
+            proc.wait=wait
+            def stop(p,row):
+                if p.returncode is None:p.returncode=-15
+                if stop_error is not None:raise stop_error
+                row['owned_group_absent']=True
+            error=None
+            with mock.patch.object(Path,'open',opened),mock.patch.object(subprocess,'Popen',return_value=proc) as spawn,mock.patch.object(self.l,'stop_group',side_effect=stop) as stopped:
+                try:
+                    if old_cap:run.command(['xcrun','simctl','launch','fixture-owned','io.github.4alvit.cleansend'],'initial-launch.log',20)
+                    else:self.m.launch_package_app(run,SimpleNamespace(check=check),'fixture-owned')
+                except BaseException as caught:error=caught
+            self.assertEqual(run.start,0);self.assertEqual(run.end,parent_end)
+            self.assertEqual((self.l.WORK_END,self.l.CLEANUP_END,self.l.TOTAL),(680,780,900))
+            self.assertLessEqual(spawn.call_count,1);self.assertLessEqual(stopped.call_count,1)
+            if spawn.call_count:
+                self.assertEqual(spawn.call_args.args[0],['xcrun','simctl','launch','fixture-owned','io.github.4alvit.cleansend'])
+                self.assertTrue(spawn.call_args.kwargs['start_new_session'])
+            return SimpleNamespace(error=error,run=run,clock=clock[0],waits=waits,checks=checks,
+                                   spawns=spawn.call_count,stops=stopped.call_count)
+
+    def test_same35s_launch_fails_old20cap_but_fits_existing_setup_allowance(self):
+        old=self.exercise(old_cap=True)
+        self.assertIsInstance(old.error,subprocess.TimeoutExpired);self.assertEqual(old.waits,[20])
+        current=self.exercise()
+        self.assertIsNone(current.error);self.assertEqual(current.waits,[129]);self.assertEqual(current.clock,278)
+        self.assertEqual(current.checks,[376]);self.assertEqual((current.spawns,current.stops),(1,1))
+        self.assertTrue(current.run.meta['commands'][0]['owned_group_absent'])
+
+    def test_late_launch_times_out_without_borrowing_test_or_stop_reserves(self):
+        result=self.exercise(elapsed=340)
+        self.assertIsInstance(result.error,subprocess.TimeoutExpired)
+        self.assertEqual(result.waits,[32]);self.assertEqual(result.clock,372)
+        self.assertEqual((result.spawns,result.stops),(1,1));self.assertGreaterEqual(680-result.clock,304+4)
+        self.assertTrue(result.run.meta['commands'][0]['owned_group_absent'])
+
+    def test_no_dispatch_at_stop_reserve_or_after_original_setup_deadline(self):
+        for elapsed,error in ((372,TimeoutError),(376,AssertionError),(400,AssertionError)):
+            with self.subTest(elapsed=elapsed):
+                result=self.exercise(elapsed=elapsed)
+                self.assertIsInstance(result.error,error);self.assertEqual((result.spawns,result.stops),(0,0))
+
+    def test_resource_scan_consumes_setup_budget_and_can_prevent_dispatch(self):
+        result=self.exercise(elapsed=340,scan_delay=36)
+        self.assertIsInstance(result.error,AssertionError);self.assertEqual(result.checks,[376])
+        self.assertEqual((result.spawns,result.stops),(0,0))
+        result=self.exercise(elapsed=340,duration=1,scan_delay=10)
+        self.assertIsNone(result.error);self.assertEqual(result.waits,[22])
+
+    def test_persist_or_log_open_cannot_dispatch_with_stale_allowance(self):
+        for stage in ('persist','open'):
+            with self.subTest(stage=stage):
+                result=self.exercise(elapsed=340,io_delay=stage)
+                self.assertIsInstance(result.error,TimeoutError);self.assertEqual((result.spawns,result.stops),(0,0))
+
+    def test_stricter_parent_deadline_is_preserved(self):
+        result=self.exercise(elapsed=320,parent_end=350)
+        self.assertIsInstance(result.error,subprocess.TimeoutExpired)
+        self.assertEqual(result.checks,[350]);self.assertEqual(result.waits,[26]);self.assertEqual(result.clock,346)
+
+    def test_original_work_end_restored_on_command_failure_and_interruption(self):
+        for error in (InterruptedError('fixture interrupted'),KeyboardInterrupt('fixture interrupted')):
+            with self.subTest(error=type(error).__name__):
+                result=self.exercise(wait_error=error)
+                self.assertIs(result.error,error);self.assertEqual((result.spawns,result.stops),(1,1))
+                self.assertTrue(result.run.meta['commands'][0]['owned_group_absent'])
+        result=self.exercise(returncode=1)
+        self.assertIsInstance(result.error,RuntimeError);self.assertEqual((result.spawns,result.stops),(1,1))
+
+    def test_cleanup_failure_restores_work_end_but_does_not_claim_absence(self):
+        error=RuntimeError('fixture cleanup failed');result=self.exercise(stop_error=error)
+        self.assertIs(result.error,error);self.assertEqual((result.spawns,result.stops),(1,1))
+        self.assertFalse(result.run.meta['commands'][0]['owned_group_absent'])
+
+    def test_unresolved_prior_child_prevents_initial_launch(self):
+        result=self.exercise(unresolved=True)
+        self.assertIsInstance(result.error,AssertionError);self.assertEqual((result.spawns,result.stops),(0,0))
+
+
 class PackageRuntimeInventoryRecoveryTests(unittest.TestCase):
     ARGS=['xcrun','simctl','list','runtimes','--json']
     def setUp(self):
