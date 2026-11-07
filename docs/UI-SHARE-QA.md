@@ -150,6 +150,18 @@ headroom, not a diagnosis or fix for the underlying Simulator stall. The observe
 120-second boot wait timed out before app installation; a successful full
 current-source run and exact-package Share case are still required.
 
+
+The single AUT installation uses the remaining time before the same original
+376-second preparation boundary, including its four-second command-stop reserve.
+It does not receive a fresh installation window or a retry. A previous invocation
+hit its local 30-second cap while setup time remained; its underlying Simulator
+cause is unknown. Installation now shares that existing setup allowance with
+all other preparation. Runner installation, exact installed-byte checks, the
+empty-state baseline and the full 304-second XCTest admission remain mandatory.
+The 680/780/900-second deadlines and resource limits are unchanged; an installation
+that uses the remaining setup time can still leave too little time for later
+preparation and must fail admission. A complete hosted case is still required.
+
 ## Busy-state layout evidence
 
 The archived `BusyLayoutTests` diagnostic captured real view components at the
@@ -176,7 +188,7 @@ not a CI build step. This keeps same-host unit-test products bound to the checke
 project and preserves the native gate's strict clean-source and hash checks.
 
 
-The exact-package smoke preserves its original 256-second startup boundary and
+The exact-package smoke preserves its original 376-second startup boundary and
 reserves the full 300-second test window plus four-second stop allowance. If its
 initial system AX5 setter times out, the owned process group must be reaped and
 absent before a readback. An exact AX5 readback still suffices. A responsive

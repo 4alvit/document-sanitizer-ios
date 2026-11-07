@@ -327,6 +327,17 @@ def wait_for_package_boot(run,resources,uid):
  finally:run.end=previous_end
 
 
+
+def install_package_app(run,resources,uid,bundle):
+ # One AUT installation uses only remaining original setup time. Run.command
+ # reserves its4s stop allowance; the full304s XCTest admission stays unavailable.
+ previous_end=run.end;run.end=min(previous_end,LIMITS.WORK_END-304)
+ try:
+  resources.check(run.end)
+  run.command(['xcrun','simctl','install',uid,bundle],'install.log',run.remaining())
+ finally:run.end=previous_end
+
+
 def cleanup_device_commands(run,uid,lifecycle):
  cleanup={}
  for action,limit,deadline in [('shutdown',45,lifecycle.SHUTDOWN_END),('delete',25,lifecycle.DELETE_END)]:
@@ -467,7 +478,7 @@ def worker(start,grant):
   wait_for_package_boot(run,resources,uid)
   assert run.remaining()>=304,'insufficient test admission after boot'
   assert configure_package_ax5(run,resources,uid,l)==l.AX5
-  command(['xcrun','simctl','install',uid,BUNDLE],'install.log',30)
+  install_package_app(run,resources,uid,BUNDLE)
   command(['xcrun','simctl','install',uid,Path(frozen['runner'])],'install-runner.log',30)
   installed('installed-before.json',initial_install=True)
   # The app creates its own state; the driver never seeds a workspace or queue.
