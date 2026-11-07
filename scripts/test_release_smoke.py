@@ -169,7 +169,7 @@ class HostedPreparationTests(unittest.TestCase):
         self.inputs();report=self.execute();self.assertEqual(report['status'],'prepared',report)
         path=self.scope/'context.json';original=json.loads(path.read_bytes())
         self.assertEqual(original['seconds'],900)
-        self.assertEqual(original['pipeline_deadline']-report['started'],1200)
+        self.assertEqual(original['pipeline_deadline'],report['started']+1200)
         native=load('grant_budget_native',SMOKE/'run.py')
         env={'GITHUB_ACTIONS':'true','GITHUB_EVENT_NAME':'pull_request',
              'GITHUB_REPOSITORY':self.prep.REPO,'EXPECTED_HEAD_SHA':self.head,
