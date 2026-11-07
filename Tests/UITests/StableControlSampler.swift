@@ -19,6 +19,34 @@ struct StableControlSampler {
         lastTime = started
     }
 
+    // Poll immediately instead of spending the first second waiting for an
+    // XCTest predicate timer. Keep the original deadline and one-second cadence.
+    mutating func wait(
+        now: () -> TimeInterval,
+        snapshot: () -> StableControlGeometry?,
+        isHittable: () -> Bool,
+        pause: (TimeInterval) -> Void
+    ) -> Bool {
+        while true {
+            let started = now()
+            guard admissible(started), started < deadline else { return false }
+            if poll(now: now, snapshot: snapshot, isHittable: isHittable) {
+                return true
+            }
+            var observed = now()
+            guard admissible(observed), observed < deadline else { return false }
+            let resumeAt = min(deadline, observed + 1)
+            // A run-loop yield may return early. Finish the same bounded pause
+            // before issuing another accessibility observation.
+            while observed < resumeAt {
+                pause(resumeAt - observed)
+                let resumed = now()
+                guard admissible(resumed), resumed > observed else { return false }
+                observed = resumed
+            }
+        }
+    }
+
     private mutating func reset() {
         previous = .null
         stableSince = nil

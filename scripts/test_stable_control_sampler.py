@@ -23,7 +23,12 @@ class StableControlSamplerTests(unittest.TestCase):
 
     def test_sampling_boundaries(self):
         for scenario in ("slow-snapshots", "moved", "disabled", "unhittable", "missing",
-                         "late-snapshot", "late-hittability", "expired-start", "backwards-clock"):
+                         "late-snapshot", "late-hittability", "expired-start", "backwards-clock",
+                         "native-cost-delayed-predicate", "driver-native-costs", "driver-fast",
+                         "driver-early-yield", "driver-moving", "driver-disabled", "driver-unhittable",
+                         "driver-missing", "driver-invalid-geometry", "driver-nonfinite-geometry", "driver-recovers", "driver-late-snapshot",
+                         "driver-late-hittability", "driver-late-pause", "driver-frozen-clock",
+                         "driver-backwards-clock", "driver-nonfinite-clock"):
             with self.subTest(scenario=scenario):
                 result = subprocess.run([str(self.runner), scenario], check=True,
                                         capture_output=True, text=True, timeout=10)
