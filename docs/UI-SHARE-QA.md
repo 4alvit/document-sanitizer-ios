@@ -174,13 +174,17 @@ and layer renderer do not reproduce every device safe area or material effect.
 Treat those PNGs as bounded layout evidence, not as an end-to-end cancellation
 or responsiveness test.
 
-The privacy driver's AX5 setter and readback each retain a 60-second maximum.
-Each command clips its actual allowance to the original work deadline, keeping
-215 seconds for the unchanged XCTest admission check and four seconds for that
-command's stop. Time used by the setter reduces the readback allowance; it does
-not start a new budget. Exact system-size readback, the selected case limit,
-the 300-second outer test cap, and the 560/660/780-second work/cleanup/whole
-deadlines remain unchanged. Passing admission does not guarantee test completion.
+The privacy driver's AX5 setter retains a 60-second maximum. Its initial
+readback uses only the remaining original 376-second setup allowance, including
+four seconds for stopping that command. The existing conditional reapply and
+its final readback keep their 60-second caps; no additional read or retry is
+introduced. A successful setter without an observed exact AX5 value still fails.
+Time spent in setup never renews the original clock or borrows the full
+364-second XCTest admission reserve. The selected case limit, finite 570-second
+maximum XCTest command, and 740/840/960-second work/cleanup/whole deadlines remain
+unchanged. The prior readback exhausted its local 60-second cap while setup time
+remained; its underlying Simulator cause is unknown, and more available setup
+time does not guarantee completion or acceptance.
 
 The verification pipeline builds the committed Xcode project, matching Release
 packaging. Project regeneration is an authoring action performed before commit,

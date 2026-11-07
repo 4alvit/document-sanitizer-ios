@@ -916,7 +916,7 @@ class BaselineWorkerTests(unittest.TestCase):
         rc, meta = self.f.run()
         self.assertEqual(rc, 0)
         commands = [p for p in self.f.backend.processes if p.step in ('set_ax5', 'readback', 'test')]
-        self.assertEqual([p.wait_calls for p in commands], [[60], [60], [470]])
+        self.assertEqual([p.wait_calls for p in commands], [[60], [111], [470]])
         self.assertEqual(meta['actual_system_content_size'], self.f.module.AX5)
         self.f.assert_cleanup(meta)
 
@@ -966,15 +966,16 @@ class BaselineWorkerTests(unittest.TestCase):
                          'readback': self.f.module.AX5, 'owned_device_identity_unchanged': True})
         self.f.assert_cleanup(meta)
 
-    def test_ax5_readback_over_60_seconds_does_not_start_test_or_retry(self):
-        self.f.backend.readback_seconds = 60.001
+    def test_ax5_readback_exhausting_setup_does_not_start_test_or_retry(self):
+        self.f.backend.bootstatus_elapsed = 300
+        self.f.backend.readback_seconds = 72.001
         self.f.backend.readback_elapsed = None
         rc, meta = self.f.run()
         self.assertEqual(rc, 1)
         self.assert_failed(meta, 'TimeoutExpired')
         readbacks = [p for p in self.f.backend.processes if p.step == 'readback']
         self.assertEqual(len(readbacks), 1)
-        self.assertEqual(readbacks[0].wait_calls, [60])
+        self.assertEqual(readbacks[0].wait_calls, [72])
         self.assertEqual(self.f.test_processes(), [])
         self.assertNotIn('actual_system_content_size', meta)
         record = next(c for c in meta['commands'] if c.get('owned_process_group') == readbacks[0].pid)
@@ -1160,6 +1161,103 @@ BASE_STOP_GROUP_SOURCE = 'def stop_group(proc, record=None):\n    """Require bot
 STOP_OPERATIONS = ('leader_poll', 'group_probe', 'SIGTERM', 'SIGKILL', 'sleep')
 
 
+class AX5ReadbackAllocationTests(unittest.TestCase):
+    def prepare(self, elapsed=210, duration=65):
+        f = Fixture(self);f.backend.readback_elapsed = None;f.backend.readback_seconds = duration
+        (f.root / 'Library/Developer/CoreSimulator/Devices' / UID).mkdir(parents=True)
+        run = f.module.Run();run.start = 0;run.end = f.module.STARTUP_END
+        run.meta['owned_uuid'] = UID;f.clock.value = elapsed
+        f.module.signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(InterruptedError('SIGTERM')))
+        return f, run
+
+    def test_real65s_readback_fails_old60_cap_but_fits_original_setup(self):
+        for old_cap in (True, False):
+            with self.subTest(old_cap=old_cap):
+                f, run = self.prepare()
+                try:
+                    original = f.module.Run.output
+                    def output(current, args, name, limit=15):
+                        return original(current, args, name, 60 if old_cap and name == 'ax5-readback.txt' else limit)
+                    with mock.patch.object(f.module.Run, 'output', output):
+                        if old_cap:
+                            with self.assertRaises(subprocess.TimeoutExpired):f.module.configure_system_ax5(run, UID)
+                        else:self.assertEqual(f.module.configure_system_ax5(run, UID), f.module.AX5)
+                    reads = [p for p in f.backend.processes if p.step == 'readback']
+                    self.assertEqual(len(reads), 1);self.assertEqual(reads[0].wait_calls, [60 if old_cap else 162])
+                    self.assertEqual(run.end, 376);self.assertEqual(run.start, 0)
+                    self.assertGreaterEqual(f.module.WORK_END-f.clock.value, f.module.TEST_ADMISSION)
+                    self.assertEqual((f.module.WORK_END, f.module.CLEANUP_END, f.module.TOTAL), (740, 840, 960))
+                    if old_cap:self.assertFalse(reads[0].group_present)
+                finally:f.stack.close()
+
+    def test_readback_near_boundary_keeps_stop_and_full_test_reserve(self):
+        f, run = self.prepare(elapsed=371, duration=2)
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):f.module.configure_system_ax5(run, UID)
+            reads = [p for p in f.backend.processes if p.step == 'readback']
+            self.assertEqual(len(reads), 1);self.assertEqual(reads[0].wait_calls, [1])
+            self.assertEqual(f.clock.value, 372);self.assertEqual(run.end, 376)
+            self.assertEqual(f.module.WORK_END-f.clock.value, f.module.TEST_ADMISSION+4)
+            self.assertFalse(reads[0].group_present)
+        finally:f.stack.close()
+
+    def test_no_readback_dispatch_at_stop_boundary_or_expired_setup(self):
+        for end in (372, 376):
+            with self.subTest(elapsed=end):
+                f, run = self.prepare()
+                try:
+                    complete = f.backend.complete
+                    def completed(proc):
+                        complete(proc)
+                        if proc.step == 'set_ax5':f.clock.value = end
+                    with mock.patch.object(f.backend, 'complete', completed):
+                        with self.assertRaises(TimeoutError):f.module.configure_system_ax5(run, UID)
+                    self.assertFalse(any(p.step == 'readback' for p in f.backend.processes));self.assertEqual(run.end, 376)
+                finally:f.stack.close()
+
+    def test_command_error_and_cancellation_restore_phase_without_second_read(self):
+        for fault in ('nonzero', 'signal', 'timeout'):
+            with self.subTest(fault=fault):
+                f, run = self.prepare()
+                try:
+                    f.backend.fault_step, f.backend.fault = 'readback', fault
+                    with self.assertRaises((RuntimeError, InterruptedError, subprocess.TimeoutExpired)):
+                        f.module.configure_system_ax5(run, UID)
+                    self.assertEqual(run.end, 376);self.assertNotIn('ax5_postcondition', run.meta)
+                    self.assertEqual(sum(p.step == 'readback' for p in f.backend.processes), 1)
+                finally:f.stack.close()
+
+    def test_readback_returning_at_setup_deadline_cannot_establish_postcondition(self):
+        f, run = self.prepare(duration=1)
+        try:
+            complete = f.backend.complete
+            def completed(proc):
+                complete(proc)
+                if proc.step == 'readback':f.clock.value = 376
+            with mock.patch.object(f.backend, 'complete', completed):
+                with self.assertRaises(TimeoutError):f.module.configure_system_ax5(run, UID)
+            self.assertEqual(run.end, 376);self.assertNotIn('ax5_postcondition', run.meta)
+            self.assertEqual(sum(p.step == 'readback' for p in f.backend.processes), 1)
+        finally:f.stack.close()
+
+    def test_conditional_final_readback_keeps60_cap_and_no_third_read(self):
+        f, run = self.prepare(elapsed=0)
+        try:
+            f.backend.set_ax5_seconds = 60.001;f.backend.bad_ax5 = True
+            complete = f.backend.complete
+            def completed(proc):
+                complete(proc)
+                if proc.step == 'readback':f.backend.bad_ax5 = False;f.backend.set_ax5_seconds = 0
+            with mock.patch.object(f.backend, 'complete', completed):
+                with self.assertRaises(subprocess.TimeoutExpired):f.module.configure_system_ax5(run, UID)
+            reads = [p for p in f.backend.processes if p.step == 'readback']
+            self.assertEqual(len(reads), 2);self.assertEqual([p.wait_calls for p in reads], [[312], [60]])
+            self.assertEqual(sum(p.step == 'set_ax5' for p in f.backend.processes), 2)
+            self.assertEqual(run.meta['ax5_setup_recovery']['reapply_count'], 1)
+            self.assertEqual(run.end, 376);self.assertFalse(reads[-1].group_present)
+        finally:f.stack.close()
+
+
 class AX5PostconditionTests(unittest.TestCase):
     def test_unknown_closure_or_secondary_error_never_reads_back(self):
         faults = ('group', 'leader', 'probe', 'cleanup_error', 'secondary', 'args', 'operation')
@@ -1204,7 +1302,7 @@ class AX5PostconditionTests(unittest.TestCase):
                 try:
                     f.backend.set_ax5_seconds = 60.001
                     f.backend.bad_ax5 = fault == 'value'
-                    f.backend.readback_seconds = 60.001 if fault == 'timeout' else 0
+                    f.backend.readback_seconds = 1000 if fault == 'timeout' else 0
                     rc, meta = f.run()
                     self.assertEqual(rc, 1);self.assertEqual(f.test_processes(), [])
                     self.assertEqual(sum(p.step == 'set_ax5' for p in f.backend.processes), 2 if fault == 'value' else 1)
