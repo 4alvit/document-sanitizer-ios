@@ -45,6 +45,72 @@ final class ProStoreTests: XCTestCase {
         tracePhase("relaunched.restore", "end")
         XCTAssertTrue(relaunched.isPro)
         XCTAssertEqual(relaunched.message, "Pro purchase restored.")
+        if !relaunched.isPro || relaunched.message != "Pro purchase restored." {
+            attachRestoreFailure(session, reportedEntitled: relaunched.isPro,
+                                 expectedProductID: ProStore.productID)
+        }
+    }
+
+    /// Failure evidence only, after both existing assertions. No additional
+    /// entitlement query, sync, retry or await changes the exercised restore.
+    private func attachRestoreFailure(_ session: SKTestSession, reportedEntitled: Bool,
+                                      expectedProductID: String) {
+        let ledger = session.allTransactions()
+        let summary: [String: Any] = [
+            "scope": "local-SKTestSession-after-restore-assertions",
+            "reportedEntitled": reportedEntitled,
+            "syntheticLedgerCount": ledger.count,
+            "transactions": ledger.prefix(8).map { transaction in
+                ["matchesProduct": transaction.productIdentifier == expectedProductID,
+                 "state": transaction.state.rawValue,
+                 "cancelled": transaction.cancelDate != nil,
+                 "hasExpiration": transaction.expirationDate != nil,
+                 "hasPurchaseIssue": transaction.hasPurchaseIssue,
+                 "pendingApproval": transaction.pendingAskToBuyConfirmation] as [String: Any]
+            }
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys]),
+           data.count <= 16_384 {
+            let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+            attachment.name = "native-restore-failure-ledger"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+
+        // These existing Debug logs only open after verified .xcode evidence.
+        // Export bounded tails from this owned test host before its cleanup.
+        // File order is diagnostic selection, not a claim about transaction order.
+        let manager = FileManager.default
+        guard let caches = manager.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
+        let directory = caches.appendingPathComponent("LocalStoreKitDiagnostic", isDirectory: true)
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey,
+                                       .fileSizeKey, .contentModificationDateKey]
+        guard let entries = try? manager.contentsOfDirectory(at: directory,
+                includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]),
+              entries.count <= 32 else { return }
+        let candidates = entries.compactMap { url -> (URL, Date)? in
+            guard url.pathExtension == "jsonl",
+                  UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil,
+                  let values = try? url.resourceValues(forKeys: keys),
+                  values.isRegularFile == true, values.isSymbolicLink == false,
+                  let size = values.fileSize, size > 0, size <= 8_388_608,
+                  let modified = values.contentModificationDate else { return nil }
+            return (url, modified)
+        }.sorted { $0.1 > $1.1 }
+        for (url, _) in candidates.prefix(8) {
+            guard let file = try? FileHandle(forReadingFrom: url) else { continue }
+            defer { try? file.close() }
+            guard let size = try? file.seekToEnd() else { continue }
+            let offset = size > 32_768 ? size - 32_768 : 0
+            do {
+                try file.seek(toOffset: offset)
+                guard let data = try file.read(upToCount: 32_768), !data.isEmpty else { continue }
+                let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.plain-text")
+                attachment.name = "native-restore-debug-tail-\(url.deletingPathExtension().lastPathComponent)"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            } catch { continue }
+        }
     }
 
     func testRefundRevokesThroughListenerAndOnNextLaunch() async throws {
