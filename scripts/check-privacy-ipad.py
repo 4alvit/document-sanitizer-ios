@@ -36,8 +36,8 @@ TARGET = 'CleanSendUITests'
 CASE = 'PrivacySupportUITests/testRussianOfflineInformationAtSystemAX5OnLandscapeIPad'
 AX5 = 'accessibility-extra-extra-extra-large'
 # Cold hosted AX5 requests can exhaust 30s after bootstatus succeeds.
-# Each finite 60s cap is clipped to the original work deadline while preserving
-# the minimum 360s XCTest command window plus 4s stop reservation.
+# The setter and conditional final readback retain60s caps. The first readback
+# shares original setup time, preserving360s XCTest plus4s stop reservation.
 AX5_SET_LIMIT, AX5_READ_LIMIT = 60, 60
 # Unused preparation time may cover a cold XCTest launch. The planned maximum
 # is 300 launch + 240 selected case + 30 completion, not separate timed phases.
@@ -697,7 +697,8 @@ def configure_system_ax5(run, uid):
 
         timed_out = set_value('set-ax5.log')
         assert identity() == original_identity, 'Owned AX5 device identity changed'
-        observed = run.output(['xcrun', 'simctl', 'ui', uid, 'content_size'], 'ax5-readback.txt', AX5_READ_LIMIT)
+        # Share original setup time, including4s stop, without renewing the phase.
+        observed = run.output(['xcrun', 'simctl', 'ui', uid, 'content_size'], 'ax5-readback.txt', run.remaining())
         unchanged = identity() == original_identity
         run.meta['ax5_postcondition'] = {'setter_timed_out': timed_out, 'readback': observed,
                                        'owned_device_identity_unchanged': unchanged}

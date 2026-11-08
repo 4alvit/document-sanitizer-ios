@@ -249,16 +249,15 @@ final class ShareExtensionEntryTests: XCTestCase {
     @MainActor
     private func waitForStableControl(_ element: XCUIElement) {
         var sampler = StableControlSampler(started: ProcessInfo.processInfo.systemUptime)
-        let stable = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            sampler.poll(
-                now: { ProcessInfo.processInfo.systemUptime },
-                snapshot: {
-                    guard let value = try? element.snapshot() else { return nil }
-                    return StableControlGeometry(frame: value.frame, enabled: value.isEnabled)
-                },
-                isHittable: { element.isHittable })
-        }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [stable], timeout: 6), .completed)
+        let stable = sampler.wait(
+            now: { ProcessInfo.processInfo.systemUptime },
+            snapshot: {
+                guard let value = try? element.snapshot() else { return nil }
+                return StableControlGeometry(frame: value.frame, enabled: value.isEnabled)
+            },
+            isHittable: { element.isHittable },
+            pause: { RunLoop.current.run(until: Date().addingTimeInterval($0)) })
+        XCTAssertTrue(stable, "The control must remain enabled, hittable and geometrically stable for one second within the original six-second deadline.")
     }
 
     @MainActor

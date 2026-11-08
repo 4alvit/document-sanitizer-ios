@@ -150,6 +150,27 @@ headroom, not a diagnosis or fix for the underlying Simulator stall. The observe
 120-second boot wait timed out before app installation; a successful full
 current-source run and exact-package Share case are still required.
 
+
+The single AUT installation uses the remaining time before the same original
+376-second preparation boundary, including its four-second command-stop reserve.
+It does not receive a fresh installation window or a retry. A previous invocation
+hit its local 30-second cap while setup time remained; its underlying Simulator
+cause is unknown. Installation now shares that existing setup allowance with
+all other preparation. Runner installation, exact installed-byte checks, the
+empty-state baseline and the full 304-second XCTest admission remain mandatory.
+The 680/780/900-second deadlines and resource limits are unchanged; an installation
+that uses the remaining setup time can still leave too little time for later
+preparation and must fail admission. A complete hosted case is still required.
+
+
+The one initial AUT launch also uses only the remaining original 376-second
+setup allowance, including its four-second command-stop reserve. It must return
+success before the unchanged owned-container empty baseline and full 304-second
+XCTest admission checks. A prior launch exhausted its local 20-second cap while
+setup time remained, without returning a PID or launch reply. The underlying
+cause is unknown; sharing the existing allowance adds no launch retry, alternate
+acceptance, new time window or change to work, cleanup, evidence or resource limits.
+
 ## Busy-state layout evidence
 
 The archived `BusyLayoutTests` diagnostic captured real view components at the
@@ -162,13 +183,17 @@ and layer renderer do not reproduce every device safe area or material effect.
 Treat those PNGs as bounded layout evidence, not as an end-to-end cancellation
 or responsiveness test.
 
-The privacy driver's AX5 setter and readback each retain a 60-second maximum.
-Each command clips its actual allowance to the original work deadline, keeping
-215 seconds for the unchanged XCTest admission check and four seconds for that
-command's stop. Time used by the setter reduces the readback allowance; it does
-not start a new budget. Exact system-size readback, the selected case limit,
-the 300-second outer test cap, and the 560/660/780-second work/cleanup/whole
-deadlines remain unchanged. Passing admission does not guarantee test completion.
+The privacy driver's AX5 setter retains a 60-second maximum. Its initial
+readback uses only the remaining original 376-second setup allowance, including
+four seconds for stopping that command. The existing conditional reapply and
+its final readback keep their 60-second caps; no additional read or retry is
+introduced. A successful setter without an observed exact AX5 value still fails.
+Time spent in setup never renews the original clock or borrows the full
+364-second XCTest admission reserve. The selected case limit, finite 570-second
+maximum XCTest command, and 740/840/960-second work/cleanup/whole deadlines remain
+unchanged. The prior readback exhausted its local 60-second cap while setup time
+remained; its underlying Simulator cause is unknown, and more available setup
+time does not guarantee completion or acceptance.
 
 The verification pipeline builds the committed Xcode project, matching Release
 packaging. Project regeneration is an authoring action performed before commit,
@@ -176,7 +201,7 @@ not a CI build step. This keeps same-host unit-test products bound to the checke
 project and preserves the native gate's strict clean-source and hash checks.
 
 
-The exact-package smoke preserves its original 256-second startup boundary and
+The exact-package smoke preserves its original 376-second startup boundary and
 reserves the full 300-second test window plus four-second stop allowance. If its
 initial system AX5 setter times out, the owned process group must be reaped and
 absent before a readback. An exact AX5 readback still suffices. A responsive
