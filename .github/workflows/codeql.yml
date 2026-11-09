@@ -21,7 +21,7 @@ jobs:
       actions: read
       contents: read
       security-events: write
-    uses: victron-venus/venus-os-ci-toolkit/.github/workflows/security-scan.yml@f54201ae71e91d85514bb16ed1ffdf31b82b149f # main
+    uses: victron-venus/venus-os-ci-toolkit/.github/workflows/security-scan.yml@9d829c454131fadf84d4fdda077953a8e32519df # main
     with:
       languages: python,actions
       run-codeql: true
