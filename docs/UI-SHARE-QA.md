@@ -3,6 +3,10 @@
 These checks use synthetic documents and private simulator UUIDs. They do not
 purchase a product or establish physical-device, provider or payment acceptance.
 
+For the existing synthetic Simulator phase observer, see
+[Share timing diagnostics](SHARE_TIMING.md). Its trace does not change the native
+Close deadline or establish that historical Share latency is fixed.
+
 ## System text size and Files
 
 After `xcodegen generate`, run each family separately:
