@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import Foundation
 
 /// Requires a free workspace on the selected device. Reads bundled information
 /// and a synthetic document only; never presses an online, purchase or restore link.
@@ -384,7 +385,9 @@ final class PrivacySupportUITests: XCTestCase {
             listIdentifier: "privacy-support-list", targetIdentifier: identifier,
             needsCenter: needsCenter,
             snapshot: {
+                FileHandle.standardError.write(Data("[privacy-native-probe] snapshot begin\n".utf8))
                 let root = try app.snapshot()
+                FileHandle.standardError.write(Data("[privacy-native-probe] snapshot end\n".utf8))
                 var elements: [PrivacyReadingElement] = []
                 var bars: [PrivacyReadingElement] = []
                 @MainActor func visit(_ node: XCUIElementSnapshot) throws {
@@ -406,10 +409,16 @@ final class PrivacySupportUITests: XCTestCase {
             navigationBarIsHittable: { bar in
                 let matches = app.navigationBars.matching(NSPredicate(
                     format: "identifier == %@ AND label == %@", bar.identifier, bar.label))
-                guard matches.count == 1 else {
+                FileHandle.standardError.write(Data("[privacy-native-probe] navigation-count begin\n".utf8))
+                let count = matches.count
+                FileHandle.standardError.write(Data("[privacy-native-probe] navigation-count end\n".utf8))
+                guard count == 1 else {
                     throw PrivacyReadingSample.Invalid.ambiguousNavigationBar
                 }
-                return matches.element.isHittable
+                FileHandle.standardError.write(Data("[privacy-native-probe] navigation-hittable begin\n".utf8))
+                let hittable = matches.element.isHittable
+                FileHandle.standardError.write(Data("[privacy-native-probe] navigation-hittable end\n".utf8))
+                return hittable
             })
     }
 
