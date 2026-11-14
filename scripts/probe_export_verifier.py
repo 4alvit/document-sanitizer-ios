@@ -21,6 +21,7 @@ from typing import Callable
 
 from PIL import Image, PngImagePlugin
 from pypdf import PdfReader, PdfWriter
+from pypdf.actions import JavaScript
 from pypdf.generic import (
     ArrayObject, DecodedStreamObject, DictionaryObject, NameObject,
     NumberObject, TextStringObject,
@@ -148,7 +149,7 @@ def build_fixtures(root: Path) -> list[dict]:
     pdf("pdf_embedded_file", False, "Catalog-linked embedded attachment",
         lambda w: w.add_attachment("synthetic.txt", b"SYNTHETIC original attachment"))
     pdf("pdf_javascript", False, "Document-level JavaScript name tree",
-        lambda w: w.add_js("/* SYNTHETIC inert test */"))
+        lambda w: w.add_open_action(JavaScript("/* SYNTHETIC inert test */")))
     pdf("pdf_page_action", False, "Page additional action", add_page_action)
     pdf("pdf_acroform", False, "Form field retains an original value", add_form)
     pdf("pdf_source_metadata", False, "Original title/author/custom metadata",
