@@ -3,6 +3,7 @@
 import argparse
 from pathlib import Path
 from pypdf import PdfWriter
+from pypdf.actions import JavaScript
 from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, FloatObject, NameObject, NumberObject, TextStringObject
 from PIL import Image, ImageDraw, PngImagePlugin
 
@@ -51,7 +52,7 @@ def pdf(path: Path, rotation: int, cropped: bool, pages: int = 1) -> None:
         page[NameObject('/Annots')] = ArrayObject([writer._add_object(annotation), writer._add_object(overlay)])
     writer.add_metadata({'/Author': 'SYNTHETIC_PERSON_42', '/Title': 'PRIVATE_SYNTHETIC_TITLE'})
     writer.add_attachment('synthetic-notes.txt', b'SYNTHETIC_ATTACHMENT_MUST_NOT_SURVIVE')
-    writer.add_js("/* SYNTHETIC_ONLY_MUST_NOT_SURVIVE */")
+    writer.add_open_action(JavaScript("/* SYNTHETIC_ONLY_MUST_NOT_SURVIVE */"))
     with path.open('wb') as handle:
         writer.write(handle)
 
