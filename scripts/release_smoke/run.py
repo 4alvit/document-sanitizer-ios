@@ -565,7 +565,7 @@ def worker(start,grant):
         run.meta['container_observation']['workspace_ready_observed']=True;run.persist()
        if observation_roots is not None:
         verify_observation_roots(data,group,resources.device,uid,b,resources.check,baseline=observation_roots)
-        sampler.event(group/'SharedInbox',data/'tmp/CleanSend',events)
+        sampler.event(group/'SharedInbox',data/'tmp/CleanSend',events,allow_export_progress=True)
         verify_observation_roots(data,group,resources.device,uid,b,resources.check,baseline=observation_roots)
        time.sleep(min(.25,max(0,end-time.monotonic())))
     run.meta['xcodebuild_returncode']=proc.returncode;assert proc.returncode==0

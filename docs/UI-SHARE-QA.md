@@ -244,3 +244,27 @@ their durations must not be added as elapsed startup time. This policy does not
 extend any total, work, native-case, cleanup or admission deadline, waive native
 cases, or establish a successful native result. Actual source-bound native CI
 must still pass.
+
+
+### Live private export staging
+
+`RasterExporter` writes and closes a PDF inside the private
+`export-UUID/.cleansend-stage-UUID/RedactLeaf-UUID.pdf` layout before atomically
+moving it to its final export path. Only live observations after the selected
+workspace's strict empty baseline may treat this exact layout as uncommitted.
+They inspect fresh type, inode, mode and size metadata without reading or
+hashing incomplete contents. Those entries cannot supply an exported hash.
+Symlinks, special files, oversized files, changed inode/mode and unknown layouts
+retain hard refusals. Completed export files retain every stable-read and
+replacement check.
+
+A recognized atomic name transition may make one live snapshot pending. The
+observer still checks all other entries before deferring; simultaneous committed
+mutation, cap or deadline failures remain failures. A pending snapshot publishes
+no event, export hash or queue match and refunds no cumulative entries or bytes.
+The next existing poll consumes the same original absolute window. Strict
+initial/final and payload observations never defer or accept staging progress;
+all source/package identity, native testcase, real committed export-to-queue hash
+match, final empty-container and owned-process/device cleanup requirements
+remain mandatory. This handling neither retries XCTest nor extends deadlines or
+establishes a native pass by itself.

@@ -66,39 +66,78 @@ def read_share_timing(data,trace,budget,check):
  try:return parse_share_timing(raw,trace)
  except (ValueError,TypeError) as error:return {'status':'invalid','error_type':type(error).__name__}
 
+EXPORT_UUID=r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+
+def export_progress_kind(path):
+ parts=path.rstrip('/').split('/') if path else []
+ if not parts:return 'root'
+ if not re.fullmatch('export-'+EXPORT_UUID,parts[0]):return None
+ if len(parts)==1:return 'export'
+ if not re.fullmatch(r'\.cleansend-stage-'+EXPORT_UUID,parts[1]):return None
+ if len(parts)==2:return 'stage'
+ if len(parts)==3 and re.fullmatch('RedactLeaf-'+EXPORT_UUID+r'\.pdf',parts[2]):return 'staged_pdf'
+ return None
+
+class ExportProgress(Exception):
+ """An uncommitted atomic-export transition; never a successful observation."""
+
+def export_directory_transition(prefix,before,after):
+ kind=export_progress_kind(prefix)
+ patterns={'root':'export-'+EXPORT_UUID,'export':r'(?:\.cleansend-stage-'+EXPORT_UUID+'|RedactLeaf-'+EXPORT_UUID+r'\.pdf)','stage':'RedactLeaf-'+EXPORT_UUID+r'\.pdf'}
+ changed=set(before)^set(after)
+ return bool(changed) and kind in patterns and all(re.fullmatch(patterns[kind],name)for name in changed)
+
 class Observer:
  def __init__(self,budget,check,*,hash_cap=128*2**20,event_cap=8*2**20):
   self.b,self.check=budget,check;self.hash_cap,self.event_cap=hash_cap,event_cap
   self.hashed=0;self.visited=0;self.evidence_bytes=0;self.cache={};self.previous=None
   self.roots={};self.events=[];self.exported={};self.queued={};self.matches=set()
-  self.loader_paths=frozenset();self.loader_headers={}
- def snapshot(self,root,*,skip_incomplete=False):
+  self.loader_paths=frozenset();self.loader_headers={};self.deferred_export_observations=0
+ def snapshot(self,root,*,skip_incomplete=False,allow_export_progress=False):
+  assert type(allow_export_progress)is bool
+  assert not allow_export_progress or not self.loader_paths,'progress observation cannot collect loader headers'
   self.check();root=Path(root)
   try:info=root.lstat()
   except FileNotFoundError:return {'exists':False,'entries':[]}
   assert stat.S_ISDIR(info.st_mode) and not root.is_symlink()
   key=str(root);previous=self.roots.setdefault(key,(info.st_dev,info.st_ino))
   assert previous==(info.st_dev,info.st_ino),'observed container root changed identity'
-  rows=[]
+  rows=[];pending=False
   def visit(fd,prefix):
+   nonlocal pending
    self.check();before=os.fstat(fd)
    names=sorted(os.listdir(fd));assert len(names)<=2048
    for name in names:
     assert name not in ('.','..') and '/' not in name and '\\' not in name
     self.check();self.visited+=1;assert self.visited<=200000,'cumulative entry observation cap'
     assert len(rows)<2048,'snapshot entry cap'
-    meta=os.stat(name,dir_fd=fd,follow_symlinks=False);path=prefix+name
+    path=prefix+name
+    try:meta=os.stat(name,dir_fd=fd,follow_symlinks=False)
+    except FileNotFoundError:
+     if allow_export_progress and export_progress_kind(path) in ('stage','staged_pdf'):pending=True;continue
+     raise
     row={'path':path,'mode':f'{stat.S_IMODE(meta.st_mode):04o}'}
     if stat.S_ISDIR(meta.st_mode):
      row['directory']=True;rows.append(row)
      if skip_incomplete and name.endswith('.incomplete'):
       row['uncommitted_copy_not_read']=True;continue
-     child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+     try:child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+     except FileNotFoundError:
+      if allow_export_progress and export_progress_kind(path)=='stage':pending=True;continue
+      raise
      try:visit(child,path+'/')
      finally:os.close(child)
     else:
      assert stat.S_ISREG(meta.st_mode),'symlink/special observation rejected'
      assert meta.st_size<=16*2**20,'individual observed file cap'
+     if allow_export_progress and export_progress_kind(path)=='staged_pdf':
+      # The exporter fsyncs/closes this private file before atomic publication.
+      # Observe its type/size/custody, never accept/hash/cache partial contents.
+      try:linked=os.stat(name,dir_fd=fd,follow_symlinks=False)
+      except FileNotFoundError:pending=True;continue
+      assert (meta.st_dev,meta.st_ino,meta.st_mode)==(linked.st_dev,linked.st_ino,linked.st_mode),'staging file replaced while observed'
+      assert stat.S_ISREG(linked.st_mode) and linked.st_size<=16*2**20,'individual observed file cap'
+      row.update(bytes=linked.st_size,uncommitted_export_staging=True);rows.append(row);continue
      token=(key,path,identity(meta))
      if token not in self.cache:
       assert self.hashed+meta.st_size<=self.hash_cap,'cumulative hashing cap'
@@ -121,11 +160,25 @@ class Observer:
      assert identity(os.stat(name,dir_fd=fd,follow_symlinks=False))==identity(meta),'cached or read file changed before observation completed'
      row.update(bytes=meta.st_size,sha256=self.cache[token]);rows.append(row)
    after=os.fstat(fd)
-   assert identity(before)==identity(after),'directory changed during observation'
+   if identity(before)!=identity(after):
+    # Only a known atomic-export name transition may defer a LIVE snapshot.
+    # Inode/type replacement and all unknown changes remain hard refusals.
+    same=(before.st_dev,before.st_ino,before.st_mode)==(after.st_dev,after.st_ino,after.st_mode)
+    if allow_export_progress and same:
+     self.check();after_names=sorted(os.listdir(fd));assert len(after_names)<=2048
+     if export_directory_transition(prefix,names,after_names):pending=True;return
+    raise AssertionError('directory changed during observation')
   with self.b.directory(root) as fd:visit(fd,'')
+  self.check()
+  if pending:raise ExportProgress()
   return {'exists':True,'root_device_inode':list(previous),'entries':rows}
- def event(self,group,tmp,stream):
-  state={'group':self.snapshot(group,skip_incomplete=True),'tmp':self.snapshot(tmp)}
+ def event(self,group,tmp,stream,*,allow_export_progress=False):
+  try:state={'group':self.snapshot(group,skip_incomplete=True),'tmp':self.snapshot(tmp,allow_export_progress=allow_export_progress)}
+  except ExportProgress:
+   assert allow_export_progress,'strict observation cannot defer'
+   # No partial event, export hash, queue match or acceptance is published.
+   # Existing cumulative caps/deadlines bound repeated live observations.
+   self.deferred_export_observations+=1;return None
   if state!=self.previous:
    raw=(json.dumps({'elapsed':time.monotonic()-self.started,**state},sort_keys=True)+'\n').encode()
    assert self.evidence_bytes+len(raw)<=self.event_cap,'cumulative event evidence cap'
@@ -143,7 +196,7 @@ class Observer:
   assert self.events and not self.events[0]['group']['entries'] and not self.events[0]['tmp']['entries'],'nonempty initial inbox/export baseline'
   assert len(self.matches)==1,'exactly one exported PDF must match an actual committed queue copy'
   assert not self.events[-1]['group']['entries'] and not self.events[-1]['tmp']['entries'],'queued/export temporary files remain'
-  return {'matched_hashes':sorted(self.matches),'exported':self.exported,'queued':self.queued,'cumulative_hashed_bytes':self.hashed,'cumulative_entries':self.visited,'event_bytes':self.evidence_bytes,'events':len(self.events)}
+  return {'matched_hashes':sorted(self.matches),'exported':self.exported,'queued':self.queued,'cumulative_hashed_bytes':self.hashed,'cumulative_entries':self.visited,'event_bytes':self.evidence_bytes,'events':len(self.events),'deferred_export_observations':self.deferred_export_observations}
 
 def payload_inventory(root,budget,check,*,loader_headers=None):
  observer=Observer(budget,check)
