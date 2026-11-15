@@ -20,6 +20,7 @@ STARTUP_END=376;TEST_LATEST_START=526
 TEST_BODY_END=826;TEST_STOP_END=830;FINAL_VERIFY_END=WORK_END
 TEST_ADMISSION=454
 NATIVE_OBSERVATION_AFTER=225;NATIVE_OBSERVATION_SECONDS=5
+NATIVE_WINDOW_POLICY="original-clock-startup-then-cases-v1"
 SHUTDOWN_LIMIT=45;DELETE_LIMIT=25
 NATIVE_PHASES={'startup':STARTUP_END,'test_latest_start':TEST_LATEST_START,
  'test_body':TEST_BODY_END,'test_stop':TEST_STOP_END,'final_verification':FINAL_VERIFY_END,
@@ -92,7 +93,7 @@ def validate_test_plan(data):
  targets=[t for t in data['testTargets'] if t['target']['name']=='CleanSendTests'];assert len(targets)==1 and targets[0]['parallelizable'] is False
  # The local configuration is owned by SKTestSession; no invented test-plan key.
  assert 'storekit' not in json.dumps(data).lower()
- return {'cases':sorted(CASES),'maximum_case_seconds':180,'outer_seconds':300,'command_count':1}
+ return {'cases':sorted(CASES),'maximum_case_seconds':180,'case_window_seconds':300,'native_window_policy':NATIVE_WINDOW_POLICY,'command_count':1}
 
 NATIVE_HOST_MARKER='REDACT_NATIVE_UNIT_TEST_HOST'
 
@@ -231,7 +232,7 @@ def prepare_context(start):
   assert time.monotonic()<start+30
   data=json.loads(raw);job=admit_job(data,run,attempt,head,dt.datetime.now(dt.timezone.utc),start+TOTAL-time.monotonic())
   write_small(SCOPE/'job-metadata.json',data,start)
-  context={'host_architecture':os.uname().machine,'repository':REPO,'run':run,'attempt':attempt,'head':head,'checkout':os.environ['GITHUB_SHA'],'scope':str(SCOPE),'seconds':TOTAL,'phase_deadlines_seconds':dict(NATIVE_PHASES),'start_monotonic':start,'job_admission':job,'case_identities':sorted(CASES),'case_count':8,'outer_seconds':300,'case_seconds':180,'runtime':RUNTIME,'device_type':DEVICE,'no_real_account_sign_in':True,'retry':False}
+  context={'host_architecture':os.uname().machine,'repository':REPO,'run':run,'attempt':attempt,'head':head,'checkout':os.environ['GITHUB_SHA'],'scope':str(SCOPE),'seconds':TOTAL,'phase_deadlines_seconds':dict(NATIVE_PHASES),'start_monotonic':start,'job_admission':job,'case_identities':sorted(CASES),'case_count':8,'case_window_seconds':300,'native_window_policy':NATIVE_WINDOW_POLICY,'case_seconds':180,'runtime':RUNTIME,'device_type':DEVICE,'no_real_account_sign_in':True,'retry':False}
   write_small(SCOPE/'context.json',context,start);report.update(status='admitted',job_admission=job,context_sha256=sha(SCOPE/'context.json'))
  except BaseException as error:failure=error;report.update(status='failed',error=safe_failure(error))
  finally:
@@ -246,7 +247,7 @@ def validate_context(path,start):
  raw=path.read_bytes();assert len(raw)<=65536 and hashlib.sha256(raw).hexdigest()==os.environ['NATIVE_STOREKIT_CONTEXT_SHA']
  context=json.loads(raw);assert context['repository']==REPO and context['start_monotonic']==start
  assert context['host_architecture']==os.uname().machine=='arm64'
- assert context['case_identities']==sorted(CASES) and context['case_count']==8 and context['outer_seconds']==300 and context['case_seconds']==180 and context['seconds']==TOTAL
+ assert context['case_identities']==sorted(CASES) and context['case_count']==8 and context['case_window_seconds']==300 and context['native_window_policy']==NATIVE_WINDOW_POLICY and 'outer_seconds' not in context and context['case_seconds']==180 and context['seconds']==TOTAL
  assert context['phase_deadlines_seconds']==NATIVE_PHASES
  assert context['runtime']==RUNTIME and context['device_type']==DEVICE and context['retry'] is False
  assert context['head']==os.environ['EXPECTED_HEAD_SHA'] and context['run']==os.environ['GITHUB_RUN_ID'] and context['attempt']==os.environ['GITHUB_RUN_ATTEMPT'] and context['checkout']==os.environ['GITHUB_SHA']
@@ -255,19 +256,24 @@ def validate_context(path,start):
  assert 'GH_TOKEN' not in os.environ and 'GITHUB_TOKEN' not in os.environ
  return context
 
+PARENT_INVENTORY_INTERVAL=5
+
 class Resources:
- def __init__(self,start):
+ def __init__(self,start,*,inventory_interval_seconds=1):
+  assert type(inventory_interval_seconds) is int and inventory_interval_seconds in (1,PARENT_INVENTORY_INTERVAL)
+  self.inventory_interval_seconds=inventory_interval_seconds;self.parent_epoch=object()
   self.start=start;self.device=None;self.last=0;self.maximum=0;self.first_failure=None
   self.scan_totals={'count':0,'total_seconds':0.0,'max_seconds':0.0,'total_lstat_calls':0,'max_lstat_calls':0,'max_directory_visits':0}
- def check(self,phase=WORK_END):
+ def check(self,phase=WORK_END,*,force=False):
   total=0;count=0;stat_calls=0;directories=0;root_label=None;root_start=None;root_progress={};traversal_complete=False;operation='phase_admission'
   observed=time.monotonic();scan_started=observed
   try:
+   assert type(force) is bool
    assert observed<self.start+phase,'original phase deadline'
    operation='free_floor'
    assert shutil.disk_usage(SCOPE).free>=FLOOR,'free floor'
    assert time.monotonic()<self.start+phase,'deadline after free-floor observation'
-   if time.monotonic()-self.last<1:return
+   if not force and time.monotonic()-self.last<self.inventory_interval_seconds:return
    operation='device_presence'
    roots=[('owned',OWNED_ROOT)]+([('device',self.device)] if self.device and self.device.exists() else [])
    for root_label,root in roots:
@@ -327,6 +333,21 @@ class Resources:
        'charged_allocated_bytes':total,'complete_scan':traversal_complete,'roots':root_progress,'error_type':type(error).__name__}
     except BaseException:pass  # Preserve the primary exception if diagnostics fail.
    raise
+
+
+ def observe_parent(self,meta,phase,*,final=False):
+  assert type(final) is bool and type(meta) is dict
+  commands=meta.get('commands',[]);assert type(commands) is list
+  last=commands[-1] if commands else {};assert type(last) is dict
+  args=last.get('args',[]);assert type(args) is list and all(type(v) is str for v in args)
+  epoch=(phase,meta.get('owned_uuid'),meta.get('phase'),bool(meta.get('cleanup_phase')),len(commands),tuple(args),
+    last.get('owned_process_group'),last.get('started_at'),last.get('finished_at'),last.get('returncode'),
+    last.get('owned_group_absent'),meta.get('first_case_observed_elapsed_seconds'))
+  # First/final and observed command/phase/UUID transitions force fresh inventories.
+  # This cannot observe an intermediate transition hidden between parent polls;
+  # the independent worker retains its original 1 s and phase checks.
+  self.check(phase,force=final or epoch!=self.parent_epoch)
+  self.parent_epoch=epoch
 
 
 @contextmanager
@@ -442,8 +463,20 @@ def observe_native_startup(run,proc,item,test_started,test_end,started_case,env)
  finally:run.persist()
 
 
-def native_test_end(run,now):
- assert run.remaining()>=TEST_ADMISSION,'300s XCTest and final verification admission unavailable'
+def native_launch_end(run,now):
+ # Startup borrows only the already bounded pre-case partition, never case time.
+ assert now<run.start+TEST_LATEST_START,'native first-case admission expired'
+ assert run.remaining()>=TEST_ADMISSION,'300s cases and final verification admission unavailable'
+ return min(run.start+TEST_LATEST_START,run.start+run.end-TEST_ADMISSION)
+
+
+def native_test_end(run,now,*,original_work_end=None):
+ # Establish this once, only on the first actual admitted XCTest case marker.
+ # Keep the original worker clock, full300s case window,4s stop and150s final check.
+ work_end=run.end if original_work_end is None else original_work_end
+ assert work_end<=FINAL_VERIFY_END,'native original work phase extended'
+ assert now<run.start+TEST_LATEST_START,'native first-case admission expired'
+ assert run.start+work_end-now>=TEST_ADMISSION,'300s cases and final verification admission unavailable'
  return min(now+300,run.start+TEST_BODY_END)
 
 def native_session_milestones(scope,check):
@@ -599,29 +632,34 @@ def worker(start,context):
   # snapshot is claimed; compilation/signature/config proofs above remain.
   run.end=WORK_END
   assert run.remaining()>=TEST_ADMISSION,'full300s XCTest and final verification admission unavailable'
-  argv=test_arguments(uid,SCOPE/'result.xcresult',SCOPE/'native-unit-host.xctestrun');item={'args':argv,'started_at':l.now(),'timeout_seconds':300};run.meta['commands'].append(item);run.persist()
+  argv=test_arguments(uid,SCOPE/'result.xcresult',SCOPE/'native-unit-host.xctestrun');item={'args':argv,'started_at':l.now(),'native_window_policy':NATIVE_WINDOW_POLICY,'case_window_seconds':300,'first_case_latest_start_seconds':TEST_LATEST_START,'absolute_case_end_seconds':TEST_BODY_END};run.meta['commands'].append(item);run.persist()
   proc=None;tail=b'';log_read=0;previous_end=run.end;inert_host_observed=False
   try:
    with (SCOPE/'test.log').open('xb') as log:
-    test_started=time.monotonic();end=native_test_end(run,test_started);run.end=min(previous_end,end-start)
+    test_started=time.monotonic();end=native_launch_end(run,test_started);run.end=min(previous_end,end-start)
     proc=subprocess.Popen(argv,cwd=ROOT,env=l.ENV,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
     item['owned_process_group']=proc.pid;run.persist()
     with (SCOPE/'test.log').open('rb') as reader:
      while proc.poll() is None:
-      resources.check(run.end);assert time.monotonic()<end,'native StoreKit outer300s limit'
+      resources.check(run.end);assert time.monotonic()<end,'native StoreKit current phase deadline'
       tail,log_read,host_seen,started_case=read_native_output(reader,tail,log_read,end)
       inert_host_observed=inert_host_observed or host_seen
       if observe_native_startup(run,proc,item,test_started,end,started_case,l.ENV):
        # Capture output that arrived during the bounded observation, even if the child
        # has exited. The original clock and byte limits still govern this read.
-       assert time.monotonic()<end,'native StoreKit outer300s limit after observation'
+       assert time.monotonic()<end,'native StoreKit current phase deadline after observation'
        tail,log_read,host_seen,started_case=read_native_output(reader,tail,log_read,end)
        inert_host_observed=inert_host_observed or host_seen
       if not during and started_case:
+       observed_case=time.monotonic()
+       end=native_test_end(run,observed_case,original_work_end=previous_end)
+       run.end=min(previous_end,end-start)
        run.meta['first_started_native_case']=started_case
+       run.meta['first_case_observed_elapsed_seconds']=observed_case-start
+       run.meta['case_deadline_monotonic']=end
        installed('installed-during.json',initial_install=True);during=True
       time.sleep(min(.25,max(0,end-time.monotonic())))
-   resources.check(run.end);assert time.monotonic()<end,'native StoreKit outer300s completion limit'
+   resources.check(run.end);assert time.monotonic()<end,'native StoreKit current phase completion deadline'
    run.meta['xcodebuild_returncode']=proc.returncode
    run.meta['explicit_inert_unit_host_observed']=inert_host_observed
    assert proc.returncode==0 and during and inert_host_observed
@@ -816,7 +854,7 @@ def close_worker_group(proc,receipt,lifecycle,start):
 
 def supervise(grant_path,grant,start):
  assert SCOPE.is_dir();l=load('bounded_lifecycle')
- intent={'started_at':l.now(),'start_monotonic':start,'context_sha256':sha(grant_path),'seconds':TOTAL,'status':'running'}
+ intent={'started_at':l.now(),'start_monotonic':start,'context_sha256':sha(grant_path),'seconds':TOTAL,'status':'running','allocation_observation_policy':{'parent_min_interval_seconds':PARENT_INVENTORY_INTERVAL,'worker_min_interval_seconds':1,'observed_boundaries_forced':True,'sampled_not_filesystem_quota':True}}
  l.save(SCOPE/'invocation.json',intent);proc=None;monitor=None
  try:
   with (SCOPE/'driver.log').open('xb') as log:
@@ -825,16 +863,16 @@ def supervise(grant_path,grant,start):
    assert time.monotonic()<start+EVIDENCE_END,'original supervisor deadline before spawn'
    proc=subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve()),str(grant_path),'--worker',str(start)],cwd=ROOT,env=child_env,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
    intent['owned_worker']=proc.pid
-   monitor=Resources(start)
+   monitor=Resources(start,inventory_interval_seconds=PARENT_INVENTORY_INTERVAL)
    while proc.poll() is None:
     assert time.monotonic()<start+EVIDENCE_END,'worker deadline'
-    metadata=SCOPE/'metadata.json'
+    metadata=SCOPE/'metadata.json';observed_meta={}
     if metadata.exists():
      assert metadata.stat().st_size<=256*1024
-     value=json.loads(metadata.read_bytes()).get('owned_uuid')
+     observed_meta=json.loads(metadata.read_bytes());value=observed_meta.get('owned_uuid')
      if value:
       uuid.UUID(value);monitor.device=Path.home()/'Library/Developer/CoreSimulator/Devices'/value
-    monitor.check(EVIDENCE_END)
+    monitor.observe_parent(observed_meta,EVIDENCE_END)
     time.sleep(min(1,max(0,start+EVIDENCE_END-time.monotonic())))
    intent['maximum_observed_owned_allocation']=monitor.maximum
    assert proc.returncode==0
@@ -869,6 +907,9 @@ def supervise(grant_path,grant,start):
   retain_cleanup_obligation(intent,start)
   if not intent['cleanup_obligation'].get('absence_verified'):intent['status']='failed'
   if monitor is not None:
+   try:monitor.observe_parent(cleanup_metadata(),EVIDENCE_END,final=True)
+   except BaseException as error:intent.update(status='failed',final_resource_observation_error=repr(error))
+   intent['maximum_observed_owned_allocation']=monitor.maximum
    intent['resource_scan_first_failure']=monitor.first_failure
    intent['resource_successful_scans']=dict(monitor.scan_totals)
   intent.update(returncode=proc.returncode if proc else None,elapsed_seconds=time.monotonic()-start)

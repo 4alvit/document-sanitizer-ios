@@ -216,3 +216,55 @@ No original phase deadline is extended. Other errors or sizes do not trigger
 convergence, and a second wrong result fails before launching the Share test.
 This is bounded setup convergence, not a native-test or session retry. Evidence
 retains both attempts, the first timeout and the final mandatory system value.
+
+
+### Parent allocation observation policy
+
+The parent supervisor checks its original absolute deadline and the 12 GiB free
+floor on every poll. Its complete owned-allocation inventory now has a minimum
+five-second interval measured from the previous inventory's completion. The
+independent worker retains its one-second interval and existing phase checks.
+First and final parent observations, plus observed UUID, phase, command
+start/finish/count, first-case and cleanup transitions, force fresh inventories.
+Only those stable identity fields form the transition fingerprint; changing
+scan counters and diagnostic timestamps do not trigger extra walks. A short
+transition between parent polls may remain unseen by the parent; the worker's
+independent checks remain in force.
+
+This explicitly changes the parent's sampled observation policy. Between
+unchanged-epoch inventories, allocation growth may be detected nominally up to
+four seconds later than with the previous one-second minimum interval, plus
+polling, scan and OS delays. Neither policy is a filesystem quota or a guaranteed
+maximum detection latency. Every full inventory retains fresh independent
+`lstat` calls, both directory observations, no-follow traversal, the 100,000
+entry cap, and the 2 GiB allocated-byte cap. First failure evidence remains
+latched; the final forced inventory cannot turn a failure into success. Parent
+and worker scan counts and timings are recorded separately and run in parallel;
+their durations must not be added as elapsed startup time. This policy does not
+extend any total, work, native-case, cleanup or admission deadline, waive native
+cases, or establish a successful native result. Actual source-bound native CI
+must still pass.
+
+
+### Live private export staging
+
+`RasterExporter` writes and closes a PDF inside the private
+`export-UUID/.cleansend-stage-UUID/RedactLeaf-UUID.pdf` layout before atomically
+moving it to its final export path. Only live observations after the selected
+workspace's strict empty baseline may treat this exact layout as uncommitted.
+They inspect fresh type, inode, mode and size metadata without reading or
+hashing incomplete contents. Those entries cannot supply an exported hash.
+Symlinks, special files, oversized files, changed inode/mode and unknown layouts
+retain hard refusals. Completed export files retain every stable-read and
+replacement check.
+
+A recognized atomic name transition may make one live snapshot pending. The
+observer still checks all other entries before deferring; simultaneous committed
+mutation, cap or deadline failures remain failures. A pending snapshot publishes
+no event, export hash or queue match and refunds no cumulative entries or bytes.
+The next existing poll consumes the same original absolute window. Strict
+initial/final and payload observations never defer or accept staging progress;
+all source/package identity, native testcase, real committed export-to-queue hash
+match, final empty-container and owned-process/device cleanup requirements
+remain mandatory. This handling neither retries XCTest nor extends deadlines or
+establishes a native pass by itself.

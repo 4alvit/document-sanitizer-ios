@@ -12,6 +12,7 @@ CASE_STARTED=b"Test Case '-[CleanSendUITests.ShareExtensionEntryTests testPDFRec
 WORKSPACE_READY=b"REDACT_PACKAGE_WORKSPACE_READY format=PDF\n"
 APP_ID='io.github.4alvit.cleansend';GROUP='group.io.github.4alvit.cleansend'
 CAP=2*2**30;FLOOR=12*2**30
+PARENT_INVENTORY_INTERVAL=5
 
 def version(text):
  parts=[int(p) for p in text.split('.')];assert 1<=len(parts)<=3
@@ -55,17 +56,21 @@ def validate_grant(path):
  return grant
 
 class Resources:
- def __init__(self,start):
+ def __init__(self,start,*,inventory_interval_seconds=1):
+  assert type(inventory_interval_seconds) is int and inventory_interval_seconds in (1,PARENT_INVENTORY_INTERVAL)
+  self.inventory_interval_seconds=inventory_interval_seconds;self.parent_epoch=object()
   self.start=start;self.device=None;self.last=0;self.maximum=0;self.first_failure=None
- def check(self,phase=LIMITS.WORK_END):
+  self.scan_totals={'count':0,'total_seconds':0.0,'max_seconds':0.0,'total_lstat_calls':0,'max_lstat_calls':0,'max_directory_visits':0}
+ def check(self,phase=LIMITS.WORK_END,*,force=False):
   total=0;count=0;stat_calls=0;directories=0;root_label=None;root_start=None;root_progress={};traversal_complete=False;operation='phase_admission'
   observed=time.monotonic();scan_started=observed
   try:
+   assert type(force) is bool
    assert observed<self.start+phase,'original phase deadline'
    operation='free_floor'
    assert shutil.disk_usage(SCOPE).free>=FLOOR,'free floor'
    assert time.monotonic()<self.start+phase,'deadline after free-floor observation'
-   if time.monotonic()-self.last<1:return
+   if not force and time.monotonic()-self.last<self.inventory_interval_seconds:return
    operation='device_presence'
    roots=[('owned',OWNED_ROOT)]+([('device',self.device)] if self.device and self.device.exists() else [])
    for root_label,root in roots:
@@ -102,6 +107,12 @@ class Resources:
    self.maximum=max(self.maximum,total);self.last=time.monotonic()
    operation='allocation_cap'
    assert total<=CAP,'owned allocation cap'
+   elapsed=self.last-scan_started
+   self.scan_totals['count']+=1;self.scan_totals['total_seconds']+=elapsed
+   self.scan_totals['max_seconds']=max(self.scan_totals['max_seconds'],elapsed)
+   self.scan_totals['total_lstat_calls']+=stat_calls
+   self.scan_totals['max_lstat_calls']=max(self.scan_totals['max_lstat_calls'],stat_calls)
+   self.scan_totals['max_directory_visits']=max(self.scan_totals['max_directory_visits'],directories)
   except BaseException as error:
    # Fixed in-memory evidence only; no paths, exception text, I/O or new window.
    # Later final-integrity scans must not overwrite the first failed observation.
@@ -119,6 +130,21 @@ class Resources:
        'charged_allocated_bytes':total,'complete_scan':traversal_complete,'roots':root_progress,'error_type':type(error).__name__}
     except BaseException:pass  # Preserve the primary exception if diagnostics fail.
    raise
+
+
+ def observe_parent(self,meta,phase,*,final=False):
+  assert type(final) is bool and type(meta) is dict
+  commands=meta.get('commands',[]);assert type(commands) is list
+  last=commands[-1] if commands else {};assert type(last) is dict
+  args=last.get('args',[]);assert type(args) is list and all(type(v) is str for v in args)
+  epoch=(phase,meta.get('owned_uuid'),meta.get('phase'),bool(meta.get('cleanup_phase')),len(commands),tuple(args),
+    last.get('owned_process_group'),last.get('started_at'),last.get('finished_at'),last.get('returncode'),
+    last.get('owned_group_absent'),meta.get('first_case_observed_elapsed_seconds'))
+  # First/final and observed command/phase/UUID transitions force fresh inventories.
+  # This cannot observe an intermediate transition hidden between parent polls;
+  # the independent worker retains its original 1 s and phase checks.
+  self.check(phase,force=final or epoch!=self.parent_epoch)
+  self.parent_epoch=epoch
 
 def extract_exact(b,e,resources,expected):
  assert ZIP.stat().st_size==CONTEXT['adhoc_zip_bytes'] and sha(ZIP)==ZIP_SHA
@@ -539,7 +565,7 @@ def worker(start,grant):
         run.meta['container_observation']['workspace_ready_observed']=True;run.persist()
        if observation_roots is not None:
         verify_observation_roots(data,group,resources.device,uid,b,resources.check,baseline=observation_roots)
-        sampler.event(group/'SharedInbox',data/'tmp/CleanSend',events)
+        sampler.event(group/'SharedInbox',data/'tmp/CleanSend',events,allow_export_progress=True)
         verify_observation_roots(data,group,resources.device,uid,b,resources.check,baseline=observation_roots)
        time.sleep(min(.25,max(0,end-time.monotonic())))
     run.meta['xcodebuild_returncode']=proc.returncode;assert proc.returncode==0
@@ -604,7 +630,7 @@ def worker(start,grant):
    assert sha(BINDING)==grant['runner_binding_sha256']
    c.verify_runner(json.loads(BINDING.read_bytes()));run.meta['runner_and_package_unchanged']=True
   except BaseException as error:failures.append('final integrity/resources: '+repr(error))
-  run.meta.update(result='failed' if failures else 'passed_pending_independent_review',failures=failures,finished_at=l.now(),elapsed_seconds=time.monotonic()-start,maximum_observed_owned_allocation=resources.maximum,resource_scan_first_failure=resources.first_failure)
+  run.meta.update(result='failed' if failures else 'passed_pending_independent_review',failures=failures,finished_at=l.now(),elapsed_seconds=time.monotonic()-start,maximum_observed_owned_allocation=resources.maximum,resource_scan_first_failure=resources.first_failure,resource_successful_scans=dict(resources.scan_totals))
   run.persist()
  return 1 if failures else 0
 
@@ -731,22 +757,22 @@ def close_worker_group(proc,receipt,lifecycle,start):
 
 def supervise(grant_path,grant):
  assert not SCOPE.exists();SCOPE.mkdir(mode=0o700);start=time.monotonic();l=load('bounded_lifecycle')
- intent={'started_at':l.now(),'start_monotonic':start,'context_sha256':sha(grant_path),'seconds':LIMITS.TOTAL,'status':'running'}
+ intent={'started_at':l.now(),'start_monotonic':start,'context_sha256':sha(grant_path),'seconds':LIMITS.TOTAL,'status':'running','allocation_observation_policy':{'parent_min_interval_seconds':PARENT_INVENTORY_INTERVAL,'worker_min_interval_seconds':1,'observed_boundaries_forced':True,'sampled_not_filesystem_quota':True}}
  l.save(SCOPE/'invocation.json',intent);proc=None;monitor=None
  try:
   with (SCOPE/'driver.log').open('xb') as log:
    proc=subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve()),str(grant_path),'--worker',str(start)],cwd=HERE,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
    intent['owned_worker']=proc.pid
-   monitor=Resources(start)
+   monitor=Resources(start,inventory_interval_seconds=PARENT_INVENTORY_INTERVAL)
    while proc.poll() is None:
     assert time.monotonic()<start+(LIMITS.TOTAL-8),'worker deadline'
-    metadata=SCOPE/'metadata.json'
+    metadata=SCOPE/'metadata.json';observed_meta={}
     if metadata.exists():
      assert metadata.stat().st_size<=256*1024
-     value=json.loads(metadata.read_bytes()).get('owned_uuid')
+     observed_meta=json.loads(metadata.read_bytes());value=observed_meta.get('owned_uuid')
      if value:
       uuid.UUID(value);monitor.device=Path.home()/'Library/Developer/CoreSimulator/Devices'/value
-    monitor.check((LIMITS.TOTAL-8))
+    monitor.observe_parent(observed_meta,(LIMITS.TOTAL-8))
     time.sleep(min(1,max(0,start+(LIMITS.TOTAL-8)-time.monotonic())))
    intent['maximum_observed_owned_allocation']=monitor.maximum
    assert proc.returncode==0
@@ -780,7 +806,12 @@ def supervise(grant_path,grant):
   except BaseException as error:intent.update(status='failed',owned_command_groups={'all_absent':False,'error':repr(error)})
   retain_cleanup_obligation(intent,start)
   if not intent['cleanup_obligation'].get('absence_verified'):intent['status']='failed'
-  if monitor is not None:intent['resource_scan_first_failure']=monitor.first_failure
+  if monitor is not None:
+   try:monitor.observe_parent(cleanup_metadata(),(LIMITS.TOTAL-8),final=True)
+   except BaseException as error:intent.update(status='failed',final_resource_observation_error=repr(error))
+   intent['maximum_observed_owned_allocation']=monitor.maximum
+   intent['resource_scan_first_failure']=monitor.first_failure
+   intent['resource_successful_scans']=dict(monitor.scan_totals)
   intent.update(returncode=proc.returncode if proc else None,elapsed_seconds=time.monotonic()-start)
   if intent['elapsed_seconds']>=LIMITS.TOTAL:intent['status']='failed'
   try:intent['terminal_receipt']=final_write(intent,start)

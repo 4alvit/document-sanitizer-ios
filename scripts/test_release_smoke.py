@@ -350,7 +350,7 @@ class HostedPreparationTests(unittest.TestCase):
                     (scope/'metadata.json').write_text(json.dumps({'owner_worker_pid':500,'owned_device_name':'fixture-owned-device','commands':[{'owned_process_group':700,'args':['xcodebuild'],'owned_group_absent':False}]}))
                     return process
                 aggregate=run.aggregate_command_groups
-                def fail_scan(resources,*_):
+                def fail_scan(resources,*_,**__):
                     resources.first_failure={'operation':'free_floor','root':None,'charged_allocated_bytes':0}
                     raise AssertionError('injected allocation floor')
                 with mock.patch.object(run,'load',return_value=lifecycle),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(run.Resources,'check',new=fail_scan),mock.patch.object(run,'await_cleanup_ack',side_effect=subprocess.TimeoutExpired('fixture-worker',3)),mock.patch.object(subprocess,'check_output',return_value='500\n' if correct_parent else '999\n') as parent_lookup,mock.patch.object(os,'getpgid',return_value=700),mock.patch.object(os,'killpg',side_effect=killpg),mock.patch.object(lifecycle,'stop_group',side_effect=lambda proc,row:row.update(owned_group_absent=True)),mock.patch.object(run,'aggregate_command_groups',side_effect=lambda meta,start:aggregate(meta,start,probe=killpg)),mock.patch.object(run,'terminal_stdout',return_value=True):
@@ -848,6 +848,91 @@ class PackageResourceScanTests(unittest.TestCase):
         for patch in patches:patch.start();self.addCleanup(patch.stop)
     @staticmethod
     def info(blocks,mode=0o100600):return SimpleNamespace(st_blocks=blocks,st_mode=mode)
+    def test_parent_five_seconds_and_default_worker_one_second_keep_per_poll_floor(self):
+        root=str(self.m.OWNED_ROOT);worker=self.m.Resources(100);parent=self.m.Resources(100,inventory_interval_seconds=5)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]) as walk,mock.patch.object(os,'lstat',return_value=self.info(1)),mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=32*2**30)) as floor:
+            worker.check(196);parent.check(196);self.assertEqual(walk.call_count,2)
+            self.clock[0]=102;worker.check(196);parent.check(196);self.assertEqual(walk.call_count,3)
+            self.clock[0]=105.999;parent.check(196);self.assertEqual(walk.call_count,3)
+            self.clock[0]=106;parent.check(196);self.assertEqual(walk.call_count,4)
+            self.assertEqual(floor.call_count,6)
+        self.assertEqual(worker.inventory_interval_seconds,1);self.assertEqual(parent.inventory_interval_seconds,5)
+    def test_parent_epoch_forces_observed_transitions_not_changing_scan_telemetry(self):
+        root=str(self.m.OWNED_ROOT);parent=self.m.Resources(100,inventory_interval_seconds=5);meta={'commands':[]}
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]) as walk,mock.patch.object(os,'lstat',return_value=self.info(1)):
+            parent.observe_parent(meta,196);self.assertEqual(walk.call_count,1)
+            meta.update(resource_successful_scans={'count':999},elapsed_seconds=1,updated_at='changes each poll')
+            parent.observe_parent(meta,196);self.assertEqual(walk.call_count,1)
+            meta['owned_uuid']='fixture-owned';parent.observe_parent(meta,196)
+            meta['phase']='native';parent.observe_parent(meta,196)
+            meta['commands'].append({'args':['fixture'],'started_at':'start','owned_process_group':17});parent.observe_parent(meta,196)
+            meta['commands'][-1].update(finished_at='finish',returncode=0,owned_group_absent=True);parent.observe_parent(meta,196)
+            meta['first_case_observed_elapsed_seconds']=1.5;parent.observe_parent(meta,196)
+            meta['cleanup_phase']={'entered_monotonic':101};parent.observe_parent(meta,196)
+            self.assertEqual(walk.call_count,7)
+            meta['cleanup_phase']['diagnostic_poll_count']=2;parent.observe_parent(meta,196);self.assertEqual(walk.call_count,7)
+            parent.observe_parent(meta,197);self.assertEqual(walk.call_count,8)
+            parent.observe_parent(meta,197,final=True);self.assertEqual(walk.call_count,9)
+    def test_parent_force_sees_growth_and_preserves_original_allocation_cap(self):
+        root=str(self.m.OWNED_ROOT);blocks=[1];parent=self.m.Resources(100,inventory_interval_seconds=5)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',side_effect=lambda _:self.info(blocks[0])):
+            parent.observe_parent({},196);blocks[0]=self.m.CAP//512+1
+            parent.observe_parent({},196)  # Unchanged epoch: policy intentionally samples, not a quota.
+            with self.assertRaisesRegex(AssertionError,'owned allocation cap'):parent.observe_parent({},196,final=True)
+        self.assertEqual(parent.first_failure['operation'],'allocation_cap');self.assertTrue(parent.first_failure['complete_scan'])
+    def test_parent_deadline_and_free_floor_fail_even_when_full_inventory_not_due(self):
+        root=str(self.m.OWNED_ROOT)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]) as walk,mock.patch.object(os,'lstat',return_value=self.info(1)):
+            parent=self.m.Resources(100,inventory_interval_seconds=5);parent.observe_parent({},196)
+            with mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=self.m.FLOOR-1)):
+                with self.assertRaisesRegex(AssertionError,'free floor'):parent.observe_parent({},196)
+            self.assertEqual(walk.call_count,1)
+            self.clock[0]=296
+            with self.assertRaisesRegex(AssertionError,'original phase deadline'):parent.observe_parent({},196,final=True)
+            self.assertEqual(walk.call_count,1)
+    def test_full_inventory_spacing_is_measured_from_completion_and_final_is_forced(self):
+        root=str(self.m.OWNED_ROOT);parent=self.m.Resources(100,inventory_interval_seconds=5)
+        def slow_stat(_):self.clock[0]+=2;return self.info(1)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]) as walk,mock.patch.object(os,'lstat',side_effect=slow_stat):
+            parent.observe_parent({},196);self.assertEqual(parent.last,103)
+            self.clock[0]=107.999;parent.observe_parent({},196);self.assertEqual(walk.call_count,1)
+            self.clock[0]=108;parent.observe_parent({},196);self.assertEqual(walk.call_count,2)
+            parent.observe_parent({},196,final=True);self.assertEqual(walk.call_count,3)
+        self.assertEqual(parent.scan_totals['count'],3);self.assertEqual(parent.scan_totals['total_seconds'],6)
+    def test_forced_inventory_keeps_entry_cap_and_entry_deadline(self):
+        root=str(self.m.OWNED_ROOT);parent=self.m.Resources(100,inventory_interval_seconds=5)
+        with mock.patch.object(os,'walk',return_value=[(root,[],['entry']*100000)]),mock.patch.object(os,'lstat',return_value=self.info(0)):
+            with self.assertRaisesRegex(AssertionError,'owned inventory entry cap'):parent.observe_parent({},196,final=True)
+        self.assertEqual(parent.first_failure['lstat_calls'],100001)
+        parent=self.m.Resources(100,inventory_interval_seconds=5)
+        def expire(_):self.clock[0]=296;return self.info(0)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',side_effect=expire):
+            with self.assertRaisesRegex(AssertionError,'owned stat deadline'):parent.observe_parent({},196,final=True)
+    def test_inventory_policy_and_force_parameters_fail_closed(self):
+        for value in (True,False,0,2,6,5.0,float('nan'),None,'5'):
+            with self.subTest(value=value),self.assertRaises(AssertionError):self.m.Resources(100,inventory_interval_seconds=value)
+        parent=self.m.Resources(100,inventory_interval_seconds=5)
+        for value in (1,None,'true'):
+            with self.subTest(force=value),self.assertRaises(AssertionError):parent.check(196,force=value)
+        with self.assertRaises(AssertionError):parent.observe_parent({},196,final=1)
+    def test_actual_parent_loop_selects_five_and_forces_terminal_inventory(self):
+        native=hasattr(self.m,'NATIVE_WINDOW_POLICY')
+        with tempfile.TemporaryDirectory(prefix='parent-policy-supervisor-') as temporary:
+            base=Path(temporary);scope=base/'native';context=base/'context.json';context.write_bytes(b'{}')
+            if native:scope.mkdir()
+            monitor=self.m.Resources(100,inventory_interval_seconds=5);process=SimpleNamespace(pid=17,returncode=0);polls=iter([None,0])
+            process.poll=lambda:next(polls,0)
+            def spawn(*args,**kwargs):
+                (scope/'metadata.json').write_text(json.dumps({'commands':[],'device_removed':True}));return process
+            captured={}
+            def closed(proc,intent,*args):intent['owned_group_absent']=True
+            def receipt(value,start):captured.update(value);return {'fixture':True}
+            with mock.patch.object(self.m,'SCOPE',scope),mock.patch.object(self.m,'OWNED_ROOT',base),mock.patch.object(self.m,'Resources',return_value=monitor) as factory,mock.patch.object(self.m,'close_worker_group',side_effect=closed),mock.patch.object(self.m,'retain_cleanup_obligation',side_effect=lambda intent,start:intent.update(cleanup_obligation={'absence_verified':True})),mock.patch.object(self.m,'aggregate_command_groups',return_value={'all_absent':True}),mock.patch.object(self.m,'final_read',side_effect=lambda path,*args:path.read_bytes()),mock.patch.object(self.m,'final_write',side_effect=receipt),mock.patch.object(self.m,'terminal_stdout',return_value=True),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(time,'sleep'),mock.patch.object(os,'walk',return_value=[(str(base),[],[])]) as walk,mock.patch.object(os,'lstat',return_value=self.info(1)):
+                result=self.m.supervise(context,{},100) if native else self.m.supervise(context,{})
+            self.assertEqual(result,0);factory.assert_called_once_with(100 if native else 101,inventory_interval_seconds=5)
+            self.assertEqual(walk.call_count,2);self.assertEqual(captured['resource_successful_scans']['count'],2)
+            self.assertEqual(captured['allocation_observation_policy']['worker_min_interval_seconds'],1)
+            self.assertTrue(captured['allocation_observation_policy']['observed_boundaries_forced'])
     def test_complete_two_root_scan_keeps_both_directory_stats_and_all_allocations(self):
         owned=str(self.m.OWNED_ROOT);device='/fixture/device';device_dirs=['data','link']
         rows={owned:[(owned,['Products'],['receipt.json']),(owned+'/Products',[],['app'])],
@@ -1636,5 +1721,143 @@ class PackageAX5PostconditionTests(unittest.TestCase):
         with mock.patch.object(subprocess,'Popen',side_effect=spawn):
             with self.assertRaises(subprocess.TimeoutExpired):self.invoke()
         self.assertEqual(len(self.calls),4);self.assertEqual(self.run.end,680)
+
+
+
+class PrivateExportProgressTests(unittest.TestCase):
+    EXPORT='export-11111111-1111-4111-8111-111111111111'
+    STAGE='.cleansend-stage-22222222-2222-4222-8222-222222222222'
+    PDF='RedactLeaf-33333333-3333-4333-8333-333333333333.pdf'
+    DATA=b'%PDF-1.4\nsynthetic\n'
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name).resolve()
+        self.tmp=self.root/'tmp';self.tmp.mkdir();self.group=self.root/'group';self.group.mkdir()
+        self.e=load('private_export_evidence',SMOKE/'evidence.py');self.b=load('private_export_budget',SMOKE/'window.py')
+        self.expired=False;self.stream=io.BytesIO();self.observer=self.e.Observer(self.b,self.check);self.observer.started=time.monotonic()
+        for patch in (mock.patch.object(subprocess,'Popen',side_effect=AssertionError('native forbidden')),mock.patch.object(os,'killpg',side_effect=AssertionError('signals forbidden'))):patch.start();self.addCleanup(patch.stop)
+        self.observer.event(self.group,self.tmp,self.stream)
+    def check(self):
+        if self.expired:raise TimeoutError('original phase deadline')
+    def stage(self,content=b''):
+        directory=self.tmp/self.EXPORT/self.STAGE;directory.mkdir(parents=True);path=directory/self.PDF;path.write_bytes(content);return path
+    def live(self):return self.observer.event(self.group,self.tmp,self.stream,allow_export_progress=True)
+    def grow_on_read(self,path):
+        original=os.read;ino=path.stat().st_ino;changed=[False]
+        def read(fd,limit):
+            if os.fstat(fd).st_ino==ino and not changed[0]:
+                with path.open('ab')as stream:stream.write(self.DATA)
+                changed[0]=True
+            return original(fd,limit)
+        return read,changed
+    def test_live_staging_is_observed_without_hashing_then_real_commit_queue_and_cleanup_match(self):
+        staged=self.stage(self.DATA);ino=staged.stat().st_ino;read=os.read
+        def refuse_partial_read(fd,limit):
+            if os.fstat(fd).st_ino==ino:raise AssertionError('uncommitted content read')
+            return read(fd,limit)
+        with mock.patch.object(os,'read',side_effect=refuse_partial_read):state=self.live()
+        row=next(x for x in state['tmp']['entries']if x['path'].endswith('.pdf'))
+        self.assertTrue(row['uncommitted_export_staging']);self.assertNotIn('sha256',row);self.assertEqual(self.observer.hashed,0);self.assertFalse(self.observer.exported)
+        final=staged.parent.parent/staged.name;staged.rename(final);staged.parent.rmdir();self.live()
+        digest=hashlib.sha256(self.DATA).hexdigest();self.assertEqual(set(self.observer.exported),{digest})
+        queued=self.group/'fixture.ready';queued.mkdir();(queued/self.PDF).write_bytes(self.DATA);self.live();self.assertEqual(self.observer.matches,{digest})
+        shutil.rmtree(queued);shutil.rmtree(final.parent);self.live();proof=self.observer.assert_workflow();self.assertEqual(proof['matched_hashes'],[digest])
+    def test_strict_baseline_and_payload_inventory_still_reject_inflight_staging(self):
+        staged=self.stage()
+        for operation in ('baseline','payload'):
+            staged.write_bytes(b'');read,changed=self.grow_on_read(staged)
+            with self.subTest(operation=operation),mock.patch.object(os,'read',side_effect=read),self.assertRaises(AssertionError):
+                if operation=='baseline':self.observer.event(self.group,self.tmp,self.stream)
+                else:self.e.payload_inventory(self.tmp,self.b,self.check)
+            self.assertTrue(changed[0])
+    def test_live_committed_growth_and_replacement_remain_hard_failures(self):
+        export=self.tmp/self.EXPORT;export.mkdir();final=export/self.PDF;final.write_bytes(b'')
+        read,changed=self.grow_on_read(final)
+        with mock.patch.object(os,'read',side_effect=read),self.assertRaises(AssertionError):self.live()
+        self.assertTrue(changed[0]);self.assertEqual(len(self.observer.events),1)
+        final.unlink();staged=self.stage(b'one');original=os.stat;changed=[False]
+        def replace(name,*args,**kwargs):
+            value=original(name,*args,**kwargs)
+            if name==self.PDF and not changed[0]:
+                staged.unlink();staged.write_bytes(b'two');changed[0]=True
+            return value
+        with mock.patch.object(os,'stat',side_effect=replace),self.assertRaisesRegex(AssertionError,'staging file replaced'):self.live()
+        self.assertTrue(changed[0])
+    def test_atomic_staging_rename_defers_one_live_snapshot_without_accepting_partial_state(self):
+        (self.tmp/'a-stable.pdf').write_bytes(b'charged');self.live()
+        exported=dict(self.observer.exported);event_count=len(self.observer.events);hashed=self.observer.hashed;visited=self.observer.visited
+        staged=self.stage(self.DATA);stage=staged.parent;ino=stage.stat().st_ino;original=os.listdir;renamed=[False];before=self.stream.getvalue()
+        def rename(fd):
+            names=original(fd)
+            if isinstance(fd,int) and os.fstat(fd).st_ino==ino and not renamed[0]:
+                staged.rename(stage.parent/staged.name);stage.rmdir();renamed[0]=True
+            return names
+        with mock.patch.object(os,'listdir',side_effect=rename):self.assertIsNone(self.live())
+        self.assertTrue(renamed[0]);self.assertEqual(self.stream.getvalue(),before);self.assertEqual(len(self.observer.events),event_count);self.assertEqual(self.observer.exported,exported);self.assertEqual(self.observer.deferred_export_observations,1)
+        self.assertEqual(hashed,7);self.assertGreaterEqual(self.observer.hashed,hashed);self.assertGreater(self.observer.visited,visited)
+        state=self.live();self.assertTrue(any('sha256'in x for x in state['tmp']['entries']));self.assertTrue(self.observer.exported)
+    def test_unknown_staging_names_and_nonregular_entries_never_get_progress_exception(self):
+        for index,stage_name in enumerate(('.cleansend-stage-invalid','not-a-stage')):
+            folder=self.tmp/(self.EXPORT if index==0 else 'unknown-export')/stage_name;folder.mkdir(parents=True);path=folder/self.PDF;path.write_bytes(b'');read,changed=self.grow_on_read(path)
+            with self.subTest(stage=stage_name),mock.patch.object(os,'read',side_effect=read),self.assertRaises(AssertionError):self.live()
+            self.assertTrue(changed[0]);shutil.rmtree(folder.parent)
+        path=self.stage();path.unlink();outside=self.root/'outside';outside.write_bytes(self.DATA);path.symlink_to(outside)
+        with self.assertRaisesRegex(AssertionError,'symlink/special'):self.live()
+        path.unlink();os.mkfifo(path)
+        with self.assertRaisesRegex(AssertionError,'symlink/special'):self.live()
+    def test_original_file_hash_entry_and_deadline_caps_remain_effective(self):
+        path=self.stage()
+        with path.open('wb')as stream:stream.truncate(16*2**20+1)
+        with self.assertRaisesRegex(AssertionError,'individual observed file cap'):self.live()
+        path.write_bytes(self.DATA);self.observer.visited=200000
+        with self.assertRaisesRegex(AssertionError,'cumulative entry observation cap'):self.live()
+        self.observer.visited=0;self.expired=True
+        with self.assertRaisesRegex(TimeoutError,'original phase deadline'):self.live()
+        self.expired=False;final=path.parent.parent/path.name;path.rename(final);path.parent.rmdir();self.observer.hash_cap=0
+        with self.assertRaisesRegex(AssertionError,'cumulative hashing cap'):self.live()
+    def test_pending_or_unmatched_export_can_never_qualify_and_final_snapshot_is_strict(self):
+        staged=self.stage(self.DATA);self.live()
+        with self.assertRaisesRegex(AssertionError,'exactly one exported PDF'):self.observer.assert_workflow()
+        # A strict final event uses the original stable-hash semantics; an active
+        # writer cannot be waived merely because this path was pending earlier.
+        staged.write_bytes(b'');read,changed=self.grow_on_read(staged)
+        with mock.patch.object(os,'read',side_effect=read),self.assertRaises(AssertionError):self.observer.event(self.group,self.tmp,self.stream)
+        self.assertTrue(changed[0]);self.assertFalse(self.observer.matches)
+    def test_deferred_staging_never_masks_other_same_snapshot_errors_or_refunds_budgets(self):
+        for fault in ('committed-growth','symlink','special','entry-cap','hash-cap','deadline'):
+            with self.subTest(fault=fault):
+                tmp=self.root/fault;tmp.mkdir();group=self.root/(fault+'-group');group.mkdir();stream=io.BytesIO();observer=self.e.Observer(self.b,self.check);observer.started=time.monotonic();observer.event(group,tmp,stream);baseline=stream.getvalue()
+                stage=tmp/self.EXPORT/self.STAGE;stage.mkdir(parents=True);pdf=stage/self.PDF;pdf.write_bytes(self.DATA);stage_ino=stage.stat().st_ino
+                unsafe=tmp/'zz-final.pdf'
+                if fault=='symlink':unsafe.symlink_to(pdf)
+                elif fault=='special':os.mkfifo(unsafe)
+                else:unsafe.write_bytes(b'' if fault=='committed-growth' else self.DATA)
+                if fault=='entry-cap':observer.visited=199997
+                if fault=='hash-cap':observer.hash_cap=0
+                visited_before=observer.visited;hashed_before=observer.hashed;names=os.listdir;read=os.read;renamed=[False];mutated=[False];ino=unsafe.stat().st_ino
+                def rename(fd):
+                    result=names(fd)
+                    if isinstance(fd,int)and os.fstat(fd).st_ino==stage_ino and not renamed[0]:
+                        pdf.rename(stage.parent/pdf.name);stage.rmdir();renamed[0]=True
+                        if fault=='deadline':self.expired=True
+                    return result
+                def mutate(fd,limit):
+                    if fault=='committed-growth'and os.fstat(fd).st_ino==ino and not mutated[0]:
+                        with unsafe.open('ab')as out:out.write(self.DATA)
+                        mutated[0]=True
+                    return read(fd,limit)
+                expected=TimeoutError if fault=='deadline' else AssertionError
+                with mock.patch.object(os,'listdir',side_effect=rename),mock.patch.object(os,'read',side_effect=mutate),self.assertRaises(expected):observer.event(group,tmp,stream,allow_export_progress=True)
+                self.expired=False;self.assertTrue(renamed[0]);self.assertEqual(stream.getvalue(),baseline);self.assertEqual(len(observer.events),1);self.assertFalse(observer.exported);self.assertFalse(observer.queued);self.assertFalse(observer.matches);self.assertEqual(observer.deferred_export_observations,0)
+                self.assertGreaterEqual(observer.visited,visited_before);self.assertGreaterEqual(observer.hashed,hashed_before)
+                if fault=='committed-growth':self.assertTrue(mutated[0]);self.assertGreater(observer.hashed,0)
+        self.observer.loader_paths=frozenset({'some-loader'})
+        with self.assertRaisesRegex(AssertionError,'cannot collect loader headers'):self.live()
+        self.assertFalse(self.observer.loader_headers)
+    def test_directory_progress_requires_only_exact_names_and_same_root_custody(self):
+        self.assertTrue(self.e.export_directory_transition('',[],[self.EXPORT]));self.assertTrue(self.e.export_directory_transition(self.EXPORT,[],[self.STAGE]));self.assertTrue(self.e.export_directory_transition(self.EXPORT+'/'+self.STAGE,[],[self.PDF]))
+        for prefix,before,after in (('',[],['other']),('',[],[self.EXPORT,'other']),(self.EXPORT,[],['other.pdf']),(self.EXPORT,[],[])):
+            with self.subTest(prefix=prefix,after=after):self.assertFalse(self.e.export_directory_transition(prefix,before,after))
+        old=self.tmp.with_name('previous');self.tmp.rename(old);self.tmp.mkdir()
+        with self.assertRaisesRegex(AssertionError,'root changed identity'):self.live()
 
 if __name__=='__main__':unittest.main()

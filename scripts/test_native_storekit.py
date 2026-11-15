@@ -125,7 +125,7 @@ class NativeStoreKitBindingTests(unittest.TestCase):
     def setUp(self):self.m=load('native_storekit_test',DRIVER);self.now=dt.datetime.now(dt.timezone.utc)
     def test_eight_existing_cases_share_one_unchanged_bounded_command(self):
         plan=self.m.validate_test_plan(json.loads((ROOT/'CleanSend.xctestplan').read_bytes()))
-        self.assertEqual(len(plan['cases']),8);self.assertEqual(plan['maximum_case_seconds'],180);self.assertEqual(plan['outer_seconds'],300)
+        self.assertEqual(len(plan['cases']),8);self.assertEqual(plan['maximum_case_seconds'],180);self.assertEqual(plan['case_window_seconds'],300)
         args=self.m.test_arguments('A09F18F8-31EF-432D-A426-0197E73D75E8',Path('/fixture/result.xcresult'),Path('/fixture/native-unit-host.xctestrun'))
         self.assertEqual(args[:4],['xcodebuild','test-without-building','-xctestrun','/fixture/native-unit-host.xctestrun'])
         self.assertNotIn('-project',args);self.assertNotIn('-testPlan',args)
@@ -377,11 +377,11 @@ class NativeStartupBudgetTests(unittest.TestCase):
         with mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=32*2**30)),mock.patch.object(os,'walk',return_value=[('/fixture',[],[])]),mock.patch.object(os,'lstat',side_effect=late_stat):
             with self.assertRaisesRegex(AssertionError,'owned stat deadline'):resources.check(526)
     def test_test_budget_retains300_body4_stop150_final_and_rejects_late_admission(self):
-        self.clock[0]=626
-        self.assertEqual(self.m.native_test_end(self.run,self.clock[0]),926)
+        self.clock[0]=625
+        self.assertEqual(self.m.native_test_end(self.run,self.clock[0]),925)
         self.assertEqual(self.m.TEST_STOP_END-self.m.TEST_BODY_END,4)
         self.assertEqual(self.m.FINAL_VERIFY_END-self.m.TEST_STOP_END,150)
-        self.clock[0]=626.001
+        self.clock[0]=626
         with self.assertRaises(AssertionError):self.m.native_test_end(self.run,self.clock[0])
         self.assertEqual(self.run.start,100)
     def test_final_inventory_has_original980_deadline(self):
@@ -537,6 +537,91 @@ class NativeResourceScanTests(unittest.TestCase):
         for patch in patches:patch.start();self.addCleanup(patch.stop)
     @staticmethod
     def info(blocks,mode=0o100600):return SimpleNamespace(st_blocks=blocks,st_mode=mode)
+    def test_parent_five_seconds_and_default_worker_one_second_keep_per_poll_floor(self):
+        root=str(self.m.OWNED_ROOT);worker=self.m.Resources(100);parent=self.m.Resources(100,inventory_interval_seconds=5)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]) as walk,mock.patch.object(os,'lstat',return_value=self.info(1)),mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=32*2**30)) as floor:
+            worker.check(196);parent.check(196);self.assertEqual(walk.call_count,2)
+            self.clock[0]=102;worker.check(196);parent.check(196);self.assertEqual(walk.call_count,3)
+            self.clock[0]=105.999;parent.check(196);self.assertEqual(walk.call_count,3)
+            self.clock[0]=106;parent.check(196);self.assertEqual(walk.call_count,4)
+            self.assertEqual(floor.call_count,6)
+        self.assertEqual(worker.inventory_interval_seconds,1);self.assertEqual(parent.inventory_interval_seconds,5)
+    def test_parent_epoch_forces_observed_transitions_not_changing_scan_telemetry(self):
+        root=str(self.m.OWNED_ROOT);parent=self.m.Resources(100,inventory_interval_seconds=5);meta={'commands':[]}
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]) as walk,mock.patch.object(os,'lstat',return_value=self.info(1)):
+            parent.observe_parent(meta,196);self.assertEqual(walk.call_count,1)
+            meta.update(resource_successful_scans={'count':999},elapsed_seconds=1,updated_at='changes each poll')
+            parent.observe_parent(meta,196);self.assertEqual(walk.call_count,1)
+            meta['owned_uuid']='fixture-owned';parent.observe_parent(meta,196)
+            meta['phase']='native';parent.observe_parent(meta,196)
+            meta['commands'].append({'args':['fixture'],'started_at':'start','owned_process_group':17});parent.observe_parent(meta,196)
+            meta['commands'][-1].update(finished_at='finish',returncode=0,owned_group_absent=True);parent.observe_parent(meta,196)
+            meta['first_case_observed_elapsed_seconds']=1.5;parent.observe_parent(meta,196)
+            meta['cleanup_phase']={'entered_monotonic':101};parent.observe_parent(meta,196)
+            self.assertEqual(walk.call_count,7)
+            meta['cleanup_phase']['diagnostic_poll_count']=2;parent.observe_parent(meta,196);self.assertEqual(walk.call_count,7)
+            parent.observe_parent(meta,197);self.assertEqual(walk.call_count,8)
+            parent.observe_parent(meta,197,final=True);self.assertEqual(walk.call_count,9)
+    def test_parent_force_sees_growth_and_preserves_original_allocation_cap(self):
+        root=str(self.m.OWNED_ROOT);blocks=[1];parent=self.m.Resources(100,inventory_interval_seconds=5)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',side_effect=lambda _:self.info(blocks[0])):
+            parent.observe_parent({},196);blocks[0]=self.m.CAP//512+1
+            parent.observe_parent({},196)  # Unchanged epoch: policy intentionally samples, not a quota.
+            with self.assertRaisesRegex(AssertionError,'owned allocation cap'):parent.observe_parent({},196,final=True)
+        self.assertEqual(parent.first_failure['operation'],'allocation_cap');self.assertTrue(parent.first_failure['complete_scan'])
+    def test_parent_deadline_and_free_floor_fail_even_when_full_inventory_not_due(self):
+        root=str(self.m.OWNED_ROOT)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]) as walk,mock.patch.object(os,'lstat',return_value=self.info(1)):
+            parent=self.m.Resources(100,inventory_interval_seconds=5);parent.observe_parent({},196)
+            with mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=self.m.FLOOR-1)):
+                with self.assertRaisesRegex(AssertionError,'free floor'):parent.observe_parent({},196)
+            self.assertEqual(walk.call_count,1)
+            self.clock[0]=296
+            with self.assertRaisesRegex(AssertionError,'original phase deadline'):parent.observe_parent({},196,final=True)
+            self.assertEqual(walk.call_count,1)
+    def test_full_inventory_spacing_is_measured_from_completion_and_final_is_forced(self):
+        root=str(self.m.OWNED_ROOT);parent=self.m.Resources(100,inventory_interval_seconds=5)
+        def slow_stat(_):self.clock[0]+=2;return self.info(1)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]) as walk,mock.patch.object(os,'lstat',side_effect=slow_stat):
+            parent.observe_parent({},196);self.assertEqual(parent.last,103)
+            self.clock[0]=107.999;parent.observe_parent({},196);self.assertEqual(walk.call_count,1)
+            self.clock[0]=108;parent.observe_parent({},196);self.assertEqual(walk.call_count,2)
+            parent.observe_parent({},196,final=True);self.assertEqual(walk.call_count,3)
+        self.assertEqual(parent.scan_totals['count'],3);self.assertEqual(parent.scan_totals['total_seconds'],6)
+    def test_forced_inventory_keeps_entry_cap_and_entry_deadline(self):
+        root=str(self.m.OWNED_ROOT);parent=self.m.Resources(100,inventory_interval_seconds=5)
+        with mock.patch.object(os,'walk',return_value=[(root,[],['entry']*100000)]),mock.patch.object(os,'lstat',return_value=self.info(0)):
+            with self.assertRaisesRegex(AssertionError,'owned inventory entry cap'):parent.observe_parent({},196,final=True)
+        self.assertEqual(parent.first_failure['lstat_calls'],100001)
+        parent=self.m.Resources(100,inventory_interval_seconds=5)
+        def expire(_):self.clock[0]=296;return self.info(0)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',side_effect=expire):
+            with self.assertRaisesRegex(AssertionError,'owned stat deadline'):parent.observe_parent({},196,final=True)
+    def test_inventory_policy_and_force_parameters_fail_closed(self):
+        for value in (True,False,0,2,6,5.0,float('nan'),None,'5'):
+            with self.subTest(value=value),self.assertRaises(AssertionError):self.m.Resources(100,inventory_interval_seconds=value)
+        parent=self.m.Resources(100,inventory_interval_seconds=5)
+        for value in (1,None,'true'):
+            with self.subTest(force=value),self.assertRaises(AssertionError):parent.check(196,force=value)
+        with self.assertRaises(AssertionError):parent.observe_parent({},196,final=1)
+    def test_actual_parent_loop_selects_five_and_forces_terminal_inventory(self):
+        native=hasattr(self.m,'NATIVE_WINDOW_POLICY')
+        with tempfile.TemporaryDirectory(prefix='parent-policy-supervisor-') as temporary:
+            base=Path(temporary);scope=base/'native';context=base/'context.json';context.write_bytes(b'{}')
+            if native:scope.mkdir()
+            monitor=self.m.Resources(100,inventory_interval_seconds=5);process=SimpleNamespace(pid=17,returncode=0);polls=iter([None,0])
+            process.poll=lambda:next(polls,0)
+            def spawn(*args,**kwargs):
+                (scope/'metadata.json').write_text(json.dumps({'commands':[],'device_removed':True}));return process
+            captured={}
+            def closed(proc,intent,*args):intent['owned_group_absent']=True
+            def receipt(value,start):captured.update(value);return {'fixture':True}
+            with mock.patch.object(self.m,'SCOPE',scope),mock.patch.object(self.m,'OWNED_ROOT',base),mock.patch.object(self.m,'Resources',return_value=monitor) as factory,mock.patch.object(self.m,'close_worker_group',side_effect=closed),mock.patch.object(self.m,'retain_cleanup_obligation',side_effect=lambda intent,start:intent.update(cleanup_obligation={'absence_verified':True})),mock.patch.object(self.m,'aggregate_command_groups',return_value={'all_absent':True}),mock.patch.object(self.m,'final_read',side_effect=lambda path,*args:path.read_bytes()),mock.patch.object(self.m,'final_write',side_effect=receipt),mock.patch.object(self.m,'terminal_stdout',return_value=True),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(time,'sleep'),mock.patch.object(os,'walk',return_value=[(str(base),[],[])]) as walk,mock.patch.object(os,'lstat',return_value=self.info(1)):
+                result=self.m.supervise(context,{},100) if native else self.m.supervise(context,{})
+            self.assertEqual(result,0);factory.assert_called_once_with(100 if native else 101,inventory_interval_seconds=5)
+            self.assertEqual(walk.call_count,2);self.assertEqual(captured['resource_successful_scans']['count'],2)
+            self.assertEqual(captured['allocation_observation_policy']['worker_min_interval_seconds'],1)
+            self.assertTrue(captured['allocation_observation_policy']['observed_boundaries_forced'])
     def test_complete_two_root_scan_keeps_both_directory_stats_and_all_allocations(self):
         owned=str(self.m.OWNED_ROOT);device='/fixture/device';device_dirs=['data','link']
         rows={owned:[(owned,['Products'],['receipt.json']),(owned+'/Products',[],['app'])],
@@ -841,14 +926,25 @@ class SingleInstallerWorkerTests(unittest.TestCase):
         self.assertEqual(metadata['cleanup'],{'shutdown':0,'delete':0});self.assertTrue(metadata['device_removed'])
         self.assertEqual(metadata['native_phase_deadlines_seconds'],m.NATIVE_PHASES)
         return result,metadata
-    def test_late_first_case_still_fails_at_original300_and_cleans_up(self):
-        result,metadata=self.exercise(start_case_after=350)
+    def test_no_first_case_by_original_absolute_cutoff_fails_and_cleans_up(self):
+        result,metadata=self.exercise(start_case_after=550)
         self.assertEqual(result,1);self.assertEqual(metadata['native_storekit_tests'],0)
         self.assertEqual(self.lookup_count,0);self.assertTrue(metadata['device_removed'])
         command=next(row for row in metadata['commands'] if row['args'][:2]==['xcodebuild','test-without-building'])
-        self.assertEqual(command['timeout_seconds'],300)
+        self.assertEqual(command['case_window_seconds'],300)
+        self.assertEqual(command['first_case_latest_start_seconds'],526)
+        self.assertEqual(command['absolute_case_end_seconds'],826)
         self.assertEqual(command['startup_observation']['status'],'UNAVAILABLE_WNOWAIT')
         self.assertTrue(command['owned_group_absent'])
+    def test_cold_start_over300_uses_partition_once_and_keeps_real_case_acceptance(self):
+        result,metadata=self.exercise(start_case_after=350)
+        self.assertEqual(result,0);self.assertEqual(metadata['native_storekit_tests'],8)
+        self.assertGreater(metadata['first_case_observed_elapsed_seconds'],300)
+        self.assertEqual(metadata['case_deadline_monotonic'],90+metadata['first_case_observed_elapsed_seconds']+300)
+        self.assertLessEqual(metadata['case_deadline_monotonic'],90+self.m.TEST_BODY_END)
+        self.assertTrue(metadata['explicit_inert_unit_host_observed'])
+        self.assertTrue(metadata['installed_after_exact_baseline']);self.assertTrue(metadata['device_removed'])
+        self.assertEqual(sum(row[:2]==['xcodebuild','test-without-building'] for row in self.commands),1)
     def test_early_completion_does_not_start_observation(self):
         result,metadata=self.exercise()
         self.assertEqual(result,0)
@@ -1111,5 +1207,92 @@ class NativeCohortWorkflowTests(unittest.TestCase):
         self.assertIn("host=ROOT/'.derivedData/Build/Products/Debug-iphonesimulator/CleanSend.app'",DRIVER.read_text())
 
 def setitem(mapping,key,value):mapping[key]=value
+
+
+class NativePartitionPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.m=load('native_partition_policy_test',DRIVER)
+        self.clock=[100.0]
+        self.run=SimpleNamespace(start=100.0,end=980,meta={})
+        self.run.remaining=lambda:self.run.end-(self.clock[0]-self.run.start)
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(self.m.time,'monotonic',side_effect=lambda:self.clock[0]).start()
+    def test_startup_has_existing_absolute_cutoff_and_no_fresh_clock(self):
+        for elapsed in (0,119.25,400,525):
+            with self.subTest(elapsed=elapsed):
+                self.clock[0]=100+elapsed
+                self.assertEqual(self.m.native_launch_end(self.run,self.clock[0]),626)
+        for elapsed in (526,526.001,980):
+            with self.subTest(late=elapsed):
+                self.clock[0]=100+elapsed
+                with self.assertRaises(AssertionError):self.m.native_launch_end(self.run,self.clock[0])
+        self.assertEqual(self.run.start,100)
+    def test_first_case_retains_full300_and_original_stop_final_cleanup(self):
+        for elapsed in (119.25,400,525):
+            self.clock[0]=100+elapsed;self.run.end=526
+            end=self.m.native_test_end(self.run,self.clock[0],original_work_end=980)
+            self.assertEqual(end,self.clock[0]+300)
+            self.assertLessEqual(end,self.run.start+self.m.TEST_BODY_END)
+        self.assertEqual((self.m.TEST_STOP_END,self.m.FINAL_VERIFY_END,self.m.TOTAL),(830,980,1200))
+        self.assertEqual((self.m.RECOVERY_END,self.m.SHUTDOWN_END,self.m.DELETE_END,self.m.CLEANUP_END),(1002,1039,1058,1080))
+    def test_late_or_forged_original_phase_cannot_admit_a_case(self):
+        self.run.end=526
+        for elapsed,work in ((526,980),(527,980),(525,978),(400,981)):
+            with self.subTest(elapsed=elapsed,work=work):
+                self.clock[0]=100+elapsed
+                with self.assertRaises(AssertionError):self.m.native_test_end(self.run,self.clock[0],original_work_end=work)
+    def test_actual_first_case_branch_never_renews_on_subsequent_cases(self):
+        import ast
+        tree=ast.parse(DRIVER.read_text())
+        worker=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='worker')
+        branch=next(n for n in ast.walk(worker) if isinstance(n,ast.If) and any(isinstance(x,ast.Assign) and any(isinstance(t,ast.Subscript) and isinstance(t.slice,ast.Constant) and t.slice.value=='first_started_native_case' for t in x.targets) for x in n.body))
+        code=compile(ast.Module(body=[branch],type_ignores=[]),str(DRIVER),'exec')
+        saves=[];self.run.persist=lambda:None
+        namespace={'run':self.run,'previous_end':980,'start':100,'during':False,
+            'started_case':next(iter(self.m.CASES)),'time':self.m.time,'native_test_end':self.m.native_test_end,
+            'installed':lambda *a,**kw:saves.append((a,kw)),'end':626}
+        self.clock[0]=500
+        exec(code,namespace)
+        self.assertTrue(namespace['during']);self.assertEqual(namespace['end'],800)
+        self.assertEqual(self.run.meta['case_deadline_monotonic'],800)
+        self.clock[0]=550;namespace['started_case']=next(iter(self.m.CASES))
+        exec(code,namespace)
+        self.assertEqual(namespace['end'],800);self.assertEqual(len(saves),1)
+    def test_no_case_and_selector_text_never_establish_case_window(self):
+        self.assertIsNone(self.m.observed_native_case_start(b'-only-testing:CleanSendTests/ProStoreTests'))
+        self.assertIsNone(self.m.observed_native_case_start(b"Test Suite 'ProStoreTests' started."))
+        self.clock[0]=626
+        with self.assertRaises(AssertionError):self.m.native_launch_end(self.run,self.clock[0])
+        self.assertNotIn('first_started_native_case',self.run.meta)
+    def test_actual_context_rejects_legacy_mixed_or_wrong_temporal_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.m.ROOT=Path(temporary);scope=self.m.ROOT/'.qa/native-storekit/run-123-attempt-1'
+            scope.mkdir(parents=True);path=scope/'context.json'
+            valid={'repository':self.m.REPO,'start_monotonic':100.0,'host_architecture':'arm64',
+                'case_identities':sorted(self.m.CASES),'case_count':8,'case_window_seconds':300,
+                'native_window_policy':self.m.NATIVE_WINDOW_POLICY,'case_seconds':180,'seconds':1200,
+                'phase_deadlines_seconds':dict(self.m.NATIVE_PHASES),'runtime':self.m.RUNTIME,
+                'device_type':self.m.DEVICE,'retry':False,'head':'a'*40,'run':'123','attempt':'1',
+                'checkout':'b'*40,'scope':str(scope)}
+            env={'EXPECTED_HEAD_SHA':'a'*40,'GITHUB_RUN_ID':'123','GITHUB_RUN_ATTEMPT':'1','GITHUB_SHA':'b'*40}
+            def check(value):
+                raw=json.dumps(value).encode();path.write_bytes(raw)
+                with mock.patch.dict(os.environ,{**env,'NATIVE_STOREKIT_CONTEXT_SHA':hashlib.sha256(raw).hexdigest()},clear=True),mock.patch.object(os,'uname',return_value=SimpleNamespace(machine='arm64')):
+                    return self.m.validate_context(path,100.0)
+            self.assertEqual(check(valid)['case_window_seconds'],300)
+            for change in ('legacy','mixed','wrong_policy','short_window'):
+                with self.subTest(change=change):
+                    value=copy.deepcopy(valid)
+                    if change=='legacy':
+                        value.pop('case_window_seconds');value.pop('native_window_policy');value['outer_seconds']=300
+                    elif change=='mixed':value['outer_seconds']=300
+                    elif change=='wrong_policy':value['native_window_policy']='unreviewed'
+                    else:value['case_window_seconds']=299
+                    with self.assertRaises((AssertionError,KeyError)):check(value)
+    def test_plan_exposes_changed_contract_and_keeps_eight_real_cases(self):
+        plan=self.m.validate_test_plan({'defaultOptions':{'testTimeoutsEnabled':True,'maximumTestExecutionTimeAllowance':180,'defaultTestExecutionTimeAllowance':120},'testTargets':[{'target':{'name':'CleanSendTests'},'parallelizable':False}]})
+        self.assertEqual(plan['native_window_policy'],'original-clock-startup-then-cases-v1')
+        self.assertNotIn('outer_seconds',plan);self.assertEqual(plan['case_window_seconds'],300)
+        self.assertEqual(len(plan['cases']),8);self.assertEqual(plan['maximum_case_seconds'],180)
 
 if __name__=='__main__':unittest.main()

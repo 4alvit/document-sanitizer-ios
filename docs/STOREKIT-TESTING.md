@@ -168,8 +168,9 @@ labels its first query `firstPreflightIterator`. Offline regressions execute the
 actual Swift setup methods against an in-memory service model; they prove
 ordering, exact identity matching and failure handling, not Apple's service or
 payment routing. Acceptance still requires all eight native cases on a fresh
-host, with the existing 120/180-second case policy and 300-second process
-ceiling. No retry, account sign-in or acceptance bypass is introduced.
+host, with the existing 120/180-second per-case policy and the bounded
+startup/case partition below. No retry, account sign-in or acceptance bypass
+is introduced.
 
 The purchase case verifies local native history after `Product.purchase()`,
 then exercises a new store instance and restore. The pending case observes the
@@ -179,15 +180,29 @@ bounded attachment without account identifiers or receipts. This finite
 observation does not prove that a delayed event can never occur, or that a
 different toolchain fixed the historical P1.
 
-All eight exact case identities must pass with zero failures or skips. They
-share one 300-second XCTest command ceiling; the existing per-case maximum
-remains 180 seconds. Native work ends at 560 seconds, owned-device cleanup at
-660, and the whole step at 780. The parent verifies actual remaining time in
-the dedicated 30-minute job before admitting native work, preserving 180 seconds
-for cleanup and evidence upload beyond the remaining native allowance. A one-minute
-profile check, nine-minute build and full 780-second native window plus that reserve
-leave four minutes for checkout and scheduling overhead. Actual elapsed time, not
-this estimate, controls admission. There is no automatic retry or cap increase.
+All eight exact case identities must pass with zero failures or skips. The
+120/180-second per-case policy is unchanged. Native work uses one original
+1,200-second worker clock: boot remains bounded by 376 seconds, the first
+admitted case must be observed before 526 seconds, and its one 300-second case
+window ends no later than 826 seconds. Later case markers never restart it.
+The native child must be stopped by 830 seconds; final verification ends at
+980, recovery at 1,002, shutdown at 1,039, deletion at 1,058, absence verification
+at 1,080, and evidence before 1,192. No first case, a late first case, incomplete
+case allowance, any missing host marker, failure, skip or missing case fails.
+
+This is an explicit temporal-contract change: the old single 300-second ceiling
+included cold XCTest runner/app startup. Startup now uses the already bounded
+pre-case partition, so the native child may run longer than 300 seconds while
+the original total, cleanup deadlines, full case allowance and all acceptance
+checks remain fixed. Contexts declare `original-clock-startup-then-cases-v1`
+and `case_window_seconds`; old `outer_seconds` contexts are refused.
+
+The parent verifies actual remaining time in the dedicated 30-minute job before
+admitting the complete 1,200-second native window plus its 180-second outer
+reserve. The profile/build maxima do not guarantee admission: if actual setup
+has consumed that time, native work is refused. There is no automatic retry,
+new clock, account sign-in or acceptance bypass. The separate packaged Share
+smoke retains its 900-second total and shared 300-second XCTest policy.
 
 On failure, the driver retains the last observed host/case stdout markers.
 After cleanup attempts it also reads existing staging session logs for a few
@@ -258,3 +273,31 @@ The Xcode26.3 diagnostic executed all eight cases: seven passed, while this case
 failed at its initial entitlement assertion before the simulated restore error.
 The additional barrier addresses that setup race; native acceptance must still
 pass all eight cases after the change.
+
+
+### Parent allocation observation policy
+
+The parent supervisor checks its original absolute deadline and the 12 GiB free
+floor on every poll. Its complete owned-allocation inventory now has a minimum
+five-second interval measured from the previous inventory's completion. The
+independent worker retains its one-second interval and existing phase checks.
+First and final parent observations, plus observed UUID, phase, command
+start/finish/count, first-case and cleanup transitions, force fresh inventories.
+Only those stable identity fields form the transition fingerprint; changing
+scan counters and diagnostic timestamps do not trigger extra walks. A short
+transition between parent polls may remain unseen by the parent; the worker's
+independent checks remain in force.
+
+This explicitly changes the parent's sampled observation policy. Between
+unchanged-epoch inventories, allocation growth may be detected nominally up to
+four seconds later than with the previous one-second minimum interval, plus
+polling, scan and OS delays. Neither policy is a filesystem quota or a guaranteed
+maximum detection latency. Every full inventory retains fresh independent
+`lstat` calls, both directory observations, no-follow traversal, the 100,000
+entry cap, and the 2 GiB allocated-byte cap. First failure evidence remains
+latched; the final forced inventory cannot turn a failure into success. Parent
+and worker scan counts and timings are recorded separately and run in parallel;
+their durations must not be added as elapsed startup time. This policy does not
+extend any total, work, native-case, cleanup or admission deadline, waive native
+cases, or establish a successful native result. Actual source-bound native CI
+must still pass.
