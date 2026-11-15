@@ -350,7 +350,7 @@ class HostedPreparationTests(unittest.TestCase):
                     (scope/'metadata.json').write_text(json.dumps({'owner_worker_pid':500,'owned_device_name':'fixture-owned-device','commands':[{'owned_process_group':700,'args':['xcodebuild'],'owned_group_absent':False}]}))
                     return process
                 aggregate=run.aggregate_command_groups
-                def fail_scan(resources,*_):
+                def fail_scan(resources,*_,**__):
                     resources.first_failure={'operation':'free_floor','root':None,'charged_allocated_bytes':0}
                     raise AssertionError('injected allocation floor')
                 with mock.patch.object(run,'load',return_value=lifecycle),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(run.Resources,'check',new=fail_scan),mock.patch.object(run,'await_cleanup_ack',side_effect=subprocess.TimeoutExpired('fixture-worker',3)),mock.patch.object(subprocess,'check_output',return_value='500\n' if correct_parent else '999\n') as parent_lookup,mock.patch.object(os,'getpgid',return_value=700),mock.patch.object(os,'killpg',side_effect=killpg),mock.patch.object(lifecycle,'stop_group',side_effect=lambda proc,row:row.update(owned_group_absent=True)),mock.patch.object(run,'aggregate_command_groups',side_effect=lambda meta,start:aggregate(meta,start,probe=killpg)),mock.patch.object(run,'terminal_stdout',return_value=True):
@@ -848,6 +848,91 @@ class PackageResourceScanTests(unittest.TestCase):
         for patch in patches:patch.start();self.addCleanup(patch.stop)
     @staticmethod
     def info(blocks,mode=0o100600):return SimpleNamespace(st_blocks=blocks,st_mode=mode)
+    def test_parent_five_seconds_and_default_worker_one_second_keep_per_poll_floor(self):
+        root=str(self.m.OWNED_ROOT);worker=self.m.Resources(100);parent=self.m.Resources(100,inventory_interval_seconds=5)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]) as walk,mock.patch.object(os,'lstat',return_value=self.info(1)),mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=32*2**30)) as floor:
+            worker.check(196);parent.check(196);self.assertEqual(walk.call_count,2)
+            self.clock[0]=102;worker.check(196);parent.check(196);self.assertEqual(walk.call_count,3)
+            self.clock[0]=105.999;parent.check(196);self.assertEqual(walk.call_count,3)
+            self.clock[0]=106;parent.check(196);self.assertEqual(walk.call_count,4)
+            self.assertEqual(floor.call_count,6)
+        self.assertEqual(worker.inventory_interval_seconds,1);self.assertEqual(parent.inventory_interval_seconds,5)
+    def test_parent_epoch_forces_observed_transitions_not_changing_scan_telemetry(self):
+        root=str(self.m.OWNED_ROOT);parent=self.m.Resources(100,inventory_interval_seconds=5);meta={'commands':[]}
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]) as walk,mock.patch.object(os,'lstat',return_value=self.info(1)):
+            parent.observe_parent(meta,196);self.assertEqual(walk.call_count,1)
+            meta.update(resource_successful_scans={'count':999},elapsed_seconds=1,updated_at='changes each poll')
+            parent.observe_parent(meta,196);self.assertEqual(walk.call_count,1)
+            meta['owned_uuid']='fixture-owned';parent.observe_parent(meta,196)
+            meta['phase']='native';parent.observe_parent(meta,196)
+            meta['commands'].append({'args':['fixture'],'started_at':'start','owned_process_group':17});parent.observe_parent(meta,196)
+            meta['commands'][-1].update(finished_at='finish',returncode=0,owned_group_absent=True);parent.observe_parent(meta,196)
+            meta['first_case_observed_elapsed_seconds']=1.5;parent.observe_parent(meta,196)
+            meta['cleanup_phase']={'entered_monotonic':101};parent.observe_parent(meta,196)
+            self.assertEqual(walk.call_count,7)
+            meta['cleanup_phase']['diagnostic_poll_count']=2;parent.observe_parent(meta,196);self.assertEqual(walk.call_count,7)
+            parent.observe_parent(meta,197);self.assertEqual(walk.call_count,8)
+            parent.observe_parent(meta,197,final=True);self.assertEqual(walk.call_count,9)
+    def test_parent_force_sees_growth_and_preserves_original_allocation_cap(self):
+        root=str(self.m.OWNED_ROOT);blocks=[1];parent=self.m.Resources(100,inventory_interval_seconds=5)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',side_effect=lambda _:self.info(blocks[0])):
+            parent.observe_parent({},196);blocks[0]=self.m.CAP//512+1
+            parent.observe_parent({},196)  # Unchanged epoch: policy intentionally samples, not a quota.
+            with self.assertRaisesRegex(AssertionError,'owned allocation cap'):parent.observe_parent({},196,final=True)
+        self.assertEqual(parent.first_failure['operation'],'allocation_cap');self.assertTrue(parent.first_failure['complete_scan'])
+    def test_parent_deadline_and_free_floor_fail_even_when_full_inventory_not_due(self):
+        root=str(self.m.OWNED_ROOT)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]) as walk,mock.patch.object(os,'lstat',return_value=self.info(1)):
+            parent=self.m.Resources(100,inventory_interval_seconds=5);parent.observe_parent({},196)
+            with mock.patch.object(self.m.shutil,'disk_usage',return_value=SimpleNamespace(free=self.m.FLOOR-1)):
+                with self.assertRaisesRegex(AssertionError,'free floor'):parent.observe_parent({},196)
+            self.assertEqual(walk.call_count,1)
+            self.clock[0]=296
+            with self.assertRaisesRegex(AssertionError,'original phase deadline'):parent.observe_parent({},196,final=True)
+            self.assertEqual(walk.call_count,1)
+    def test_full_inventory_spacing_is_measured_from_completion_and_final_is_forced(self):
+        root=str(self.m.OWNED_ROOT);parent=self.m.Resources(100,inventory_interval_seconds=5)
+        def slow_stat(_):self.clock[0]+=2;return self.info(1)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]) as walk,mock.patch.object(os,'lstat',side_effect=slow_stat):
+            parent.observe_parent({},196);self.assertEqual(parent.last,103)
+            self.clock[0]=107.999;parent.observe_parent({},196);self.assertEqual(walk.call_count,1)
+            self.clock[0]=108;parent.observe_parent({},196);self.assertEqual(walk.call_count,2)
+            parent.observe_parent({},196,final=True);self.assertEqual(walk.call_count,3)
+        self.assertEqual(parent.scan_totals['count'],3);self.assertEqual(parent.scan_totals['total_seconds'],6)
+    def test_forced_inventory_keeps_entry_cap_and_entry_deadline(self):
+        root=str(self.m.OWNED_ROOT);parent=self.m.Resources(100,inventory_interval_seconds=5)
+        with mock.patch.object(os,'walk',return_value=[(root,[],['entry']*100000)]),mock.patch.object(os,'lstat',return_value=self.info(0)):
+            with self.assertRaisesRegex(AssertionError,'owned inventory entry cap'):parent.observe_parent({},196,final=True)
+        self.assertEqual(parent.first_failure['lstat_calls'],100001)
+        parent=self.m.Resources(100,inventory_interval_seconds=5)
+        def expire(_):self.clock[0]=296;return self.info(0)
+        with mock.patch.object(os,'walk',return_value=[(root,[],[])]),mock.patch.object(os,'lstat',side_effect=expire):
+            with self.assertRaisesRegex(AssertionError,'owned stat deadline'):parent.observe_parent({},196,final=True)
+    def test_inventory_policy_and_force_parameters_fail_closed(self):
+        for value in (True,False,0,2,6,5.0,float('nan'),None,'5'):
+            with self.subTest(value=value),self.assertRaises(AssertionError):self.m.Resources(100,inventory_interval_seconds=value)
+        parent=self.m.Resources(100,inventory_interval_seconds=5)
+        for value in (1,None,'true'):
+            with self.subTest(force=value),self.assertRaises(AssertionError):parent.check(196,force=value)
+        with self.assertRaises(AssertionError):parent.observe_parent({},196,final=1)
+    def test_actual_parent_loop_selects_five_and_forces_terminal_inventory(self):
+        native=hasattr(self.m,'NATIVE_WINDOW_POLICY')
+        with tempfile.TemporaryDirectory(prefix='parent-policy-supervisor-') as temporary:
+            base=Path(temporary);scope=base/'native';context=base/'context.json';context.write_bytes(b'{}')
+            if native:scope.mkdir()
+            monitor=self.m.Resources(100,inventory_interval_seconds=5);process=SimpleNamespace(pid=17,returncode=0);polls=iter([None,0])
+            process.poll=lambda:next(polls,0)
+            def spawn(*args,**kwargs):
+                (scope/'metadata.json').write_text(json.dumps({'commands':[],'device_removed':True}));return process
+            captured={}
+            def closed(proc,intent,*args):intent['owned_group_absent']=True
+            def receipt(value,start):captured.update(value);return {'fixture':True}
+            with mock.patch.object(self.m,'SCOPE',scope),mock.patch.object(self.m,'OWNED_ROOT',base),mock.patch.object(self.m,'Resources',return_value=monitor) as factory,mock.patch.object(self.m,'close_worker_group',side_effect=closed),mock.patch.object(self.m,'retain_cleanup_obligation',side_effect=lambda intent,start:intent.update(cleanup_obligation={'absence_verified':True})),mock.patch.object(self.m,'aggregate_command_groups',return_value={'all_absent':True}),mock.patch.object(self.m,'final_read',side_effect=lambda path,*args:path.read_bytes()),mock.patch.object(self.m,'final_write',side_effect=receipt),mock.patch.object(self.m,'terminal_stdout',return_value=True),mock.patch.object(subprocess,'Popen',side_effect=spawn),mock.patch.object(time,'sleep'),mock.patch.object(os,'walk',return_value=[(str(base),[],[])]) as walk,mock.patch.object(os,'lstat',return_value=self.info(1)):
+                result=self.m.supervise(context,{},100) if native else self.m.supervise(context,{})
+            self.assertEqual(result,0);factory.assert_called_once_with(100 if native else 101,inventory_interval_seconds=5)
+            self.assertEqual(walk.call_count,2);self.assertEqual(captured['resource_successful_scans']['count'],2)
+            self.assertEqual(captured['allocation_observation_policy']['worker_min_interval_seconds'],1)
+            self.assertTrue(captured['allocation_observation_policy']['observed_boundaries_forced'])
     def test_complete_two_root_scan_keeps_both_directory_stats_and_all_allocations(self):
         owned=str(self.m.OWNED_ROOT);device='/fixture/device';device_dirs=['data','link']
         rows={owned:[(owned,['Products'],['receipt.json']),(owned+'/Products',[],['app'])],
