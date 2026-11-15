@@ -1730,7 +1730,7 @@ class PrivateExportProgressTests(unittest.TestCase):
     PDF='RedactLeaf-33333333-3333-4333-8333-333333333333.pdf'
     DATA=b'%PDF-1.4\nsynthetic\n'
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name).resolve()
         self.tmp=self.root/'tmp';self.tmp.mkdir();self.group=self.root/'group';self.group.mkdir()
         self.e=load('private_export_evidence',SMOKE/'evidence.py');self.b=load('private_export_budget',SMOKE/'window.py')
         self.expired=False;self.stream=io.BytesIO();self.observer=self.e.Observer(self.b,self.check);self.observer.started=time.monotonic()
